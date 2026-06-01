@@ -20,8 +20,46 @@
       font-size: 1.6rem;
       font-weight: 700;
       color: #1a1a2e;
-      margin-bottom: 20px;
+      margin-bottom: 12px;
     }
+
+    /* 天気ウィジェット */
+    .weather {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: linear-gradient(135deg, #74b9ff, #0984e3);
+      color: white;
+      padding: 10px 16px;
+      border-radius: 12px;
+      margin-bottom: 14px;
+      font-size: 0.95rem;
+    }
+    .weather-icon { font-size: 1.8rem; line-height: 1; }
+    .weather-temp { font-size: 1.3rem; font-weight: 700; }
+    .weather-desc { font-size: 0.85rem; opacity: 0.9; }
+    .weather-loading { opacity: 0.7; font-size: 0.9rem; }
+
+    /* 両学長メッセージ */
+    .ryogakucho {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      background: #fff9e6;
+      border: 2px solid #f6d860;
+      border-radius: 12px;
+      padding: 12px 14px;
+      margin-bottom: 20px;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s;
+      user-select: none;
+    }
+    .ryogakucho:hover { background: #fff3cc; transform: translateY(-1px); }
+    .ryogakucho:active { transform: translateY(0); }
+    .ryogakucho-icon { font-size: 1.8rem; line-height: 1; flex-shrink: 0; }
+    .ryogakucho-text { font-size: 0.9rem; color: #5a4200; line-height: 1.5; }
+    .ryogakucho-hint { font-size: 0.75rem; color: #bfa040; margin-top: 4px; }
+
     .add-form {
       display: flex;
       gap: 8px;
@@ -139,6 +177,21 @@
 <body>
   <div class="container">
     <h1>タスク管理</h1>
+
+    <!-- 天気ウィジェット -->
+    <div class="weather" id="weather">
+      <span class="weather-loading">🌤️ 天気を取得中...</span>
+    </div>
+
+    <!-- 両学長メッセージ -->
+    <div class="ryogakucho" id="ryogakucho" title="クリックで別のメッセージ">
+      <span class="ryogakucho-icon">🦁</span>
+      <div>
+        <div class="ryogakucho-text" id="ryogakuchoMsg"></div>
+        <div class="ryogakucho-hint">タップで別の言葉に切り替え</div>
+      </div>
+    </div>
+
     <form class="add-form" id="addForm">
       <input type="text" id="titleInput" placeholder="新しいタスクを入力..." autocomplete="off">
       <button type="submit">追加</button>
@@ -153,6 +206,121 @@
   </div>
 
   <script>
+    // ===== 両学長メッセージ =====
+    const MESSAGES = [
+      'タスクは一個ずつこなしていったらええねん！焦らんでええで〜',
+      '今日もええ一日にしていこな！小さな一歩が積み重なって大きな成果になるんやで！',
+      '完了したタスクを見てみ？ちゃんと積み上げてるやん！めちゃすごいで！',
+      'やる気がでーへん時こそ、一番小さいタスクから始めてみ。動き出したら止まらんで！',
+      '自由になりたいなら、まず今日のタスクを片付けることやで。未来の自分に感謝されるで！',
+      'お金も時間も、管理する習慣が大事やねん。タスク管理もその第一歩やで！',
+      '「あとでやろう」は一番あかんやつや！今できることは今やってまいな！',
+      '毎日コツコツ続けること、それが最強の戦略やで。焦らんと積み上げていこ！',
+      '完了ボタンを押す瞬間が一番気持ちええやろ？その快感を積み重ねていくんや！',
+      'しんどい時は休んでもええ。でもまた動き出せたらそれでええねん。応援してるで！',
+      'タスクを書き出すだけでも頭がスッキリするで！まずは全部出してまいな！',
+      '今日できたこと、ちゃんと自分でほめたってや。それが明日への活力になるんやから！',
+    ];
+
+    let lastMsgIdx = -1;
+    function showRandomMessage() {
+      let idx;
+      do { idx = Math.floor(Math.random() * MESSAGES.length); } while (idx === lastMsgIdx);
+      lastMsgIdx = idx;
+      document.getElementById('ryogakuchoMsg').textContent = MESSAGES[idx];
+    }
+    showRandomMessage();
+    document.getElementById('ryogakucho').addEventListener('click', showRandomMessage);
+
+    // ===== 天気 =====
+    const WEATHER_CODES = {
+      113: ['☀️', '晴れ'],
+      116: ['⛅', '一部曇り'],
+      119: ['☁️', '曇り'],
+      122: ['☁️', '曇り'],
+      143: ['🌫️', '霧'],
+      176: ['🌦️', 'にわか雨'],
+      179: ['🌨️', 'にわか雪'],
+      182: ['🌧️', '霙'],
+      185: ['🌧️', '凍雨'],
+      200: ['⛈️', '雷雨'],
+      227: ['🌨️', '吹雪'],
+      230: ['❄️', '大吹雪'],
+      248: ['🌫️', '霧'],
+      260: ['🌫️', '濃霧'],
+      263: ['🌦️', '小雨'],
+      266: ['🌧️', '小雨'],
+      281: ['🌧️', '凍雨'],
+      284: ['🌧️', '凍雨'],
+      293: ['🌧️', '小雨'],
+      296: ['🌧️', '小雨'],
+      299: ['🌧️', '雨'],
+      302: ['🌧️', '雨'],
+      305: ['🌧️', '大雨'],
+      308: ['🌧️', '大雨'],
+      311: ['🌧️', '凍雨'],
+      314: ['🌧️', '凍雨'],
+      317: ['🌧️', '霙'],
+      320: ['🌨️', '雪'],
+      323: ['🌨️', '小雪'],
+      326: ['🌨️', '小雪'],
+      329: ['❄️', '雪'],
+      332: ['❄️', '雪'],
+      335: ['❄️', '大雪'],
+      338: ['❄️', '大雪'],
+      350: ['🌧️', '雹'],
+      353: ['🌦️', '小雨'],
+      356: ['🌧️', '大雨'],
+      359: ['🌧️', '大雨'],
+      362: ['🌧️', '霙'],
+      365: ['🌧️', '霙'],
+      368: ['🌨️', '小雪'],
+      371: ['❄️', '大雪'],
+      374: ['🌧️', '雹'],
+      377: ['🌧️', '雹'],
+      386: ['⛈️', '雷雨'],
+      389: ['⛈️', '大雷雨'],
+      392: ['⛈️', '雷雪'],
+      395: ['❄️', '大雪'],
+    };
+
+    async function fetchWeather() {
+      const el = document.getElementById('weather');
+      if (!navigator.geolocation) {
+        el.innerHTML = '<span>📍 位置情報が使えません</span>';
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(async pos => {
+        try {
+          const { latitude: lat, longitude: lon } = pos.coords;
+          const res = await fetch(`https://wttr.in/${lat},${lon}?format=j1`);
+          const data = await res.json();
+          const cur = data.current_condition[0];
+          const code = Number(cur.weatherCode);
+          const temp = cur.temp_C;
+          const [icon, desc] = WEATHER_CODES[code] || ['🌡️', '不明'];
+          el.innerHTML = `
+            <span class="weather-icon">${icon}</span>
+            <div>
+              <div style="display:flex;align-items:baseline;gap:6px">
+                <span class="weather-temp">${temp}℃</span>
+                <span class="weather-desc">${desc}</span>
+              </div>
+              <div style="font-size:0.78rem;opacity:0.8">
+                体感 ${cur.FeelsLikeC}℃ 　湿度 ${cur.humidity}%
+              </div>
+            </div>
+          `;
+        } catch {
+          el.innerHTML = '<span>🌤️ 天気を取得できませんでした</span>';
+        }
+      }, () => {
+        el.innerHTML = '<span style="opacity:0.8;font-size:0.9rem">📍 位置情報を許可すると天気が表示されます</span>';
+      });
+    }
+    fetchWeather();
+
+    // ===== タスク管理 =====
     let tasks = [];
     let filter = 'all';
 
