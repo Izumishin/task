@@ -1,3 +1,2 @@
 node_modules/
-tasks.db
-*.db-journal
+tasks.json

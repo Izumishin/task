@@ -1,51 +1,59 @@
 const express = require('express');
-const Database = require('better-sqlite3');
+const fs = require('fs');
 const path = require('path');
 
 const app = express();
-const db = new Database('tasks.db');
+const DATA_FILE = path.join(__dirname, 'tasks.json');
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS tasks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    done INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
-  )
-`);
+function load() {
+  if (!fs.existsSync(DATA_FILE)) return [];
+  return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+}
+
+function save(tasks) {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(tasks, null, 2));
+}
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/api/tasks', (req, res) => {
-  const tasks = db.prepare('SELECT * FROM tasks ORDER BY created_at DESC').all();
-  res.json(tasks);
+  res.json(load());
 });
 
 app.post('/api/tasks', (req, res) => {
   const { title } = req.body;
   if (!title || !title.trim()) return res.status(400).json({ error: 'タイトルは必須です' });
-  const result = db.prepare('INSERT INTO tasks (title) VALUES (?)').run(title.trim());
-  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(result.lastInsertRowid);
+  const tasks = load();
+  const task = {
+    id: Date.now(),
+    title: title.trim(),
+    done: false,
+    created_at: new Date().toLocaleString('ja-JP')
+  };
+  tasks.unshift(task);
+  save(tasks);
   res.status(201).json(task);
 });
 
 app.patch('/api/tasks/:id', (req, res) => {
-  const { id } = req.params;
-  const { done, title } = req.body;
-  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+  const id = Number(req.params.id);
+  const tasks = load();
+  const task = tasks.find(t => t.id === id);
   if (!task) return res.status(404).json({ error: '見つかりません' });
-
-  if (done !== undefined) db.prepare('UPDATE tasks SET done = ? WHERE id = ?').run(done ? 1 : 0, id);
-  if (title !== undefined) db.prepare('UPDATE tasks SET title = ? WHERE id = ?').run(title.trim(), id);
-
-  res.json(db.prepare('SELECT * FROM tasks WHERE id = ?').get(id));
+  if (req.body.done !== undefined) task.done = req.body.done;
+  if (req.body.title !== undefined) task.title = req.body.title.trim();
+  save(tasks);
+  res.json(task);
 });
 
 app.delete('/api/tasks/:id', (req, res) => {
-  const { id } = req.params;
-  const result = db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
-  if (result.changes === 0) return res.status(404).json({ error: '見つかりません' });
+  const id = Number(req.params.id);
+  const tasks = load();
+  const idx = tasks.findIndex(t => t.id === id);
+  if (idx === -1) return res.status(404).json({ error: '見つかりません' });
+  tasks.splice(idx, 1);
+  save(tasks);
   res.status(204).send();
 });
 
