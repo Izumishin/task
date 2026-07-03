@@ -31,6 +31,18 @@ KNOWN_NAMES = {
     "hiroshige": "ひろしげ", "ryota": "りょうた", "shusei": "しゅうせい",
     "akihiko": "あきひこ", "tetsuaki": "てつあき", "toshifumi": "としふみ",
     "tatsuru": "たつる",
+    # Vol.37 No.5（長音・濁点が機械変換で外れやすい実例を辞書化）
+    "hikima": "ひきま", "ohkawa": "おおかわ", "okawa": "おおかわ",
+    "tsukano": "つかの", "ide": "いで", "takahashi": "たかはし",
+    "otsuka": "おおつか", "ohtsuka": "おおつか", "yoshimura": "よしむら",
+    "sawamoto": "さわもと", "shimasaki": "しまさき", "kurihara": "くりはら",
+    "nishita": "にした", "igarashi": "いがらし", "matsui": "まつい",
+    "nagano": "ながの", "ougisawa": "おうぎさわ", "ogisawa": "おうぎさわ",
+    "takuya": "たくや", "noriaki": "のりあき", "takuto": "たくと",
+    "kaoru": "かおる", "susumu": "すすむ", "yuki": "ゆき", "takako": "たかこ",
+    "nobukatsu": "のぶかつ", "ryosuke": "りょうすけ", "masanori": "まさのり",
+    "yukiko": "ゆきこ", "yuna": "ゆうな", "tomoyo": "ともよ",
+    "nobuko": "のぶこ", "toru": "とおる",
 }
 
 # 2文字の子音＋母音／特殊音の変換表（長い綴りを優先してマッチ）。
