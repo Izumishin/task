@@ -43,6 +43,16 @@ KNOWN_NAMES = {
     "nobukatsu": "のぶかつ", "ryosuke": "りょうすけ", "masanori": "まさのり",
     "yukiko": "ゆきこ", "yuna": "ゆうな", "tomoyo": "ともよ",
     "nobuko": "のぶこ", "toru": "とおる",
+    # Vol.37 No.6
+    "murayama": "むらやま", "nakagomi": "なかごみ", "suzuki": "すずき",
+    "niimura": "にいむら", "inagaki": "いながき", "numata": "ぬまた",
+    "yamamoto": "やまもと", "katagiri": "かたぎり", "nakashima": "なかしま",
+    "sugiyama": "すぎやま", "kamiyamasaki": "かみやまさき", "hotta": "ほった",
+    "nomura": "のむら", "hiroshi": "ひろし", "atsushi": "あつし",
+    "hiroyuki": "ひろゆき", "hidehito": "ひでひと", "asa": "あさ",
+    "hanako": "はなこ", "noriko": "のりこ", "yoshitomo": "よしとも",
+    "keiko": "けいこ", "taeko": "たえこ", "kei": "けい", "etsuyo": "えつよ",
+    "maki": "まき", "koichi": "こういち",
 }
 
 # 2文字の子音＋母音／特殊音の変換表（長い綴りを優先してマッチ）。

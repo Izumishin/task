@@ -89,9 +89,14 @@ def _expand_rows(spec, pm, docs, reading_dict):
             romaji = toc_lib.extract_article(
                 toc_lib.page_text(pm, docs, page))["romaji_authors"]
 
+        # 記事側で明示された要確認指定（推測読みを黄色で残したいとき）
+        force_uncertain = bool(art.get("uncertain"))
+        uncertain_authors = set(art.get("uncertain_authors", []))
+
         for idx, author in enumerate(authors):
             if author in explicit:
-                reading, uncertain = explicit[author], False
+                reading = explicit[author]
+                uncertain = force_uncertain or author in uncertain_authors
             else:
                 romaji_hint = romaji[idx] if idx < len(romaji) else None
                 reading, uncertain = toc_lib.resolve_reading(
