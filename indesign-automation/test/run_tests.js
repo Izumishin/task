@@ -175,5 +175,50 @@ check('懇親会 締切', /8月22日（土）まで/.test(result[39]), result[39
 check('警告なしで完走', mockReport.filter(r => r.indexOf('[警告]') === 0).length === 0,
       JSON.stringify(mockReport.filter(r => r.indexOf('[警告]') === 0)));
 
+// ---- .docx 直接読み込み (ZIP展開 + DEFLATE + XML→テキスト) ----
+console.log('docx reading:');
+
+const docxBin = fs.readFileSync(path.join(__dirname, 'fixtures', 'sample_44.docx')).toString('latin1');
+let docxText = null;
+try {
+  docxText = docxBinToText(docxBin);
+} catch (e) {
+  check('docxBinToText が例外なく完了', false, String(e));
+}
+if (docxText !== null) {
+  check('docxBinToText が例外なく完了', true);
+  check('docx: 本文を含む', /開会の辞/.test(docxText) && /懇親会/.test(docxText), docxText.substring(0, 80));
+  const dm = parseManuscript(docxText);
+  check('docx: 大会回数 44', dm.taikaiNo === '44', String(dm.taikaiNo));
+  check('docx: 発表 7 件', dm.presentations.length === 7, String(dm.presentations.length));
+  check('docx: 発表1 発表者', getRoleValue(dm.presentations[0], '発表者') === '閑田　朋子（早稲田大学）',
+        getRoleValue(dm.presentations[0], '発表者'));
+  check('docx: 基調講演タイトル', dm.presentations.filter(p => p.keynote)[0].title === 'アメリカ小説と青春');
+  check('docx: 懇親会 3 行以上', dm.konshinkai && dm.konshinkai.lines.length >= 3);
+}
+
+// ---- テキストファイルの文字コード自動判別 ----
+console.log('encoding detection:');
+
+function binOf(name) {
+  return fs.readFileSync(path.join(__dirname, 'fixtures', name)).toString('latin1');
+}
+const cases = [
+  ['manuscript_utf8.txt', 'UTF-8'],
+  ['manuscript_utf8bom.txt', 'UTF-8'],
+  ['manuscript_utf16le.txt', 'UTF-16LE'],
+  ['manuscript_utf16be.txt', 'UTF-16BE'],
+];
+for (const [file, expected] of cases) {
+  const dec = decodeTextAuto(binOf(file));
+  check(file + ' → ' + expected,
+        dec !== null && dec.encoding === expected && countKeywordHits(dec.text) >= 5 && parseManuscript(dec.text).presentations.length === 7,
+        dec === null ? 'null' : dec.encoding + ' hits=' + countKeywordHits(dec.text));
+}
+// Shift-JIS は純JSでは判別不可 → null を返して File API 側のフォールバックに回るのが正
+const sjisDec = decodeTextAuto(binOf('manuscript_sjis.txt'));
+check('manuscript_sjis.txt → null (File APIフォールバックへ)', sjisDec === null || countKeywordHits(sjisDec.text) === 0,
+      sjisDec && sjisDec.encoding);
+
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
 process.exit(failures === 0 ? 0 : 1);

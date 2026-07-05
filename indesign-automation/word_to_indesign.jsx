@@ -304,6 +304,292 @@ function replaceKeepingEdges(oldText, newCore) {
   return head + trimWS(newCore) + tail;
 }
 
+// ------------------------------------------------------------
+// .docx 直接読み込み (docx は ZIP。word/document.xml を取り出して
+// DEFLATE を自前で展開する。外部ツール不要で Mac/Windows 共通)
+// ------------------------------------------------------------
+
+// bin: 1文字=1バイトのバイナリ文字列
+function bcc(bin, i) { return bin.charCodeAt(i) & 0xFF; }
+function u16at(bin, i) { return bcc(bin, i) | (bcc(bin, i + 1) << 8); }
+function u32at(bin, i) {
+  return (bcc(bin, i) | (bcc(bin, i + 1) << 8) | (bcc(bin, i + 2) << 16)) + bcc(bin, i + 3) * 16777216;
+}
+
+// --- DEFLATE 展開 (Mark Adler の puff アルゴリズムの移植) ---
+function _infBits(st, n) {
+  while (st.bitcnt < n) {
+    st.bitbuf |= bcc(st.data, st.pos++) << st.bitcnt;
+    st.bitcnt += 8;
+  }
+  var val = st.bitbuf & ((1 << n) - 1);
+  st.bitbuf >>>= n;
+  st.bitcnt -= n;
+  return val;
+}
+
+function _infConstruct(lengths, n) {
+  var count = [], offs = [], symbol = [], i, len;
+  for (len = 0; len <= 15; len++) count[len] = 0;
+  for (i = 0; i < n; i++) count[lengths[i]]++;
+  count[0] = 0;
+  offs[1] = 0;
+  for (len = 1; len < 15; len++) offs[len + 1] = offs[len] + count[len];
+  for (i = 0; i < n; i++) if (lengths[i]) symbol[offs[lengths[i]]++] = i;
+  return { count: count, symbol: symbol };
+}
+
+function _infDecode(st, h) {
+  var code = 0, first = 0, index = 0, len, count;
+  for (len = 1; len <= 15; len++) {
+    code |= _infBits(st, 1);
+    count = h.count[len];
+    if (code - first < count) return h.symbol[index + (code - first)];
+    index += count;
+    first += count;
+    first <<= 1;
+    code <<= 1;
+  }
+  throw new Error("inflate: 不正な符号");
+}
+
+var _LBASE = [3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258];
+var _LEXT  = [0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0];
+var _DBASE = [1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577];
+var _DEXT  = [0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13];
+
+function _infCodes(st, lencode, distcode, out) {
+  var sym, len, dist, from, k;
+  for (;;) {
+    sym = _infDecode(st, lencode);
+    if (sym < 256) { out[out.length] = sym; }
+    else if (sym === 256) return;
+    else {
+      sym -= 257;
+      len = _LBASE[sym] + _infBits(st, _LEXT[sym]);
+      sym = _infDecode(st, distcode);
+      dist = _DBASE[sym] + _infBits(st, _DEXT[sym]);
+      from = out.length - dist;
+      if (from < 0) throw new Error("inflate: 距離が範囲外");
+      for (k = 0; k < len; k++) out[out.length] = out[from + k];
+    }
+  }
+}
+
+function _infFixedTrees() {
+  var lengths = [], i;
+  for (i = 0; i < 144; i++) lengths[i] = 8;
+  for (; i < 256; i++) lengths[i] = 9;
+  for (; i < 280; i++) lengths[i] = 7;
+  for (; i < 288; i++) lengths[i] = 8;
+  var lencode = _infConstruct(lengths, 288);
+  lengths = [];
+  for (i = 0; i < 30; i++) lengths[i] = 5;
+  return { lencode: lencode, distcode: _infConstruct(lengths, 30) };
+}
+
+var _CLORDER = [16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15];
+
+function _infDynamicTrees(st) {
+  var hlit = _infBits(st, 5) + 257;
+  var hdist = _infBits(st, 5) + 1;
+  var hclen = _infBits(st, 4) + 4;
+  var lengths = [], i, sym, prev, rep;
+  for (i = 0; i < 19; i++) lengths[i] = 0;
+  for (i = 0; i < hclen; i++) lengths[_CLORDER[i]] = _infBits(st, 3);
+  var lencode = _infConstruct(lengths, 19);
+  lengths = [];
+  while (lengths.length < hlit + hdist) {
+    sym = _infDecode(st, lencode);
+    if (sym < 16) lengths[lengths.length] = sym;
+    else {
+      prev = 0; rep = 0;
+      if (sym === 16) { prev = lengths[lengths.length - 1]; rep = 3 + _infBits(st, 2); }
+      else if (sym === 17) rep = 3 + _infBits(st, 3);
+      else rep = 11 + _infBits(st, 7);
+      while (rep--) lengths[lengths.length] = prev;
+    }
+  }
+  var lit = lengths.slice(0, hlit);
+  var dst = lengths.slice(hlit);
+  return { lencode: _infConstruct(lit, hlit), distcode: _infConstruct(dst, hdist) };
+}
+
+// DEFLATE ストリーム(バイナリ文字列)を展開してバイト値の配列を返す
+function inflateRaw(data) {
+  var st = { data: data, pos: 0, bitbuf: 0, bitcnt: 0 };
+  var out = [], bfinal, btype, len, i, trees;
+  do {
+    bfinal = _infBits(st, 1);
+    btype = _infBits(st, 2);
+    if (btype === 0) {
+      st.bitbuf = 0; st.bitcnt = 0;
+      len = u16at(st.data, st.pos); st.pos += 4; // len + nlen
+      for (i = 0; i < len; i++) out[out.length] = bcc(st.data, st.pos++);
+    } else if (btype === 1) {
+      trees = _infFixedTrees();
+      _infCodes(st, trees.lencode, trees.distcode, out);
+    } else if (btype === 2) {
+      trees = _infDynamicTrees(st);
+      _infCodes(st, trees.lencode, trees.distcode, out);
+    } else {
+      throw new Error("inflate: 不正なブロック種別");
+    }
+  } while (!bfinal);
+  return out;
+}
+
+// --- ZIP から指定名のエントリのバイト配列を取り出す ---
+function zipExtract(bin, wantName) {
+  // End of Central Directory を末尾から探す
+  var i = bin.length - 22, eocd = -1;
+  var stop = bin.length - 22 - 65558; if (stop < 0) stop = 0;
+  for (; i >= stop; i--) {
+    if (bcc(bin, i) === 0x50 && bcc(bin, i + 1) === 0x4B && bcc(bin, i + 2) === 0x05 && bcc(bin, i + 3) === 0x06) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error("ZIP形式ではありません");
+  var n = u16at(bin, eocd + 10);
+  var ofs = u32at(bin, eocd + 16);
+  var e, method, csize, nameLen, extraLen, cmtLen, localOfs, name, dataOfs;
+  for (e = 0; e < n; e++) {
+    if (u32at(bin, ofs) !== 0x02014B50) throw new Error("ZIPセントラルディレクトリが壊れています");
+    method = u16at(bin, ofs + 10);
+    csize = u32at(bin, ofs + 20);
+    nameLen = u16at(bin, ofs + 28);
+    extraLen = u16at(bin, ofs + 30);
+    cmtLen = u16at(bin, ofs + 32);
+    localOfs = u32at(bin, ofs + 42);
+    name = bin.substring(ofs + 46, ofs + 46 + nameLen);
+    if (name === wantName) {
+      dataOfs = localOfs + 30 + u16at(bin, localOfs + 26) + u16at(bin, localOfs + 28);
+      var comp = bin.substring(dataOfs, dataOfs + csize);
+      if (method === 8) return inflateRaw(comp);
+      if (method === 0) { var arr = [], k; for (k = 0; k < comp.length; k++) arr[k] = bcc(comp, k); return arr; }
+      throw new Error("未対応の圧縮方式: " + method);
+    }
+    ofs += 46 + nameLen + extraLen + cmtLen;
+  }
+  return null;
+}
+
+// --- 文字コード変換 ---
+
+// バイト配列を UTF-8 として厳密にデコード。不正なら null
+function utf8DecodeBytes(bytes) {
+  var units = [], i = 0, n = bytes.length, b, cp, extra, k;
+  while (i < n) {
+    b = bytes[i++];
+    if (b < 0x80) { units[units.length] = b; continue; }
+    if (b >= 0xC2 && b <= 0xDF) { extra = 1; cp = b & 0x1F; }
+    else if (b >= 0xE0 && b <= 0xEF) { extra = 2; cp = b & 0x0F; }
+    else if (b >= 0xF0 && b <= 0xF4) { extra = 3; cp = b & 0x07; }
+    else return null;
+    for (k = 0; k < extra; k++) {
+      if (i >= n) return null;
+      b = bytes[i++];
+      if ((b & 0xC0) !== 0x80) return null;
+      cp = (cp << 6) | (b & 0x3F);
+    }
+    if (cp > 0xFFFF) {
+      cp -= 0x10000;
+      units[units.length] = 0xD800 + (cp >> 10);
+      units[units.length] = 0xDC00 + (cp & 0x3FF);
+    } else units[units.length] = cp;
+  }
+  return unitsToString(units);
+}
+
+function unitsToString(units) {
+  var s = "", i, chunk = 8192;
+  for (i = 0; i < units.length; i += chunk) {
+    s += String.fromCharCode.apply(null, units.slice(i, i + chunk));
+  }
+  return s;
+}
+
+function utf8DecodeStr(bin, start) {
+  var bytes = [], i;
+  for (i = start; i < bin.length; i++) bytes[bytes.length] = bcc(bin, i);
+  return utf8DecodeBytes(bytes);
+}
+
+function utf16Decode(bin, start, littleEndian) {
+  var units = [], i;
+  for (i = start; i + 1 < bin.length; i += 2) {
+    units[units.length] = littleEndian ? (bcc(bin, i) | (bcc(bin, i + 1) << 8))
+                                       : ((bcc(bin, i) << 8) | bcc(bin, i + 1));
+  }
+  return unitsToString(units);
+}
+
+// 原稿らしさの判定 (文字コード自動判別用): 見つかったキーワードの種類数
+var _KEYWORDS = ["発表", "大会", "開会", "学会", "講演", "司会", "懇親", "休憩", "研究", "事務局"];
+function countKeywordHits(text) {
+  var i, hits = 0;
+  for (i = 0; i < _KEYWORDS.length; i++) {
+    if (text.indexOf(_KEYWORDS[i]) >= 0) hits++;
+  }
+  return hits;
+}
+
+// バイナリ文字列からテキストの文字コードを自動判別してデコード。
+// 判別できなければ null (Shift-JIS の可能性 → 呼び出し側で File の変換機能を試す)
+function decodeTextAuto(bin) {
+  if (bin.length === 0) return null;
+  var b0 = bcc(bin, 0), b1 = bin.length > 1 ? bcc(bin, 1) : -1, b2 = bin.length > 2 ? bcc(bin, 2) : -1;
+  var text;
+  if (b0 === 0xEF && b1 === 0xBB && b2 === 0xBF) {
+    text = utf8DecodeStr(bin, 3);
+    if (text !== null) return { text: text, encoding: "UTF-8" };
+  }
+  if (b0 === 0xFF && b1 === 0xFE) return { text: utf16Decode(bin, 2, true), encoding: "UTF-16LE" };
+  if (b0 === 0xFE && b1 === 0xFF) return { text: utf16Decode(bin, 2, false), encoding: "UTF-16BE" };
+  text = utf8DecodeStr(bin, 0);
+  if (text !== null && countKeywordHits(text) > 0) return { text: text, encoding: "UTF-8" };
+  var le = utf16Decode(bin, 0, true), be = utf16Decode(bin, 0, false);
+  var sl = countKeywordHits(le), sb = countKeywordHits(be);
+  if (sl > 0 || sb > 0) {
+    return sl >= sb ? { text: le, encoding: "UTF-16LE" } : { text: be, encoding: "UTF-16BE" };
+  }
+  return null;
+}
+
+// --- document.xml → プレーンテキスト ---
+function decodeXmlEntities(s) {
+  s = s.replace(/&#x([0-9A-Fa-f]+);/g, function (m0, h) { return String.fromCharCode(parseInt(h, 16)); });
+  s = s.replace(/&#([0-9]+);/g, function (m0, d) { return String.fromCharCode(parseInt(d, 10)); });
+  s = s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+  return s;
+}
+
+function docxXmlToText(xml) {
+  var lines = [], pRe = /<w:p(?:\s[^>]*)?\/>|<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g, pm;
+  var tokRe, tm, seg, line;
+  while ((pm = pRe.exec(xml)) !== null) {
+    seg = pm[0];
+    // フィールドコードや削除済みテキストは無視
+    seg = seg.replace(/<w:instrText[\s\S]*?<\/w:instrText>/g, "").replace(/<w:delText[\s\S]*?<\/w:delText>/g, "");
+    line = "";
+    tokRe = /<w:t(?:\s[^>]*)?\/>|<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:tab(?:\s[^>]*)?\/>|<w:br(?:\s[^>]*)?\/>/g;
+    while ((tm = tokRe.exec(seg)) !== null) {
+      if (tm[0].indexOf("<w:tab") === 0) line += "\t";
+      else if (tm[0].indexOf("<w:br") === 0) line += "\n";
+      else if (tm[1]) line += decodeXmlEntities(tm[1]);
+    }
+    lines[lines.length] = line;
+  }
+  return lines.join("\n");
+}
+
+// .docx のバイナリ文字列 → 原稿プレーンテキスト
+function docxBinToText(bin) {
+  var bytes = zipExtract(bin, "word/document.xml");
+  if (bytes === null) throw new Error("word/document.xml が見つかりません (docx ではない?)");
+  var xml = utf8DecodeBytes(bytes);
+  if (xml === null) throw new Error("document.xml の文字コードが不正です");
+  return docxXmlToText(xml);
+}
+
 // ===== CORE END =====
 
 // ============================================================
@@ -325,7 +611,8 @@ function main() {
 
   var model = parseManuscript(text);
   if (model.presentations.length === 0 && model.events.length === 0) {
-    alert("原稿を解析できませんでした。Word から書き出したテキストか、.docx を選んでいるか確認してください。");
+    var preview = trimWS(text).substring(0, 120);
+    alert("原稿を解析できませんでした。選んだファイルが大会プログラムの原稿か確認してください。\n\n読み取った内容の先頭:\n" + preview);
     return;
   }
 
@@ -360,33 +647,59 @@ function main() {
   alert("流し込みが完了しました。\n\nレポート:\n" + report.join("\n").substring(0, 1500) + "\n\n(全文はドキュメントと同じ場所の txt に保存されています)");
 }
 
+function readBinary(src) {
+  var f = new File(src.fsName);
+  f.encoding = "BINARY";
+  if (!f.open("r")) { alert("ファイルを開けませんでした: " + f.fsName); return null; }
+  var bin = f.read();
+  f.close();
+  return bin;
+}
+
+function readWithFileEncoding(src, enc) {
+  var f = new File(src.fsName);
+  f.encoding = enc;
+  var text = null;
+  try {
+    if (f.open("r")) { text = f.read(); f.close(); }
+  } catch (e) { try { f.close(); } catch (e2) {} }
+  if (text !== null && text.length > 0 && text.charCodeAt(0) === 0xFEFF) text = text.substring(1);
+  return text;
+}
+
 function readManuscript(src) {
+  var bin = readBinary(src);
+  if (bin === null) return null;
   var name = decodeURI(src.name).toLowerCase();
-  var txtFile = src;
-  if (/\.docx$/.test(name)) {
-    if (File.fs === "Macintosh") {
-      var tmp = new File(Folder.temp + "/genko_" + (new Date()).getTime() + ".txt");
-      var as = 'do shell script "textutil -convert txt -encoding UTF-8 -output " & quoted form of "' +
-               tmp.fsName + '" & " " & quoted form of "' + src.fsName + '"';
-      try {
-        app.doScript(as, ScriptLanguage.APPLESCRIPT_LANGUAGE);
-      } catch (e) {
-        alert("Word ファイルの変換に失敗しました。Word で「テキストのみ(.txt)」で保存し直して、その .txt を選んでください。\n" + e);
-        return null;
-      }
-      txtFile = tmp;
-    } else {
-      alert("Windows では .docx を直接読めません。Word で「書式なし(.txt)」保存したファイルを選んでください。");
+
+  // .docx は ZIP を直接展開して読む (Mac/Windows 共通・外部ツール不要)
+  if (/\.docx$/.test(name) || bin.substring(0, 2) === "PK") {
+    try {
+      return docxBinToText(bin);
+    } catch (e) {
+      alert("Word(.docx)の読み取りに失敗しました。\n" + e.message +
+            "\n\nWord で「書式なし/テキストのみ(.txt)」保存したファイルでも実行できます。");
       return null;
     }
   }
-  txtFile.encoding = "UTF-8";
-  if (!txtFile.open("r")) { alert("ファイルを開けませんでした: " + txtFile.fsName); return null; }
-  var text = txtFile.read();
-  txtFile.close();
-  // BOM 除去
-  if (text.charCodeAt(0) === 0xFEFF) text = text.substring(1);
-  return text;
+  if (/\.doc$/.test(name) || (bin.length > 1 && bcc(bin, 0) === 0xD0 && bcc(bin, 1) === 0xCF)) {
+    alert("旧形式の .doc は読み込めません。Word で「.docx」または「書式なし(.txt)」で保存し直してください。");
+    return null;
+  }
+
+  // テキストファイル: UTF-8 / UTF-16 は自動判別
+  var dec = decodeTextAuto(bin);
+  if (dec !== null && countKeywordHits(dec.text) > 0) return dec.text;
+
+  // Shift-JIS (Windows の Word の「書式なし保存」の既定) は File の変換機能で
+  var encs = ["SHIFT_JIS", "CP932", "SJIS", "WINDOWS-31J", "MS932"], i, text;
+  for (i = 0; i < encs.length; i++) {
+    text = readWithFileEncoding(src, encs[i]);
+    if (text !== null && countKeywordHits(text) > 0) return text;
+  }
+  if (dec !== null) return dec.text; // 文字コードは正しそうだが内容が原稿らしくない → 解析側の診断に回す
+  alert("テキストファイルの文字コードを判別できませんでした。\nWord の「名前を付けて保存」で .docx のまま保存したファイルを選ぶのが確実です。");
+  return null;
 }
 
 function resetFindGrep() {
