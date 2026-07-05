@@ -124,8 +124,13 @@ function parseManuscript(rawText) {
     presentations: [],   // { time, title, roles:[{role,value}], keynote }
     konshinkai: null,    // { event, lines:[] }
     jimukyoku: [],
+    rawLines: [],        // 空行を除く全行 (1つずつ置き換えモード用)
     warnings: []
   };
+  var li;
+  for (li = 0; li < lines.length; li++) {
+    if (trimWS(lines[li]) !== "") model.rawLines.push(trimWS(lines[li]));
+  }
   var headerDone = false, inKonshinkai = false, inJimukyoku = false;
   var cur = null;
   function closeCur() {
@@ -302,6 +307,64 @@ function replaceKeepingEdges(oldText, newCore) {
   var head = oldText.match(/^[\s　]*/)[0];
   var tail = oldText.match(/[\s　]*$/)[0];
   return head + trimWS(newCore) + tail;
+}
+
+// ------------------------------------------------------------
+// 1つずつ置き換えモード用: 類似度による原稿行の推定と置換文の生成
+// ------------------------------------------------------------
+
+// 比較用の正規化 (数字を半角化し、記号・空白を除去)
+function normForSim(s) {
+  return toHanDigits(trimWS(s)).replace(/[\s　＜＞<>〈〉：:（）()「」『』【】、。・．，,\.\-－–—ー~〜"“”'’]/g, "");
+}
+
+function bigramSet(s) {
+  var set = {}, i;
+  if (s.length < 2) { if (s.length === 1) set[s] = 1; return set; }
+  for (i = 0; i < s.length - 1; i++) set[s.substring(i, i + 2)] = 1;
+  return set;
+}
+
+// 文字バイグラムの Dice 係数 (0〜1)
+function similarity(a, b) {
+  var sa = bigramSet(normForSim(a)), sb = bigramSet(normForSim(b));
+  var na = 0, nb = 0, common = 0, k;
+  for (k in sa) { if (sa.hasOwnProperty(k)) { na++; if (sb[k]) common++; } }
+  for (k in sb) { if (sb.hasOwnProperty(k)) nb++; }
+  if (na + nb === 0) return 0;
+  return (2 * common) / (na + nb);
+}
+
+// 旧段落テキストに最も近い原稿行を推定 (usedFlags[i] が真の行は優先度を下げる)
+function suggestLineIndex(oldText, lines, usedFlags) {
+  var best = -1, bestScore = -1, i, sc;
+  for (i = 0; i < lines.length; i++) {
+    sc = similarity(oldText, lines[i]);
+    if (usedFlags && usedFlags[i]) sc -= 0.3;
+    if (sc > bestScore) { bestScore = sc; best = i; }
+  }
+  return { index: best, score: bestScore };
+}
+
+// 旧段落の体裁(括弧・タブ・役割ラベルなど)を保ちつつ、選んだ原稿行の内容に置き換える
+function buildReplacement(oldText, newLine) {
+  var lab = matchSectionLabel(oldText), t = matchTime(oldText);
+  var newLab = matchSectionLabel(newLine), nt = matchTime(newLine);
+  var res;
+  if (lab && newLab && nt) {
+    res = substituteSection(oldText, { time: nt, trailing: sectionTrailing(newLine, nt) });
+    if (res !== null) return res;
+  }
+  var rolesNew = splitRoles(newLine);
+  if (rolesNew.length > 0 && findRoleHits(oldText).length > 0) {
+    res = substituteRoles(oldText, { roles: rolesNew });
+    if (res !== null) return res;
+  }
+  if (t && nt && trimWS(oldText.replace(t.raw, "")) === "") {
+    res = substituteTime(oldText, nt.norm);
+    if (res !== null) return res;
+  }
+  return replaceKeepingEdges(oldText, trimWS(newLine));
 }
 
 // ------------------------------------------------------------
@@ -603,6 +666,9 @@ function main() {
   }
   var doc = app.activeDocument;
 
+  // テキストフレームを選択して実行 → 1つずつ置き換えモード
+  var selFrame = selectedTextFrame();
+
   var src = File.openDialog("今年の Word 原稿を選択してください (.docx または .txt)");
   if (!src) return;
 
@@ -610,9 +676,25 @@ function main() {
   if (text === null) return;
 
   var model = parseManuscript(text);
+  if (model.rawLines.length === 0) {
+    alert("原稿が空でした。ファイルを確認してください。");
+    return;
+  }
   if (model.presentations.length === 0 && model.events.length === 0) {
     var preview = trimWS(text).substring(0, 120);
-    alert("原稿を解析できませんでした。選んだファイルが大会プログラムの原稿か確認してください。\n\n読み取った内容の先頭:\n" + preview);
+    alert("原稿の構造(発表・セクション)を認識できませんでしたが、行単位の置き換えは可能です。\n\n読み取った内容の先頭:\n" + preview);
+  }
+
+  if (selFrame !== null) {
+    interactiveMode(selFrame, model);
+    return;
+  }
+
+  if (!confirm("テキストボックスが選択されていないため、全自動モードで実行します。\n" +
+               "ページ上のすべてのテキストボックスを上から順に処理します。\n\n" +
+               "実行しますか?\n\n" +
+               "(ボックスを1つずつ確認しながら置き換えたい場合は「いいえ」を押し、\n" +
+               "対象のテキストボックスを選択ツールで選んでから再実行してください)")) {
     return;
   }
 
@@ -628,13 +710,8 @@ function main() {
   // 2) 開催日 (令和X年X月X日（X） をドキュメント全体で置換)
   replaceDates(doc, model, report);
 
-  // 3) プログラム本文ストーリー
-  var story = findMainStory(doc);
-  if (story) {
-    fillMainStory(story, model, report);
-  } else {
-    report.push("[警告] プログラム本文のストーリーが見つかりませんでした。");
-  }
+  // 3) ページ上の全テキストボックスを位置順(上→下、左→右)に処理
+  var replaced = autoFill(doc, model, report);
 
   // 4) 残りの警告
   var i;
@@ -642,9 +719,25 @@ function main() {
   report.push("");
   report.push("※ 会場・〒・事務局・E-mail などの固定情報は自動置換の対象外です。変更がある年は手動で直してください。");
   report.push("※ タイトル内のイタリック等の文字装飾は失われるため、紙面を目視確認してください。");
+  report.push("※ 置き換わらなかった箇所は、そのテキストボックスを選択してスクリプトを再実行すると1つずつ処理できます。");
 
   writeReport(doc, report);
-  alert("流し込みが完了しました。\n\nレポート:\n" + report.join("\n").substring(0, 1500) + "\n\n(全文はドキュメントと同じ場所の txt に保存されています)");
+  alert("流し込みが完了しました (" + replaced + " 箇所)。\n\nレポート:\n" +
+        report.join("\n").substring(0, 1200) +
+        "\n\n(全文はドキュメントと同じ場所の txt に保存されています)");
+}
+
+function selectedTextFrame() {
+  var i, it;
+  try {
+    for (i = 0; i < app.selection.length; i++) {
+      it = app.selection[i];
+      if (it.constructor.name === "TextFrame") return it;
+      // テキスト編集中(カーソルが入っている)場合も対象フレームとみなす
+      if (it.hasOwnProperty("parentTextFrames") && it.parentTextFrames.length > 0) return it.parentTextFrames[0];
+    }
+  } catch (e) {}
+  return null;
 }
 
 function readBinary(src) {
@@ -713,7 +806,13 @@ function replaceTaikaiNumber(doc, model, report) {
   app.findGrepPreferences.findWhat = "第\\s*([0-9０-９]+)\\s*回大会";
   var found = doc.findGrep();
   if (found.length === 0) {
-    report.push("[警告] 紙面に「第◯回大会」が見つかりません。大会回数は手動で確認してください。");
+    // 「第43回」と「大会」が別のフレームに分かれているレイアウトに備えたフォールバック
+    resetFindGrep();
+    app.findGrepPreferences.findWhat = "第\\s*[0-9０-９]+\\s*回";
+    found = doc.findGrep();
+  }
+  if (found.length === 0) {
+    report.push("[警告] 紙面に「第◯回」が見つかりません。大会回数は手動で確認してください。");
     resetFindGrep();
     return;
   }
@@ -748,24 +847,71 @@ function replaceDates(doc, model, report) {
   app.changeGrepPreferences.changeTo = newDate;
   var n = doc.changeGrep().length;
   resetFindGrep();
+  if (n === 0) {
+    // 西暦表記 (2025年9月6日（土) など) のフォールバック
+    app.findGrepPreferences.findWhat = "20[0-9][0-9]\\s*年\\s*[0-9０-９]+月\\s*[0-9０-９]+日（.）?";
+    app.changeGrepPreferences.changeTo = newDate;
+    n = doc.changeGrep().length;
+    resetFindGrep();
+  }
   if (n > 0) report.push("開催日: → " + newDate + " (" + n + " 箇所)");
   else report.push("[警告] 紙面に「令和◯年◯月◯日」形式の日付が見つかりません。開催日はタイトル部を手動で確認してください。(年・月・日が別々のフレームの場合があります)");
 }
 
-function findMainStory(doc) {
-  var i, s, best = null, bestScore = 0, score, txt;
-  for (i = 0; i < doc.stories.length; i++) {
-    s = doc.stories[i];
-    txt = s.contents;
-    score = 0;
-    if (txt.indexOf("開会の辞") >= 0) score += 2;
-    if (txt.indexOf("研究発表") >= 0) score += 2;
-    if (txt.indexOf("発表者") >= 0) score += 1;
-    if (txt.indexOf("司会者") >= 0) score += 1;
-    if (txt.indexOf("閉会の辞") >= 0) score += 1;
-    if (score > bestScore) { bestScore = score; best = s; }
+// ページ上の全テキストフレームを位置順(ページ→上→左)で集める
+function collectSortedTextFrames(doc) {
+  var out = [], p, i, items, it, b;
+  for (p = 0; p < doc.pages.length; p++) {
+    items = doc.pages[p].allPageItems;
+    for (i = 0; i < items.length; i++) {
+      it = items[i];
+      if (it.constructor.name !== "TextFrame") continue;
+      try { b = it.geometricBounds; } catch (e) { continue; }
+      out.push({ frame: it, page: p, y: b[0], x: b[1] });
+    }
   }
-  return bestScore >= 3 ? best : null;
+  out.sort(function (a, b2) {
+    if (a.page !== b2.page) return a.page - b2.page;
+    if (a.y !== b2.y) return a.y - b2.y;
+    return a.x - b2.x;
+  });
+  return out;
+}
+
+// 全テキストボックスを順に処理。置き換えた段落数を返す
+function autoFill(doc, model, report) {
+  var frames = collectSortedTextFrames(doc);
+  var state = newFillState();
+  var i, fr, story, key, done = {};
+  report.push("テキストボックス数: " + frames.length);
+  for (i = 0; i < frames.length; i++) {
+    fr = frames[i];
+    try {
+      story = fr.frame.parentStory;
+      key = String(story.id);
+      if (done[key]) continue;
+      done[key] = 1;
+      fillParagraphs(story.paragraphs, model, state, report);
+    } catch (e) {
+      report.push("[警告] テキストボックスの処理中にエラー: " + e.message);
+    }
+  }
+  if (state.replaced === 0) {
+    report.push("");
+    report.push("[診断] 1箇所も置き換えられませんでした。各テキストボックスの先頭を以下に記録します。");
+    report.push("この内容を確認すると、紙面の文言と原稿の書式のズレが分かります。");
+    for (i = 0; i < frames.length && i < 60; i++) {
+      var head = "";
+      try { head = trimWS(frames[i].frame.parentStory.contents).substring(0, 40); } catch (e2) {}
+      report.push("  box" + (i + 1) + " (p" + (frames[i].page + 1) + "): " + head);
+    }
+  }
+  var used = state.presIdx + 1;
+  if (model.presentations.length > used) {
+    report.push("[警告] 原稿の発表のうち " + (model.presentations.length - used) +
+                " 件が紙面に割り当てられませんでした。発表枠の数を確認してください。");
+  }
+  return state.replaced;
 }
 
 function styleNameOf(para) {
@@ -778,27 +924,36 @@ function setParaText(para, newText) {
   para.contents = newText + (hadCR ? "\r" : "");
 }
 
-function fillMainStory(story, model, report) {
-  var paras = story.paragraphs;
-  var presIdx = -1;          // 現在の発表ブロック
-  var titleDone = false;
-  var evPtr = 0;             // model.events の消費位置
-  var inKonshinkaiZone = false;
+function newFillState() {
+  return { presIdx: -1, titleDone: false, evPtr: 0, inKonshinkaiZone: false, replaced: 0 };
+}
+
+// 段落の集まりを1パス処理する。state を共有すれば複数ストーリー(ボックス)を
+// またいで発表の並び順を追跡できる。
+function fillParagraphs(paras, model, state, report) {
   var i, para, text, plain, lab, t, style, newText, pres;
 
+  function apply(p, txt) {
+    setParaText(p, txt);
+    state.replaced++;
+  }
   function nextEvent(label) {
     var j;
-    for (j = evPtr; j < model.events.length; j++) {
+    for (j = state.evPtr; j < model.events.length; j++) {
       if (model.events[j].label === label ||
           (label === "休憩" && /^休/.test(model.events[j].label))) {
-        evPtr = j + 1;
+        state.evPtr = j + 1;
         return model.events[j];
       }
+    }
+    // 位置順の揺れに備え、先頭からも一度だけ探す
+    for (j = 0; j < model.events.length; j++) {
+      if (model.events[j].label === label) return model.events[j];
     }
     return null;
   }
   function currentPres() {
-    return (presIdx >= 0 && presIdx < model.presentations.length) ? model.presentations[presIdx] : null;
+    return (state.presIdx >= 0 && state.presIdx < model.presentations.length) ? model.presentations[state.presIdx] : null;
   }
 
   for (i = 0; i < paras.length; i++) {
@@ -810,21 +965,24 @@ function fillMainStory(story, model, report) {
     lab = matchSectionLabel(plain);
     t = matchTime(plain);
 
+    // 事務局ブロックに入ったら懇親会ゾーンを抜ける (住所の誤置換を防ぐ)
+    if (/事務局/.test(plain)) { state.inKonshinkaiZone = false; continue; }
+
     // --- セクション見出し行 ---
     if (lab) {
-      inKonshinkaiZone = (lab === "懇親会");
+      state.inKonshinkaiZone = (lab === "懇親会");
       var ev = nextEvent(lab);
       if (ev) {
         newText = substituteSection(text, ev);
         if (newText !== null && newText !== text) {
-          setParaText(para, newText);
+          apply(para, newText);
           report.push("セクション「" + lab + "」: 時刻等を更新");
         }
         if (lab === "基調講演" || lab === "特別講演") {
           // 基調講演ブロックへ (keynote フラグ付きの発表を探す)
           var k;
           for (k = 0; k < model.presentations.length; k++) {
-            if (model.presentations[k].keynote) { presIdx = k; titleDone = false; break; }
+            if (model.presentations[k].keynote) { state.presIdx = k; state.titleDone = false; break; }
           }
         }
       } else {
@@ -833,10 +991,10 @@ function fillMainStory(story, model, report) {
       continue;
     }
 
-    if (inKonshinkaiZone) {
+    if (state.inKonshinkaiZone) {
       newText = substituteKonshinkaiLine(text, model.konshinkai);
       if (newText !== null && newText !== text) {
-        setParaText(para, newText);
+        apply(para, newText);
         report.push("懇親会情報を更新: " + trimWS(newText).substring(0, 30));
       }
       continue;
@@ -845,16 +1003,16 @@ function fillMainStory(story, model, report) {
     // --- 単独の時間行 → 次の発表ブロックへ ---
     if (t && trimWS(plain.replace(t.raw, "")) === "") {
       // 次の一般発表 (keynote 以外) に進む
-      var j = presIdx + 1;
+      var j = state.presIdx + 1;
       while (j < model.presentations.length && model.presentations[j].keynote) j++;
       if (j < model.presentations.length) {
-        presIdx = j; titleDone = false;
-        pres = model.presentations[presIdx];
+        state.presIdx = j; state.titleDone = false;
+        pres = model.presentations[state.presIdx];
         if (pres.time) {
           newText = substituteTime(text, pres.time);
-          if (newText !== null && newText !== text) setParaText(para, newText);
+          if (newText !== null && newText !== text) apply(para, newText);
         }
-        report.push("発表" + (presIdx + 1) + ": 時間 " + (pres.time || "(なし)"));
+        report.push("発表" + (state.presIdx + 1) + ": 時間 " + (pres.time || "(なし)"));
       } else {
         report.push("[警告] 紙面の発表枠が原稿の発表件数より多いようです。＜" + plain + "＞以降は手動で調整してください。");
       }
@@ -862,11 +1020,11 @@ function fillMainStory(story, model, report) {
     }
 
     // --- 発表者・司会者・講演者行 ---
-    if (/(発表者|講演者|司会・発表|司会者)/.test(plain)) {
+    if (/(発表者|講演者|司会・発表|司会者|講師)/.test(plain)) {
       pres = currentPres();
       newText = substituteRoles(text, pres);
       if (newText !== null && newText !== text) {
-        setParaText(para, newText);
+        apply(para, newText);
         report.push("担当者を更新: " + trimWS(newText).substring(0, 40));
       } else if (pres === null) {
         report.push("[警告] 対応する発表が見つからない担当者行: " + plain.substring(0, 30));
@@ -876,9 +1034,10 @@ function fillMainStory(story, model, report) {
 
     // --- タイトル行 (段落スタイル or 文脈で判定) ---
     pres = currentPres();
-    if (pres && !titleDone) {
+    if (pres && !state.titleDone) {
       var isTitleStyle = /タイトル|講演/.test(style);
-      // スタイル名で判定できない場合も、発表ブロック直後の本文行はタイトルとみなす
+      // 短すぎる行(飾り文字など)はタイトルとみなさない (スタイル名が合えば別)
+      if (!isTitleStyle && normForSim(plain).length < 6) continue;
       var parts = splitTitle(pres.title);
       // 次の段落が副タイトル用スタイルか確認
       var nextStyle = "";
@@ -888,30 +1047,139 @@ function fillMainStory(story, model, report) {
       var nextIsSub = /副タイトル|サブ/.test(nextStyle);
 
       if (nextIsSub && parts.sub) {
-        setParaText(para, parts.main);
-        setParaText(paras[ni], parts.sub);
+        apply(para, parts.main);
+        apply(paras[ni], parts.sub);
         report.push("タイトル更新(主+副): " + parts.main.substring(0, 30));
         i = ni; // 副タイトル段落は処理済み
       } else if (nextIsSub && !parts.sub) {
-        setParaText(para, pres.title);
-        setParaText(paras[ni], "");
+        apply(para, pres.title);
+        apply(paras[ni], "");
         report.push("タイトル更新: " + pres.title.substring(0, 30) + " ([注意] 副題フレームを空にしました)");
         i = ni;
       } else {
-        setParaText(para, pres.title);
+        apply(para, pres.title);
         report.push("タイトル更新: " + pres.title.substring(0, 30));
       }
-      titleDone = true;
+      state.titleDone = true;
       continue;
     }
   }
+}
 
-  // 消費されなかった発表を警告
-  var used = presIdx + 1;
+// 旧テスト互換のラッパー (1ストーリーを独立して処理)
+function fillMainStory(story, model, report) {
+  var state = newFillState();
+  fillParagraphs(story.paragraphs, model, state, report);
+  var used = state.presIdx + 1;
   if (model.presentations.length > used) {
     report.push("[警告] 原稿の発表のうち " + (model.presentations.length - used) +
                 " 件が紙面に入りきりませんでした。発表枠の数を確認してください。");
   }
+  return state.replaced;
+}
+
+// 選択したテキストボックスの段落を、原稿の行と突き合わせて1つずつ置き換える
+function interactiveMode(frame, model) {
+  var paras, i;
+  function shorten(s) { s = trimWS(s); return s.length > 60 ? s.substring(0, 60) + "…" : s; }
+  try {
+    paras = frame.paragraphs;
+    if (paras.length === 0) paras = frame.parentStory.paragraphs;
+  } catch (e) {
+    alert("選択したテキストボックスを読めませんでした: " + e.message);
+    return;
+  }
+  var items = [];
+  for (i = 0; i < paras.length; i++) {
+    var tx = paras[i].contents.replace(/\r$/, "");
+    if (trimWS(tx) === "") continue;
+    items.push({ para: paras[i], text: tx });
+  }
+  if (items.length === 0) {
+    alert("選択したテキストボックスに本文がありません。");
+    return;
+  }
+  var used = [];
+  var applied = 0;
+
+  var w = new Window("dialog", "1つずつ置き換え — 紙面の段落と原稿の行を対応させてください");
+  w.orientation = "column";
+  w.alignChildren = "fill";
+  var row = w.add("group");
+  row.orientation = "row";
+  row.alignChildren = "top";
+  var colL = row.add("panel", undefined, "紙面 (選択したボックスの段落)");
+  colL.alignChildren = "fill";
+  var lbOld = colL.add("listbox", undefined, [], { multiselect: false });
+  lbOld.preferredSize = [420, 400];
+  var colR = row.add("panel", undefined, "原稿 (新しい内容)");
+  colR.alignChildren = "fill";
+  var lbNew = colR.add("listbox", undefined, [], { multiselect: false });
+  lbNew.preferredSize = [420, 400];
+  for (i = 0; i < items.length; i++) lbOld.add("item", shorten(items[i].text));
+  for (i = 0; i < model.rawLines.length; i++) lbNew.add("item", shorten(model.rawLines[i]));
+
+  w.add("statictext", undefined, "置き換え後のテキスト (自由に編集できます。時刻や括弧の体裁は紙面側を維持します):");
+  var edit = w.add("edittext", undefined, "", { multiline: true });
+  edit.preferredSize = [860, 60];
+  var btns = w.add("group");
+  btns.alignment = "center";
+  var bApply = btns.add("button", undefined, "置き換えて次へ");
+  var bSkip = btns.add("button", undefined, "スキップ (次へ)");
+  var bClose = btns.add("button", undefined, "終了");
+
+  lbNew.onChange = function () {
+    var oi = lbOld.selection ? lbOld.selection.index : -1;
+    var nix = lbNew.selection ? lbNew.selection.index : -1;
+    if (oi < 0 || nix < 0) return;
+    edit.text = buildReplacement(items[oi].text, model.rawLines[nix]);
+  };
+  lbOld.onChange = function () {
+    var oi = lbOld.selection ? lbOld.selection.index : -1;
+    if (oi < 0) { edit.text = ""; return; }
+    var sug = suggestLineIndex(items[oi].text, model.rawLines, used);
+    if (sug.index >= 0) {
+      if (lbNew.selection && lbNew.selection.index === sug.index) lbNew.onChange();
+      else lbNew.selection = sug.index; // onChange が発火して edit が更新される
+      lbNew.revealItem ? lbNew.revealItem(lbNew.items[sug.index]) : 0;
+    } else {
+      edit.text = "";
+    }
+  };
+  function advance(fromIdx) {
+    var n = fromIdx + 1;
+    if (n < items.length) {
+      lbOld.selection = n;
+      lbOld.revealItem ? lbOld.revealItem(lbOld.items[n]) : 0;
+    }
+  }
+  bApply.onClick = function () {
+    var oi = lbOld.selection ? lbOld.selection.index : -1;
+    if (oi < 0) return;
+    var nix = lbNew.selection ? lbNew.selection.index : -1;
+    try {
+      setParaText(items[oi].para, edit.text);
+      items[oi].text = edit.text;
+      lbOld.items[oi].text = "✓ " + shorten(edit.text);
+      if (nix >= 0) {
+        used[nix] = true;
+        lbNew.items[nix].text = "✓ " + shorten(model.rawLines[nix]);
+      }
+      applied++;
+    } catch (e) {
+      alert("置き換えに失敗しました: " + e.message);
+    }
+    advance(oi);
+  };
+  bSkip.onClick = function () {
+    var oi = lbOld.selection ? lbOld.selection.index : -1;
+    advance(oi < 0 ? -1 : oi);
+  };
+  bClose.onClick = function () { w.close(); };
+
+  lbOld.selection = 0;
+  w.show();
+  alert(applied + " 箇所を置き換えました。\n別のテキストボックスも処理する場合は、そのボックスを選択してスクリプトを再実行してください。");
 }
 
 function writeReport(doc, report) {

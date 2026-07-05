@@ -220,5 +220,36 @@ const sjisDec = decodeTextAuto(binOf('manuscript_sjis.txt'));
 check('manuscript_sjis.txt → null (File APIフォールバックへ)', sjisDec === null || countKeywordHits(sjisDec.text) === 0,
       sjisDec && sjisDec.encoding);
 
+// ---- 1つずつ置き換えモード: 類似度による原稿行の推定と置換文生成 ----
+console.log('interactive helpers:');
+
+const rawLines = model.rawLines;
+check('rawLines あり', rawLines.length >= 40, String(rawLines.length));
+
+function suggestFor(oldText) {
+  const s = suggestLineIndex(oldText, rawLines, []);
+  return rawLines[s.index];
+}
+check('時間行の推定', suggestFor('〈10：30 － 11：00〉') === '＜10:30－11:00＞', suggestFor('〈10：30 － 11：00〉'));
+check('セクション行の推定', /開会の辞/.test(suggestFor('開会の辞　〈10：20 － 10：30〉\t英米文化学会会長　田嶋 倫雄（日本大学）')),
+      suggestFor('開会の辞　〈10：20 － 10：30〉'));
+check('司会者行の推定', /司会者　君塚/.test(suggestFor('司会者　君塚 淳一（茨城大学）')),
+      suggestFor('司会者　君塚 淳一（茨城大学）'));
+check('懇親会行の推定', /懇親会/.test(suggestFor('懇親会　〈18：00 － 20：00〉　To the Herbs 市ヶ谷店')),
+      suggestFor('懇親会　〈18：00 － 20：00〉　To the Herbs 市ヶ谷店'));
+
+// buildReplacement: 紙面側の体裁(括弧・全角コロン・タブ)を維持して内容だけ差し替え
+const brSection = buildReplacement('開会の辞　〈10：20 － 10：30〉\t会長　旧会長（旧大学）', '開会の辞　＜10:20 – 10:30＞ 　　　　　　　　　　　　会長　田嶋　倫雄　（日本大学）');
+check('buildReplacement: セクション', brSection === '開会の辞　〈10：20 － 10：30〉\t会長　田嶋　倫雄　（日本大学）', brSection);
+
+const brTime = buildReplacement('〈11：00 － 11：30〉', '＜11:00－11:30＞');
+check('buildReplacement: 時間 (体裁維持)', brTime === '〈11：00 － 11：30〉', brTime);
+
+const brRole = buildReplacement('発表者　旧名前（旧大学）', '発表者　長谷川　千春（至学館大学）');
+check('buildReplacement: 発表者', brRole === '発表者　長谷川　千春（至学館大学）', brRole);
+
+const brTitle = buildReplacement('　旧タイトルの行　', '越境する武士道—西部劇映画『レッド・サン』における文化混淆とグローバル中世主義—');
+check('buildReplacement: タイトル (前後空白維持)', brTitle === '　越境する武士道—西部劇映画『レッド・サン』における文化混淆とグローバル中世主義—　', brTitle);
+
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
 process.exit(failures === 0 ? 0 : 1);
