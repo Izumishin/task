@@ -107,6 +107,7 @@ py -m pip install pdfminer.six
 | `pdfminer.six が見つかりません` | `py -m pip install pdfminer.six` を実行 |
 | チェック結果が全部NGになる | 選んだPDFが古い/別の論文でないか確認。またスキャンPDF(画像のみ)はテキスト抽出できないため、必ずInDesignから書き出したPDFを使う |
 | InDesignスクリプトで「列が見つかりません」 | CSVのヘッダ行がテンプレート(`templates/修正指示リスト_テンプレート.csv`)と同じか確認 |
+| プレビューCSVや実行時のダイアログが文字化けする | スクリプトファイルが古い版(BOMなし)の可能性。最新の `apply_corrections.jsx` をScripts Panelの `Scripts Panel` フォルダに上書きコピーして再実行(ExtendScriptはBOMのない.jsxを日本語WindowsではShift_JISとして誤読するため) |
 | 文字化けしたCSVがExcelで開かれる | Excelの「データ > テキストまたはCSVから」でUTF-8を指定して読み込む |
 
 ## 3. ファイル一覧

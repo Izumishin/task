@@ -1,4 +1,4 @@
-// apply_corrections.jsx — 修正指示リストCSVを読み込み、InDesignドキュメントに一括適用する
+﻿// apply_corrections.jsx — 修正指示リストCSVを読み込み、InDesignドキュメントに一括適用する
 //
 // 対象: 修正指示リストのうち「自動置換可」列が Y の行だけを処理します。
 //
@@ -216,8 +216,9 @@
     var prefix = (mode === "preview") ? "プレビュー_" : "適用結果_";
     var outFile = new File(csvFile.parent + "/" + prefix + csvFile.displayName);
     outFile.encoding = "UTF-8";
+    outFile.lineFeed = "Windows"; // 改行をCRLFにしてExcel/メモ帳互換に
     outFile.open("w");
-    outFile.write("﻿"); // Excelで開けるようにBOMを付ける
+    outFile.write("\uFEFF"); // Excelで開けるようにBOMを付ける(エスケープ表記で安全に)
     outFile.writeln("No,ページ(指示),結果,ページ(ヒット),置換箇所の文脈,メモ");
     for (var m = 0; m < results.length; m++) {
         var cells = [];
