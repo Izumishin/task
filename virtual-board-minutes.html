@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>バーチャル役員会 議事録 — 会社役員退任と個人事業主への移行</title>
+<style>
+  :root{
+    --bg:#f4f5f7; --card:#ffffff; --ink:#1e2430; --sub:#5b6472; --line:#e3e6eb;
+    --growth:#0e7c5a; --cfo:#1f5fa8; --cco:#b05c12; --guard:#6a4fa3; --devil:#b3262e; --chair:#2b3446;
+    --growth-bg:#eaf6f1; --cfo-bg:#eaf1f9; --cco-bg:#faf1e6; --guard-bg:#f1edf8; --devil-bg:#faeaeb; --chair-bg:#eef1f6;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#151920; --card:#1e242e; --ink:#e8ebf0; --sub:#9aa4b2; --line:#323a46;
+      --growth:#4cc9a0; --cfo:#7ab3ea; --cco:#e8a35c; --guard:#b49de0; --devil:#ef8087; --chair:#c6d0e0;
+      --growth-bg:#1c2b26; --cfo-bg:#1c2531; --cco-bg:#2d2519; --guard-bg:#262031; --devil-bg:#2f1e20; --chair-bg:#232a36;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#151920; --card:#1e242e; --ink:#e8ebf0; --sub:#9aa4b2; --line:#323a46;
+    --growth:#4cc9a0; --cfo:#7ab3ea; --cco:#e8a35c; --guard:#b49de0; --devil:#ef8087; --chair:#c6d0e0;
+    --growth-bg:#1c2b26; --cfo-bg:#1c2531; --cco-bg:#2d2519; --guard-bg:#262031; --devil-bg:#2f1e20; --chair-bg:#232a36;
+  }
+  :root[data-theme="light"]{
+    --bg:#f4f5f7; --card:#ffffff; --ink:#1e2430; --sub:#5b6472; --line:#e3e6eb;
+    --growth:#0e7c5a; --cfo:#1f5fa8; --cco:#b05c12; --guard:#6a4fa3; --devil:#b3262e; --chair:#2b3446;
+    --growth-bg:#eaf6f1; --cfo-bg:#eaf1f9; --cco-bg:#faf1e6; --guard-bg:#f1edf8; --devil-bg:#faeaeb; --chair-bg:#eef1f6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Hiragino Sans","Hiragino Kaku Gothic ProN","Yu Gothic UI","Noto Sans JP",Meiryo,system-ui,sans-serif;
+    line-height:1.75;font-size:15.5px;}
+  .wrap{max-width:920px;margin:0 auto;padding:36px 20px 64px}
+  header h1{font-size:1.45rem;margin:0 0 4px;letter-spacing:.02em}
+  header .date{color:var(--sub);font-size:.85rem;margin-bottom:20px}
+  .agenda{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px 24px;margin-bottom:14px}
+  .agenda h2{font-size:1rem;margin:0 0 8px;color:var(--sub);letter-spacing:.08em}
+  .agenda p.main{font-size:1.08rem;font-weight:700;margin:0 0 12px}
+  .facts{display:flex;flex-wrap:wrap;gap:8px;margin:0;padding:0;list-style:none}
+  .facts li{background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:4px 14px;font-size:.83rem;color:var(--sub)}
+  .facts li b{color:var(--ink)}
+  .note{font-size:.8rem;color:var(--sub);margin:14px 4px 26px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;margin-bottom:18px;overflow:hidden}
+  .card .head{display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line)}
+  .card .avatar{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
+  .card .who{flex:1;min-width:0}
+  .card .role{font-weight:700;font-size:1.02rem}
+  .card .brief{font-size:.78rem;color:var(--sub)}
+  .stance{font-size:.78rem;font-weight:700;padding:4px 12px;border-radius:999px;white-space:nowrap}
+  .card .body{padding:16px 22px 8px}
+  .card .oneliner{font-weight:700;margin:0 0 10px;font-size:1rem}
+  .card ul{margin:0 0 14px;padding-left:1.3em}
+  .card li{margin-bottom:9px}
+  .card li:last-child{margin-bottom:0}
+  .card li b{font-weight:700}
+  .g  .avatar{background:var(--growth-bg)} .g  .role,.g .oneliner{color:var(--growth)} .g  .stance{background:var(--growth-bg);color:var(--growth)} .g{border-top:4px solid var(--growth)}
+  .f  .avatar{background:var(--cfo-bg)}    .f  .role,.f .oneliner{color:var(--cfo)}    .f  .stance{background:var(--cfo-bg);color:var(--cfo)}       .f{border-top:4px solid var(--cfo)}
+  .c  .avatar{background:var(--cco-bg)}    .c  .role,.c .oneliner{color:var(--cco)}    .c  .stance{background:var(--cco-bg);color:var(--cco)}       .c{border-top:4px solid var(--cco)}
+  .l  .avatar{background:var(--guard-bg)}  .l  .role,.l .oneliner{color:var(--guard)}  .l  .stance{background:var(--guard-bg);color:var(--guard)}   .l{border-top:4px solid var(--guard)}
+  .d  .avatar{background:var(--devil-bg)}  .d  .role,.d .oneliner{color:var(--devil)}  .d  .stance{background:var(--devil-bg);color:var(--devil)}   .d{border-top:4px solid var(--devil)}
+  .chair{border-top:4px solid var(--chair)}
+  .chair .avatar{background:var(--chair-bg)}
+  .chair .role{color:var(--chair)}
+  .chair h3{font-size:.95rem;letter-spacing:.06em;margin:22px 0 10px;color:var(--sub)}
+  .chair h3:first-child{margin-top:0}
+  .verdict{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 6px}
+  @media(max-width:640px){.verdict{grid-template-columns:1fr}}
+  .verdict .col{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .verdict .col h4{margin:0 0 8px;font-size:.9rem}
+  .verdict .adopt h4{color:var(--growth)} .verdict .reject h4{color:var(--devil)}
+  .verdict ul{margin:0;padding-left:1.2em;font-size:.92rem}
+  .verdict li{margin-bottom:8px}
+  .box{border-radius:10px;padding:16px 20px;margin-bottom:12px;border:1px solid var(--line)}
+  .box.concl{background:var(--chair-bg)}
+  .box h4{margin:0 0 8px;font-size:.98rem}
+  .box.concl h4{color:var(--chair)}
+  .box.risk h4{color:var(--devil)}
+  .box.action h4{color:var(--growth)}
+  .box p{margin:0 0 8px}
+  .box ul,.box ol{margin:0;padding-left:1.3em}
+  .box li{margin-bottom:7px}
+  .phase{font-size:.92rem}
+  .phase b{display:inline-block;min-width:0}
+  table{width:100%;border-collapse:collapse;font-size:.88rem;margin-top:4px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--sub);font-weight:600;white-space:nowrap}
+  .tablewrap{overflow-x:auto}
+  footer{color:var(--sub);font-size:.78rem;margin-top:28px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>🏛 バーチャル役員会 議事録</h1>
+  <div class="date">開催日:2026年7月12日|議題提出者:本人(52歳・現役会社役員)</div>
+</header>
+
+<div class="agenda">
+  <h2>議題</h2>
+  <p class="main">会社役員を退き、個人事業主として独立したい。目標は来年(2027年)中。</p>
+  <ul class="facts">
+    <li>年齢 <b>52歳</b></li>
+    <li>現職 <b>会社役員(常勤)</b></li>
+    <li>副業 <b>ココナラ 売上 年約100万円</b>(手数料22%控除後 手取り約78万円)</li>
+    <li>必要生活費 <b>年400万円</b></li>
+    <li>貯蓄 <b>2年分以上(約800万円〜)</b></li>
+    <li>課題 <b>辞め時・辞め方・後任不在の引き継ぎ</b></li>
+  </ul>
+</div>
+<p class="note">※ 各役員は忖度なしの本音で発言する取り決め。発言順:成長 → 財務 → 顧客 → 自由 → 悪魔 → 議長総括。</p>
+
+<!-- 成長責任者 -->
+<div class="card g">
+  <div class="head">
+    <div class="avatar">🚀</div>
+    <div class="who"><div class="role">成長責任者(CGO)</div><div class="brief">事業を伸ばす攻めの視点</div></div>
+    <span class="stance">条件付きGO</span>
+  </div>
+  <div class="body">
+    <p class="oneliner">「独立は可能。ただし『ココナラの延長線』では絶対に届かない。単価のケタを変えろ」</p>
+    <ul>
+      <li><b>ギャップの正体:</b>手取り400万円を作るには事業売上でおよそ550〜600万円が要る。現状100万円だから約6倍。ココナラの数千〜数万円案件の積み上げで6倍は、時間が物理的に足りない。件数を増やす戦略はこの場で捨てるべき。</li>
+      <li><b>本当の商品はあなたの経歴:</b>52歳・現役役員という経歴こそ売り物。中小企業向けの顧問・アドバイザリー契約(月3〜10万円 × 5〜8社)やスポットコンサルなら、月商25〜50万円は構造的に射程に入る。ココナラは「実績と評価が並ぶショーウィンドウ=集客の入口」に格下げし、主戦場を法人直販へ移す。</li>
+      <li><b>18ヶ月は検証に十分:</b>2026年内に高単価商品を2つ設計して実際に売ってみる。法人直販が1件でも取れれば「単価転換仮説」は立つ。取れなければ戦略を変えればいい。時間はまだ味方だ。</li>
+      <li><b>最大の資産は在職中の人脈:</b>辞めてから営業を始めるのは最悪手。在職中に「独立後に発注する意向のある見込み客」を3社確保してから辞める。これを退任の条件に含めたい。</li>
+    </ul>
+  </div>
+</div>
+
+<!-- 財務責任者 -->
+<div class="card f">
+  <div class="head">
+    <div class="avatar">💰</div>
+    <div class="who"><div class="role">財務責任者(CFO)</div><div class="brief">コスト・採算を数字で判断</div></div>
+    <span class="stance">現時点ではNO GO/ゲート達成でGO</span>
+  </div>
+  <div class="body">
+    <p class="oneliner">「期限で辞めるな、数字で辞めろ。ゲート条件を今日決めて、判定日を動かさないこと」</p>
+    <ul>
+      <li><b>必要売上の試算:</b>可処分400万円を確保するには、所得税・住民税・国民健康保険・国民年金・経費を織り込むと<b>事業売上550〜650万円</b>が必要。現状の手取り約78万円とのギャップは6〜8倍。この数字を全員が直視すること。</li>
+      <li><b>初年度の罠:</b>退任翌年の住民税と国保保険料は<b>前年の役員報酬ベース</b>で請求される。しかも役員は雇用保険の対象外で失業給付なし。初年度の実質支出は400万円ではなく<b>500万円超</b>を見込むべきで、貯蓄800万円の実質持久力は「2年」ではなく<b>約1.5年</b>と読む。</li>
+      <li><b>ゲート条件(提案):</b>退任表明の条件を「<b>直近6ヶ月の平均月商25万円以上(年商300万円ペース)+ 直販比率50%以上</b>」とする。これなら退任後にフルタイム化した際、必要ラインへの到達が合理的に見込める。</li>
+      <li><b>今すぐ打てる手:</b>① 小規模企業共済への加入(役員も加入できる場合が多い。退職金づくり+全額所得控除)、② 役員退職慰労金規程の確認(退職所得課税は最も有利な現金化手段)、③ 退任後の国保 vs 健保任意継続の保険料比較、④ 青色申告の準備。</li>
+      <li><b>撤退基準も先に決める:</b>判定日に未達なら退任を1年延期。「あと少しだから」で判定日を動かした瞬間、この計画は願望に戻る。</li>
+    </ul>
+  </div>
+</div>
+
+<!-- 顧客責任者 -->
+<div class="card c">
+  <div class="head">
+    <div class="avatar">🤝</div>
+    <div class="who"><div class="role">顧客責任者(CCO)</div><div class="brief">顧客・相手にとっての価値を最優先</div></div>
+    <span class="stance">検証が先</span>
+  </div>
+  <div class="body">
+    <p class="oneliner">「顧客は『あなた個人』に付いているのか、『ココナラと価格』に付いているのか。そこがすべての分かれ目」</p>
+    <ul>
+      <li><b>最初にやるべき検証:</b>リピーター上位5人に「なぜ他でなく自分を選んだか」「どんな困りごとに、いくらまでなら払うか」を直接聞く。単価6倍仮説の裏付けは、市場調査ではなくこのインタビューから始まる。</li>
+      <li><b>規約上の注意:</b>ココナラ経由の顧客を規約に反して直接取引へ誘導するのは禁止行為。直販顧客はプラットフォームの外で、別チャネルとしてゼロから育てること。</li>
+      <li><b>もう一つの「顧客」は今の会社:</b>後任不在のまま辞め方を誤れば、独立後の最有力見込み客である業界人脈・取引先を焼くことになる。逆に、期限を切った誠実な引き継ぎと文書化は「あの人は最後まで信頼できた」という<b>最強の営業資産</b>になる。辞め方そのものがマーケティングだと考えてほしい。</li>
+      <li><b>商品設計の軸:</b>「安いスキルの切り売り」から「相手の経営課題の解決」へ。顧客にとっても、片手間の副業者より専業でコミットする事業者のほうが価値は高い。独立は顧客価値と矛盾しない——商品を正しく作り直せば、だが。</li>
+    </ul>
+  </div>
+</div>
+
+<!-- 自由の守護者 -->
+<div class="card l">
+  <div class="head">
+    <div class="avatar">🛡</div>
+    <div class="who"><div class="role">自由の守護者</div><div class="brief">時間・健康・自由を守る係</div></div>
+    <span class="stance">賛成/ただし設計変更要求</span>
+  </div>
+  <div class="body">
+    <p class="oneliner">「方向には賛成。だが今の設計のままだと、独立する前にあなたが潰れる」</p>
+    <ul>
+      <li><b>危険な足し算:</b>常勤役員のフルタイム + 売上6倍化の営業と納品 + 後任不在の引き継ぎ準備。52歳の体でこれを18ヶ月続けるのは無理だと最初に言っておく。副業投下時間に<b>週15時間の上限</b>を設け、その枠内で成立する単価の商品しか作らないこと。時間を増やす方向を封じれば、単価を上げる方向に強制される——これは成長戦略とも一致する。</li>
+      <li><b>「後任がいない」はあなたの人質ではない:</b>後任問題は本来、会社の経営課題だ。誠実にやるべきだが、無期限に背負えば55歳、58歳と同じ議題を繰り返すことになる。<b>表明から6〜9ヶ月</b>と期限を切り、その間に業務の文書化と移行支援をやり切ったら手放す。それが誠実さと自由の両立点だ。</li>
+      <li><b>牢屋の引っ越しをするな:</b>独立の目的が自由なら、24時間レスポンス勝負の格安受注を拡大するのは本末転倒。顧問型・予約型など、時間を自分でコントロールできる商売を選ぶこと。</li>
+      <li><b>健康をKPIに入れる:</b>睡眠と年1回の人間ドックを計画の正式項目にする。倒れたら全計画の価値はゼロになる。</li>
+    </ul>
+  </div>
+</div>
+
+<!-- 悪魔の代弁者 -->
+<div class="card d">
+  <div class="head">
+    <div class="avatar">😈</div>
+    <div class="who"><div class="role">悪魔の代弁者</div><div class="brief">あえて反対・リスクだけを言う係</div></div>
+    <span class="stance">反対</span>
+  </div>
+  <div class="body">
+    <p class="oneliner">「年100万円——それが市場があなたに付けた値札だ。『独立すれば6倍』の根拠を誰か一つでも示したか?」</p>
+    <ul>
+      <li><b>実績が反証している:</b>副業を続けてきた結果が年商100万円。時間が増えれば売上が増えるという保証はどこにもない。単価6倍の顧問構想は、現時点では1件の受注実績もない<b>ただの願望</b>だ。</li>
+      <li><b>不可逆性:</b>52歳で辞めて54歳で失敗したら、元の水準での再就職はほぼ不可能。会社員の1年と独立の1年ではリスクの通貨が違う。この決断だけは後戻りできない。</li>
+      <li><b>人脈は「会社の看板」かもしれない:</b>頼みの綱の役員人脈は、あなた個人ではなく会社への発注かもしれない。看板が外れた瞬間に電話が鳴らなくなるのは、独立失敗の最も典型的なパターンだ。</li>
+      <li><b>辞めても辞められないリスク:</b>取締役の辞任自体はいつでもできるが、辞任によって法律・定款の員数を割る場合、後任が決まるまで<b>権利義務取締役</b>として責任が残る(会社法346条)。後任不在のまま強行すれば「辞めたのに辞められていない」状態と業界での悪評、両方あり得る。</li>
+      <li><b>その800万円は老後資金だ:</b>52歳の貯蓄は事業資金である前に老後の原資。溶かした場合に取り返す時間はもう残っていない。</li>
+      <li><b>「来年中」は計画ではなく願望:</b>売上条件の付いていない期限は、「期限が来た」という理由だけで飛び降りるための装置にしかならない。</li>
+    </ul>
+  </div>
+</div>
+
+<!-- 議長 -->
+<div class="card chair">
+  <div class="head">
+    <div class="avatar">⚖️</div>
+    <div class="who"><div class="role">議長総括</div><div class="brief">論点整理と裁定 — 多数決でも折衷でもなく、採否を明示する</div></div>
+  </div>
+  <div class="body">
+    <h3>論点の整理</h3>
+    <p>争点は3つに集約された。<b>①食えるのか</b>(売上6〜8倍のギャップをどう埋めるか)、<b>②いつ・どう辞めるか</b>(期限駆動か数字駆動か、後任不在への対処)、<b>③潰れないか</b>(健康と、52歳という不可逆性)。全員が一致したのは「ココナラの薄利多売の延長では成立しない」という一点。対立したのは「期限を守るべきか、数字を待つべきか」。</p>
+
+    <h3>採用した意見/捨てた意見</h3>
+    <div class="verdict">
+      <div class="col adopt">
+        <h4>✅ 採用</h4>
+        <ul>
+          <li><b>財務のゲート方式</b>を計画の背骨にする。期限駆動ではなく数字駆動。判定日は動かさない。</li>
+          <li><b>成長の「単価のケタを変える・法人直販シフト」</b>。ココナラは入口に格下げ。</li>
+          <li><b>顧客の「リピーターインタビューが最初の検証」「辞め方=営業資産」</b>。</li>
+          <li><b>守護者の「週15時間上限」「引き継ぎは6〜9ヶ月で期限を切る」</b>。</li>
+          <li><b>悪魔の指摘のうち2点を前提に組込</b>:初年度の税・社保インパクト(実質持久力1.5年で計画)と、「人脈=会社の看板」リスク(在職中に<b>個人名</b>で受注できるかを検証して潰す)。</li>
+        </ul>
+      </div>
+      <div class="col reject">
+        <h4>❌ 却下</h4>
+        <ul>
+          <li><b>「来年中と決めたのだから先に退任日を確定し背水の陣」</b>——却下。悪魔の言う通り不可逆で、現時点で根拠となる受注実績がない。</li>
+          <li><b>悪魔の「辞めるな(現状維持)」の全面採用</b>——却下。52歳はリスクであると同時に、体力・人脈・信用が揃った<b>動ける最後の窓</b>でもある。ただし「ゲート未達なら自動延期」という形で部分的に採用する。</li>
+          <li><b>ココナラ内で件数を積み増す薄利多売路線</b>——却下。週15時間の制約下では時間が先に尽きる。</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3>【結論案】</h3>
+    <div class="box concl">
+      <h4>「2027年末退任」を仮目標とする、ゲート駆動の二段移行</h4>
+      <p class="phase"><b>Phase 1(いま〜2026年12月)助走:</b>役員は続けながら、高単価商品2つ(顧問パッケージ/スポットコンサル)を設計して実際に売る。直販チャネル(個人サイト+紹介網)を開設。リピーター顧客インタビューで単価仮説を検証。小規模企業共済・退職慰労金規程・税シミュレーションで財務の守りを固める。副業は週15時間上限。</p>
+      <p class="phase"><b>ゲート判定(2027年6月末)——この日は動かさない:</b>①直近6ヶ月の平均月商25万円以上、②直販比率50%以上、③独立後の発注意向がある顧客3社。<b>3条件達成</b>→ 2027年夏に辞任を表明し、6〜9ヶ月の引き継ぎ(業務文書化・後任または外部委託体制の移行支援)を経て<b>2027年末〜2028年3月に退任</b>。<b>未達</b> → 退任を1年延期して在職継続。焦って飛ばない。</p>
+    </div>
+
+    <h3>【残る懸念】</h3>
+    <div class="box risk">
+      <ul>
+        <li><b>権利義務取締役リスク:</b>辞任で法定・定款の員数を割る場合、後任選任まで責任が残る(会社法346条)。後任確保は最終的に会社側の必須課題だが、自分の退任計画の外部依存要因になる。<b>司法書士・税理士への早期相談が必須。</b></li>
+        <li><b>初年度の税・社保インパクト:</b>住民税・国保は前年の役員報酬ベース。+100万円規模の上振れを資金計画に織り込んだか、判定前に必ず数字で確認する。</li>
+        <li><b>単価6倍はまだ仮説:</b>Phase 1で法人直販の初受注が取れるまで、この計画の中核は未実証のまま。</li>
+        <li><b>健康:</b>二重稼働の18ヶ月。守護者の週15時間上限が守られなければ計画ごと破綻する。</li>
+      </ul>
+    </div>
+
+    <h3>【次のアクション】</h3>
+    <div class="box action">
+      <div class="tablewrap">
+      <table>
+        <tr><th>期限</th><th>アクション</th></tr>
+        <tr><td>今週</td><td>ココナラのリピーター上位5名に「選んだ理由」「直接頼むならいくら払うか」をヒアリング(規約の範囲内で)</td></tr>
+        <tr><td>2週間以内</td><td>高単価商品の一次案を文書化(顧問パッケージ/スポットコンサルの内容・価格・対象)</td></tr>
+        <tr><td>今月中(7月)</td><td>小規模企業共済の加入可否確認と申込/役員退職慰労金規程の有無を確認</td></tr>
+        <tr><td>8月中</td><td>税理士に「退任翌年の税・社保シミュレーション」を依頼し、必要売上ラインを確定/司法書士に役員辞任の手続・員数要件を相談</td></tr>
+        <tr><td>9月末まで</td><td>直販チャネル開設(個人サイト+紹介依頼)/独立後の発注可能性がある法人3社と対話開始</td></tr>
+        <tr><td>2026年12月</td><td>中間レビュー(この役員会を再招集し、Phase 1の進捗と仮説の生死を判定)</td></tr>
+        <tr><td><b>2027年6月末</b></td><td><b>ゲート判定</b> → 達成なら辞任表明へ/未達なら1年延期</td></tr>
+      </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>バーチャル役員会 議事録|2026-07-12 開催|前提数値は本人申告に基づく。税・法務の個別判断は専門家への確認を前提とする。</footer>
+</div>
+</body>
+</html>
