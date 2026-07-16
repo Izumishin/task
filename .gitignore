@@ -1,2 +1,5 @@
 node_modules/
 tasks.json
+cards.json
+requests.json
+uploads/

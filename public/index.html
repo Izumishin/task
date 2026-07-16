@@ -3,455 +3,420 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>タスク管理</title>
+  <title>名刺データ管理台帳</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans', sans-serif;
       background: #f0f2f5;
       min-height: 100vh;
       padding: 24px 16px;
     }
-    .container {
-      max-width: 600px;
-      margin: 0 auto;
-    }
-    h1 {
-      font-size: 1.6rem;
-      font-weight: 700;
-      color: #1a1a2e;
-      margin-bottom: 12px;
-    }
+    .container { max-width: 860px; margin: 0 auto; }
+    h1 { font-size: 1.5rem; font-weight: 700; color: #1a1a2e; margin-bottom: 4px; }
+    .subtitle { font-size: 0.85rem; color: #888; margin-bottom: 20px; }
 
-    /* 天気ウィジェット */
-    .weather {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      background: linear-gradient(135deg, #74b9ff, #0984e3);
-      color: white;
-      padding: 10px 16px;
-      border-radius: 12px;
-      margin-bottom: 14px;
-      font-size: 0.95rem;
-    }
-    .weather-icon { font-size: 1.8rem; line-height: 1; }
-    .weather-temp { font-size: 1.3rem; font-weight: 700; }
-    .weather-desc { font-size: 0.85rem; opacity: 0.9; }
-    .weather-loading { opacity: 0.7; font-size: 0.9rem; }
-
-    /* 両学長メッセージ */
-    .ryogakucho {
-      display: flex;
-      align-items: flex-start;
-      gap: 10px;
-      background: #fff9e6;
-      border: 2px solid #f6d860;
-      border-radius: 12px;
-      padding: 12px 14px;
-      margin-bottom: 20px;
-      cursor: pointer;
-      transition: background 0.2s, transform 0.1s;
-      user-select: none;
-    }
-    .ryogakucho:hover { background: #fff3cc; transform: translateY(-1px); }
-    .ryogakucho:active { transform: translateY(0); }
-    .ryogakucho-icon { font-size: 1.8rem; line-height: 1; flex-shrink: 0; }
-    .ryogakucho-text { font-size: 0.9rem; color: #5a4200; line-height: 1.5; }
-    .ryogakucho-hint { font-size: 0.75rem; color: #bfa040; margin-top: 4px; }
-
-    .add-form {
-      display: flex;
-      gap: 8px;
-      margin-bottom: 24px;
-    }
-    .add-form input {
-      flex: 1;
-      padding: 10px 14px;
-      border: 2px solid #ddd;
-      border-radius: 8px;
-      font-size: 1rem;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-    .add-form input:focus { border-color: #4a90e2; }
-    .add-form button {
-      padding: 10px 20px;
-      background: #4a90e2;
-      color: white;
+    .main-tabs { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 2px solid #ddd; }
+    .main-tabs button {
+      padding: 10px 22px;
       border: none;
-      border-radius: 8px;
+      background: none;
       font-size: 1rem;
+      color: #666;
       cursor: pointer;
-      transition: background 0.2s;
-      white-space: nowrap;
+      border-bottom: 3px solid transparent;
+      margin-bottom: -2px;
     }
-    .add-form button:hover { background: #357abd; }
+    .main-tabs button.active { color: #4a90e2; border-bottom-color: #4a90e2; font-weight: 700; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
 
-    .filter-tabs {
-      display: flex;
-      gap: 4px;
-      margin-bottom: 16px;
-    }
-    .filter-tabs button {
-      padding: 6px 14px;
-      border: none;
-      border-radius: 6px;
-      background: #e2e8f0;
-      color: #555;
-      cursor: pointer;
-      font-size: 0.875rem;
-      transition: all 0.2s;
-    }
-    .filter-tabs button.active {
-      background: #4a90e2;
-      color: white;
-    }
-
-    .task-list { display: flex; flex-direction: column; gap: 8px; }
-    .task-item {
-      display: flex;
-      align-items: center;
-      gap: 12px;
+    .card-box {
       background: white;
-      padding: 12px 14px;
       border-radius: 10px;
       box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-      transition: opacity 0.2s;
+      padding: 16px;
+      margin-bottom: 16px;
     }
-    .task-item.done { opacity: 0.55; }
-    .task-item input[type="checkbox"] {
-      width: 18px; height: 18px;
-      cursor: pointer;
-      accent-color: #4a90e2;
-      flex-shrink: 0;
-    }
-    .task-title {
-      flex: 1;
-      font-size: 0.95rem;
-      color: #333;
-      cursor: pointer;
-      word-break: break-word;
-    }
-    .task-item.done .task-title {
-      text-decoration: line-through;
-      color: #999;
-    }
-    .task-title[contenteditable="true"] {
-      outline: 2px solid #4a90e2;
-      border-radius: 4px;
-      padding: 2px 6px;
-    }
-    .task-date {
-      font-size: 0.75rem;
-      color: #aaa;
-      flex-shrink: 0;
-    }
-    .delete-btn {
-      background: none;
-      border: none;
-      color: #ccc;
-      cursor: pointer;
-      font-size: 1.1rem;
-      padding: 2px 6px;
-      border-radius: 4px;
-      transition: color 0.2s;
-      flex-shrink: 0;
-    }
-    .delete-btn:hover { color: #e53e3e; }
+    .card-box h2 { font-size: 1rem; color: #333; margin-bottom: 12px; }
+    .hint { font-size: 0.8rem; color: #888; margin-bottom: 12px; line-height: 1.6; }
 
-    .empty-msg {
-      text-align: center;
-      color: #aaa;
+    .form-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+    .form-grid input, .form-grid select, .form-grid textarea {
+      padding: 8px 12px;
+      border: 2px solid #ddd;
+      border-radius: 8px;
       font-size: 0.9rem;
-      padding: 32px 0;
+      outline: none;
+      font-family: inherit;
     }
-    .stats {
-      font-size: 0.8rem;
-      color: #888;
-      text-align: right;
-      margin-bottom: 8px;
+    .form-grid input:focus, .form-grid select:focus, .form-grid textarea:focus { border-color: #4a90e2; }
+    .form-grid textarea { width: 100%; min-height: 70px; resize: vertical; }
+    button.primary {
+      padding: 8px 18px;
+      background: #4a90e2;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      cursor: pointer;
+      white-space: nowrap;
     }
+    button.primary:hover { background: #357abd; }
+
+    .search-box { width: 100%; padding: 8px 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 0.9rem; outline: none; margin-bottom: 12px; }
+    .search-box:focus { border-color: #4a90e2; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th { text-align: left; color: #888; font-weight: 600; padding: 6px 8px; border-bottom: 2px solid #eee; white-space: nowrap; }
+    td { padding: 8px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+    tr:hover td { background: #f8fafd; }
+    .table-wrap { overflow-x: auto; }
+
+    .badge { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 0.75rem; white-space: nowrap; }
+    .badge.ver { background: #e8f0fe; color: #2a5db0; }
+    .badge.no-pdf { background: #fdeaea; color: #c0392b; }
+    .badge.s-受付 { background: #fdeaea; color: #c0392b; }
+    .badge.s-制作中 { background: #fef4e6; color: #b26a00; }
+    .badge.s-PDF支給済 { background: #e6f7ee; color: #1e7e46; }
+    .badge.s-完了 { background: #eee; color: #777; }
+    .badge.t-新規 { background: #e8f0fe; color: #2a5db0; }
+    .badge.t-変更 { background: #fef4e6; color: #b26a00; }
+    .badge.t-増刷 { background: #e6f7ee; color: #1e7e46; }
+
+    .btn-sm {
+      padding: 4px 10px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      background: white;
+      font-size: 0.78rem;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .btn-sm:hover { background: #f0f4f8; }
+    .btn-sm.dl { border-color: #4a90e2; color: #4a90e2; font-weight: 600; }
+    .btn-sm.dl:hover { background: #e8f0fe; }
+    .btn-sm:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-sm.danger { color: #c0392b; border-color: #e5b4ae; }
+    .btn-sm.danger:hover { background: #fdeaea; }
+    .actions { display: flex; gap: 4px; flex-wrap: wrap; }
+
+    .empty-msg { text-align: center; color: #aaa; font-size: 0.9rem; padding: 28px 0; }
+    .msg { font-size: 0.85rem; padding: 8px 12px; border-radius: 8px; margin-bottom: 12px; display: none; }
+    .msg.ok { background: #e6f7ee; color: #1e7e46; display: block; }
+    .msg.err { background: #fdeaea; color: #c0392b; display: block; }
+    .req-detail { color: #555; white-space: pre-wrap; word-break: break-word; max-width: 320px; }
+    .req-date { color: #aaa; font-size: 0.75rem; white-space: nowrap; }
+    .footer-link { font-size: 0.75rem; color: #aaa; text-align: right; margin-top: 16px; }
+    .footer-link a { color: #999; }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>タスク管理</h1>
+    <h1>名刺データ管理台帳</h1>
+    <div class="subtitle">増刷は台帳から最新PDFをダウンロードするだけ。依頼が必要なのは「新規」と「変更」のみです。</div>
 
-    <!-- 天気ウィジェット -->
-    <div class="weather" id="weather">
-      <span class="weather-loading">🌤️ 天気を取得中...</span>
+    <div class="main-tabs">
+      <button class="active" data-tab="cards">台帳</button>
+      <button data-tab="requests">依頼</button>
     </div>
 
-    <!-- 両学長メッセージ -->
-    <div class="ryogakucho" id="ryogakucho" title="クリックで別のメッセージ">
-      <span class="ryogakucho-icon">🦁</span>
-      <div>
-        <div class="ryogakucho-text" id="ryogakuchoMsg"></div>
-        <div class="ryogakucho-hint">タップで別の言葉に切り替え</div>
+    <div class="msg" id="msg"></div>
+
+    <!-- ===== 台帳タブ ===== -->
+    <div class="tab-panel active" id="panel-cards">
+      <div class="card-box">
+        <h2>社員を登録(制作用)</h2>
+        <div class="form-grid">
+          <input type="text" id="cardName" placeholder="氏名 *" style="width:140px">
+          <input type="text" id="cardKana" placeholder="ふりがな" style="width:140px">
+          <input type="text" id="cardDept" placeholder="部署" style="width:140px">
+          <input type="text" id="cardTitle" placeholder="役職" style="width:120px">
+          <button class="primary" id="addCardBtn">登録</button>
+        </div>
+      </div>
+
+      <div class="card-box">
+        <h2>名刺台帳</h2>
+        <div class="hint">
+          営業の方へ: <b>増刷(変更なし)は「最新PDF」ボタンからダウンロードして、そのまま下版してください。制作への依頼は不要です。</b><br>
+          制作の方へ: PDFを差し替えると版数が自動で +1 され、常に最新の1ファイルだけが取得されます。
+        </div>
+        <input type="text" class="search-box" id="cardSearch" placeholder="氏名・ふりがな・部署で検索...">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>氏名</th><th>部署</th><th>役職</th><th>版</th><th>更新日</th><th>下版PDF</th><th></th></tr>
+            </thead>
+            <tbody id="cardList"></tbody>
+          </table>
+        </div>
+        <div class="empty-msg" id="cardEmpty" style="display:none">台帳が空です。上のフォームから社員を登録してください。</div>
       </div>
     </div>
 
-    <form class="add-form" id="addForm">
-      <input type="text" id="titleInput" placeholder="新しいタスクを入力..." autocomplete="off">
-      <button type="submit">追加</button>
-    </form>
-    <div class="filter-tabs">
-      <button class="active" data-filter="all">すべて</button>
-      <button data-filter="todo">未完了</button>
-      <button data-filter="done">完了済み</button>
+    <!-- ===== 依頼タブ ===== -->
+    <div class="tab-panel" id="panel-requests">
+      <div class="card-box">
+        <h2>依頼フォーム(営業用)</h2>
+        <div class="hint">
+          <b>増刷(変更なし)はこのフォーム不要です。</b>台帳タブから最新PDFをダウンロードしてください。<br>
+          記録を残したい増刷のみ、種別「増刷」で登録できます。
+        </div>
+        <div class="form-grid" style="margin-bottom:8px">
+          <select id="reqType">
+            <option value="変更">変更(役職・部署・連絡先など)</option>
+            <option value="新規">新規(入社など)</option>
+            <option value="増刷">増刷(記録用・任意)</option>
+          </select>
+          <select id="reqCard"></select>
+          <input type="text" id="reqRequester" placeholder="依頼者(営業担当名) *" style="width:180px">
+        </div>
+        <div class="form-grid">
+          <textarea id="reqDetail" placeholder="変更内容を入力(例: 4/1付で課長に昇進。役職を「営業課長」に変更)"></textarea>
+          <button class="primary" id="addReqBtn">依頼を送信</button>
+        </div>
+      </div>
+
+      <div class="card-box">
+        <h2>依頼一覧</h2>
+        <div class="hint">制作の方へ: 作業の進行に合わせてステータスを進めてください。営業は「PDF支給済」になったら台帳からPDFを取得し、内容確認のうえ「完了」にしてください。</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>種別</th><th>対象者</th><th>依頼者</th><th>内容</th><th>ステータス</th><th>日時</th><th></th></tr>
+            </thead>
+            <tbody id="reqList"></tbody>
+          </table>
+        </div>
+        <div class="empty-msg" id="reqEmpty" style="display:none">依頼はありません。</div>
+      </div>
     </div>
-    <div class="stats" id="stats"></div>
-    <div class="task-list" id="taskList"></div>
+
+    <div class="footer-link">旧タスク管理は <a href="/tasks.html">こちら</a></div>
   </div>
 
   <script>
-    // ===== 両学長メッセージ =====
-    const MESSAGES = [
-      'タスクは一個ずつこなしていったらええねん！焦らんでええで〜',
-      '今日もええ一日にしていこな！小さな一歩が積み重なって大きな成果になるんやで！',
-      '完了したタスクを見てみ？ちゃんと積み上げてるやん！めちゃすごいで！',
-      'やる気がでーへん時こそ、一番小さいタスクから始めてみ。動き出したら止まらんで！',
-      '自由になりたいなら、まず今日のタスクを片付けることやで。未来の自分に感謝されるで！',
-      'お金も時間も、管理する習慣が大事やねん。タスク管理もその第一歩やで！',
-      '「あとでやろう」は一番あかんやつや！今できることは今やってまいな！',
-      '毎日コツコツ続けること、それが最強の戦略やで。焦らんと積み上げていこ！',
-      '完了ボタンを押す瞬間が一番気持ちええやろ？その快感を積み重ねていくんや！',
-      'しんどい時は休んでもええ。でもまた動き出せたらそれでええねん。応援してるで！',
-      'タスクを書き出すだけでも頭がスッキリするで！まずは全部出してまいな！',
-      '今日できたこと、ちゃんと自分でほめたってや。それが明日への活力になるんやから！',
-    ];
+    let cards = [];
+    let requests = [];
+    const STATUSES = ['受付', '制作中', 'PDF支給済', '完了'];
 
-    let lastMsgIdx = -1;
-    function showRandomMessage() {
-      let idx;
-      do { idx = Math.floor(Math.random() * MESSAGES.length); } while (idx === lastMsgIdx);
-      lastMsgIdx = idx;
-      document.getElementById('ryogakuchoMsg').textContent = MESSAGES[idx];
+    // ===== 共通 =====
+    function escHtml(str) {
+      return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
-    showRandomMessage();
-    document.getElementById('ryogakucho').addEventListener('click', showRandomMessage);
 
-    // ===== 天気 =====
-    const WEATHER_CODES = {
-      113: ['☀️', '晴れ'],
-      116: ['⛅', '一部曇り'],
-      119: ['☁️', '曇り'],
-      122: ['☁️', '曇り'],
-      143: ['🌫️', '霧'],
-      176: ['🌦️', 'にわか雨'],
-      179: ['🌨️', 'にわか雪'],
-      182: ['🌧️', '霙'],
-      185: ['🌧️', '凍雨'],
-      200: ['⛈️', '雷雨'],
-      227: ['🌨️', '吹雪'],
-      230: ['❄️', '大吹雪'],
-      248: ['🌫️', '霧'],
-      260: ['🌫️', '濃霧'],
-      263: ['🌦️', '小雨'],
-      266: ['🌧️', '小雨'],
-      281: ['🌧️', '凍雨'],
-      284: ['🌧️', '凍雨'],
-      293: ['🌧️', '小雨'],
-      296: ['🌧️', '小雨'],
-      299: ['🌧️', '雨'],
-      302: ['🌧️', '雨'],
-      305: ['🌧️', '大雨'],
-      308: ['🌧️', '大雨'],
-      311: ['🌧️', '凍雨'],
-      314: ['🌧️', '凍雨'],
-      317: ['🌧️', '霙'],
-      320: ['🌨️', '雪'],
-      323: ['🌨️', '小雪'],
-      326: ['🌨️', '小雪'],
-      329: ['❄️', '雪'],
-      332: ['❄️', '雪'],
-      335: ['❄️', '大雪'],
-      338: ['❄️', '大雪'],
-      350: ['🌧️', '雹'],
-      353: ['🌦️', '小雨'],
-      356: ['🌧️', '大雨'],
-      359: ['🌧️', '大雨'],
-      362: ['🌧️', '霙'],
-      365: ['🌧️', '霙'],
-      368: ['🌨️', '小雪'],
-      371: ['❄️', '大雪'],
-      374: ['🌧️', '雹'],
-      377: ['🌧️', '雹'],
-      386: ['⛈️', '雷雨'],
-      389: ['⛈️', '大雷雨'],
-      392: ['⛈️', '雷雪'],
-      395: ['❄️', '大雪'],
-    };
+    let msgTimer;
+    function showMsg(text, ok) {
+      const el = document.getElementById('msg');
+      el.textContent = text;
+      el.className = 'msg ' + (ok ? 'ok' : 'err');
+      clearTimeout(msgTimer);
+      msgTimer = setTimeout(() => { el.className = 'msg'; }, 4000);
+    }
 
-    async function fetchWeather() {
-      const el = document.getElementById('weather');
-      if (!navigator.geolocation) {
-        el.innerHTML = '<span>📍 位置情報が使えません</span>';
-        return;
+    async function api(url, options) {
+      const res = await fetch(url, options);
+      if (!res.ok) {
+        let error = 'エラーが発生しました';
+        try { error = (await res.json()).error || error; } catch {}
+        throw new Error(error);
       }
-      navigator.geolocation.getCurrentPosition(async pos => {
-        try {
-          const { latitude: lat, longitude: lon } = pos.coords;
-          const res = await fetch(`https://wttr.in/${lat},${lon}?format=j1`);
-          const data = await res.json();
-          const cur = data.current_condition[0];
-          const code = Number(cur.weatherCode);
-          const temp = cur.temp_C;
-          const [icon, desc] = WEATHER_CODES[code] || ['🌡️', '不明'];
-          el.innerHTML = `
-            <span class="weather-icon">${icon}</span>
-            <div>
-              <div style="display:flex;align-items:baseline;gap:6px">
-                <span class="weather-temp">${temp}℃</span>
-                <span class="weather-desc">${desc}</span>
-              </div>
-              <div style="font-size:0.78rem;opacity:0.8">
-                体感 ${cur.FeelsLikeC}℃ 　湿度 ${cur.humidity}%
-              </div>
+      return res.status === 204 ? null : res.json();
+    }
+
+    document.querySelectorAll('.main-tabs button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.main-tabs button').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
+      });
+    });
+
+    // ===== 台帳 =====
+    async function fetchCards() {
+      cards = await api('/api/cards');
+      renderCards();
+      renderCardSelect();
+      renderRequests();
+    }
+
+    function renderCards() {
+      const q = document.getElementById('cardSearch').value.trim().toLowerCase();
+      const filtered = cards.filter(c =>
+        !q || [c.name, c.kana, c.department].some(v => (v || '').toLowerCase().includes(q))
+      );
+      const tbody = document.getElementById('cardList');
+      document.getElementById('cardEmpty').style.display = filtered.length ? 'none' : 'block';
+      tbody.innerHTML = filtered.map(c => `
+        <tr data-id="${c.id}">
+          <td><b>${escHtml(c.name)}</b>${c.kana ? `<br><span style="font-size:0.72rem;color:#999">${escHtml(c.kana)}</span>` : ''}</td>
+          <td>${escHtml(c.department)}</td>
+          <td>${escHtml(c.title)}</td>
+          <td>${c.version > 0 ? `<span class="badge ver">v${String(c.version).padStart(2,'0')}</span>` : '<span class="badge no-pdf">PDF未登録</span>'}</td>
+          <td class="req-date">${escHtml(c.updated_at)}</td>
+          <td>
+            <div class="actions">
+              <button class="btn-sm dl" data-act="download" ${c.pdfFile ? '' : 'disabled'}>⬇ 最新PDF</button>
+              <button class="btn-sm" data-act="upload">差し替え</button>
             </div>
-          `;
-        } catch {
-          el.innerHTML = '<span>🌤️ 天気を取得できませんでした</span>';
-        }
-      }, () => {
-        el.innerHTML = '<span style="opacity:0.8;font-size:0.9rem">📍 位置情報を許可すると天気が表示されます</span>';
-      });
-    }
-    fetchWeather();
-
-    // ===== タスク管理 =====
-    let tasks = [];
-    let filter = 'all';
-
-    async function fetchTasks() {
-      const res = await fetch('/api/tasks');
-      tasks = await res.json();
-      render();
-    }
-
-    async function addTask(title) {
-      const res = await fetch('/api/tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title })
-      });
-      if (res.ok) {
-        const task = await res.json();
-        tasks.unshift(task);
-        render();
-      }
-    }
-
-    async function toggleTask(id) {
-      const task = tasks.find(t => t.id === id);
-      const res = await fetch(`/api/tasks/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ done: !task.done })
-      });
-      if (res.ok) {
-        const updated = await res.json();
-        tasks = tasks.map(t => t.id === id ? updated : t);
-        render();
-      }
-    }
-
-    async function renameTask(id, title) {
-      if (!title.trim()) return fetchTasks();
-      await fetch(`/api/tasks/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title })
-      });
-      tasks = tasks.map(t => t.id === id ? { ...t, title } : t);
-    }
-
-    async function deleteTask(id) {
-      const res = await fetch(`/api/tasks/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        tasks = tasks.filter(t => t.id !== id);
-        render();
-      }
-    }
-
-    function render() {
-      const filtered = tasks.filter(t => {
-        if (filter === 'todo') return !t.done;
-        if (filter === 'done') return t.done;
-        return true;
-      });
-
-      const total = tasks.length;
-      const done = tasks.filter(t => t.done).length;
-      document.getElementById('stats').textContent = total ? `${done} / ${total} 完了` : '';
-
-      const list = document.getElementById('taskList');
-      if (filtered.length === 0) {
-        list.innerHTML = '<div class="empty-msg">タスクがありません</div>';
-        return;
-      }
-
-      list.innerHTML = filtered.map(task => `
-        <div class="task-item ${task.done ? 'done' : ''}" data-id="${task.id}">
-          <input type="checkbox" ${task.done ? 'checked' : ''}>
-          <span class="task-title" title="ダブルクリックで編集">${escHtml(task.title)}</span>
-          <span class="task-date">${formatDate(task.created_at)}</span>
-          <button class="delete-btn" title="削除">×</button>
-        </div>
+          </td>
+          <td>
+            <div class="actions">
+              <button class="btn-sm" data-act="edit">編集</button>
+              <button class="btn-sm danger" data-act="delete">削除</button>
+            </div>
+          </td>
+        </tr>
       `).join('');
 
-      list.querySelectorAll('.task-item').forEach(el => {
-        const id = Number(el.dataset.id);
-        el.querySelector('input[type="checkbox"]').addEventListener('change', () => toggleTask(id));
-        el.querySelector('.delete-btn').addEventListener('click', () => deleteTask(id));
+      tbody.querySelectorAll('button[data-act]').forEach(btn => {
+        const id = Number(btn.closest('tr').dataset.id);
+        btn.addEventListener('click', () => cardAction(btn.dataset.act, id));
+      });
+    }
 
-        const titleEl = el.querySelector('.task-title');
-        titleEl.addEventListener('dblclick', () => {
-          titleEl.contentEditable = 'true';
-          titleEl.focus();
-          const range = document.createRange();
-          range.selectNodeContents(titleEl);
-          window.getSelection().removeAllRanges();
-          window.getSelection().addRange(range);
+    async function cardAction(act, id) {
+      const card = cards.find(c => c.id === id);
+      try {
+        if (act === 'download') {
+          location.href = `/api/cards/${id}/pdf`;
+        } else if (act === 'upload') {
+          const input = document.createElement('input');
+          input.type = 'file';
+          input.accept = 'application/pdf';
+          input.onchange = async () => {
+            if (!input.files[0]) return;
+            const fd = new FormData();
+            fd.append('pdf', input.files[0]);
+            try {
+              await api(`/api/cards/${id}/pdf`, { method: 'POST', body: fd });
+              showMsg(`${card.name} さんの下版PDFを差し替えました(版数が上がりました)`, true);
+              fetchCards();
+            } catch (e) { showMsg(e.message, false); }
+          };
+          input.click();
+        } else if (act === 'edit') {
+          const name = prompt('氏名', card.name);
+          if (name === null) return;
+          const department = prompt('部署', card.department);
+          if (department === null) return;
+          const title = prompt('役職', card.title);
+          if (title === null) return;
+          await api(`/api/cards/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, department, title })
+          });
+          showMsg('台帳を更新しました', true);
+          fetchCards();
+        } else if (act === 'delete') {
+          if (!confirm(`${card.name} さんを台帳から削除しますか?(PDFも削除されます)`)) return;
+          await api(`/api/cards/${id}`, { method: 'DELETE' });
+          showMsg('削除しました', true);
+          fetchCards();
+        }
+      } catch (e) { showMsg(e.message, false); }
+    }
+
+    document.getElementById('addCardBtn').addEventListener('click', async () => {
+      const name = document.getElementById('cardName').value;
+      const kana = document.getElementById('cardKana').value;
+      const department = document.getElementById('cardDept').value;
+      const title = document.getElementById('cardTitle').value;
+      try {
+        await api('/api/cards', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, kana, department, title })
         });
-        titleEl.addEventListener('blur', () => {
-          titleEl.contentEditable = 'false';
-          renameTask(id, titleEl.textContent);
-        });
-        titleEl.addEventListener('keydown', e => {
-          if (e.key === 'Enter') { e.preventDefault(); titleEl.blur(); }
-          if (e.key === 'Escape') { titleEl.contentEditable = 'false'; fetchTasks(); }
+        ['cardName','cardKana','cardDept','cardTitle'].forEach(i => document.getElementById(i).value = '');
+        showMsg('社員を登録しました。下版PDFを「差し替え」からアップロードしてください', true);
+        fetchCards();
+      } catch (e) { showMsg(e.message, false); }
+    });
+
+    document.getElementById('cardSearch').addEventListener('input', renderCards);
+
+    // ===== 依頼 =====
+    function renderCardSelect() {
+      const sel = document.getElementById('reqCard');
+      sel.innerHTML = '<option value="">対象者を選択...</option>' +
+        cards.map(c => `<option value="${c.id}">${escHtml(c.name)}(${escHtml(c.department)})</option>`).join('');
+      updateReqForm();
+    }
+
+    function updateReqForm() {
+      const type = document.getElementById('reqType').value;
+      document.getElementById('reqCard').style.display = type === '新規' ? 'none' : '';
+      document.getElementById('reqDetail').placeholder = type === '新規'
+        ? '新規作成に必要な情報を入力してください(必須)\n氏名: \nふりがな: \n部署: \n役職: \n電話: \nメール: '
+        : type === '増刷'
+          ? '部数やメモがあれば入力(任意)'
+          : '変更内容を入力(例: 4/1付で課長に昇進。役職を「営業課長」に変更)';
+    }
+    document.getElementById('reqType').addEventListener('change', updateReqForm);
+
+    async function fetchRequests() {
+      requests = await api('/api/requests');
+      renderRequests();
+    }
+
+    function renderRequests() {
+      const tbody = document.getElementById('reqList');
+      document.getElementById('reqEmpty').style.display = requests.length ? 'none' : 'block';
+      tbody.innerHTML = requests.map(r => {
+        const card = cards.find(c => c.id === r.cardId);
+        const target = r.type === '新規' ? '(新規)' : card ? card.name : '(削除済み)';
+        const statusIdx = STATUSES.indexOf(r.status);
+        const next = statusIdx >= 0 && statusIdx < STATUSES.length - 1 ? STATUSES[statusIdx + 1] : null;
+        return `
+        <tr data-id="${r.id}">
+          <td><span class="badge t-${r.type}">${r.type}</span></td>
+          <td><b>${escHtml(target)}</b></td>
+          <td>${escHtml(r.requester)}</td>
+          <td class="req-detail">${escHtml(r.detail)}</td>
+          <td><span class="badge s-${r.status}">${r.status}</span></td>
+          <td class="req-date">${escHtml(r.created_at)}</td>
+          <td>${next ? `<button class="btn-sm" data-next="${next}">→ ${next}</button>` : ''}</td>
+        </tr>`;
+      }).join('');
+
+      tbody.querySelectorAll('button[data-next]').forEach(btn => {
+        const id = Number(btn.closest('tr').dataset.id);
+        btn.addEventListener('click', async () => {
+          try {
+            await api(`/api/requests/${id}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status: btn.dataset.next })
+            });
+            fetchRequests();
+          } catch (e) { showMsg(e.message, false); }
         });
       });
     }
 
-    function escHtml(str) {
-      return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    }
-
-    function formatDate(str) {
-      const d = new Date(str);
-      return `${d.getMonth()+1}/${d.getDate()}`;
-    }
-
-    document.getElementById('addForm').addEventListener('submit', async e => {
-      e.preventDefault();
-      const input = document.getElementById('titleInput');
-      const title = input.value.trim();
-      if (title) { await addTask(title); input.value = ''; }
+    document.getElementById('addReqBtn').addEventListener('click', async () => {
+      const type = document.getElementById('reqType').value;
+      const cardId = document.getElementById('reqCard').value;
+      const requester = document.getElementById('reqRequester').value;
+      const detail = document.getElementById('reqDetail').value;
+      try {
+        await api('/api/requests', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type, cardId: cardId ? Number(cardId) : null, requester, detail })
+        });
+        document.getElementById('reqDetail').value = '';
+        showMsg('依頼を受け付けました。進捗は依頼一覧のステータスで確認できます', true);
+        fetchRequests();
+      } catch (e) { showMsg(e.message, false); }
     });
 
-    document.querySelectorAll('.filter-tabs button').forEach(btn => {
-      btn.addEventListener('click', () => {
-        filter = btn.dataset.filter;
-        document.querySelectorAll('.filter-tabs button').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        render();
-      });
-    });
-
-    fetchTasks();
+    fetchCards();
+    fetchRequests();
   </script>
 </body>
 </html>
