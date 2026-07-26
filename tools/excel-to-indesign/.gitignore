@@ -1,0 +1,7 @@
+# 個人情報を含むデータファイルはコミットしない
+*.xlsx
+*.xls
+*.csv
+*.txt
+!README.md
+out/
