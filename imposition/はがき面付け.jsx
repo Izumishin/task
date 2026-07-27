@@ -393,7 +393,7 @@
         var d = app.dialogs.add({ name: SCRIPT_NAME, canCancel: true });
         var col = d.dialogColumns.add();
 
-        var pSrc = col.borderPanels.add();
+        var pSrc = panel(col);
         var r1 = pSrc.dialogRows.add();
         r1.staticTexts.add({ staticLabel: "総ページ数（レコード数）" });
         var ePages = r1.integerEditboxes.add({
@@ -413,7 +413,7 @@
             selectedIndex: DEFAULTS.crop
         });
 
-        var pGrid = col.borderPanels.add();
+        var pGrid = panel(col);
         var r2 = pGrid.dialogRows.add();
         r2.staticTexts.add({ staticLabel: "面付け　列数" });
         var eCols = r2.integerEditboxes.add({ editValue: DEFAULTS.cols, minimumValue: 1, maximumValue: 50 });
@@ -432,7 +432,7 @@
         r4.staticTexts.add({ staticLabel: "縦" });
         var eGy = mmBox(r4, DEFAULTS.gapY, 0);
 
-        var pSheet = col.borderPanels.add();
+        var pSheet = panel(col);
         var r5 = pSheet.dialogRows.add();
         var cSheet = r5.checkboxControls.add({
             staticLabel: "用紙サイズを指定する（オフ = 面付けサイズ＋余白で自動）",
@@ -447,7 +447,7 @@
         r7.staticTexts.add({ staticLabel: "自動時の余白" });
         var eMargin = mmBox(r7, DEFAULTS.margin, 0);
 
-        var pOrder = col.borderPanels.add();
+        var pOrder = panel(col);
         var r8 = pOrder.dialogRows.add();
         r8.staticTexts.add({ staticLabel: "面付け順" });
         var dOrder = r8.dropdowns.add({
@@ -455,7 +455,7 @@
             selectedIndex: DEFAULTS.order
         });
 
-        var pMark = col.borderPanels.add();
+        var pMark = panel(col);
         var r9 = pMark.dialogRows.add();
         var cMarks = r9.checkboxControls.add({ staticLabel: "トンボを作成する", checkedState: DEFAULTS.marks });
         var r10 = pMark.dialogRows.add();
@@ -464,7 +464,7 @@
         r10.staticTexts.add({ staticLabel: "オフセット" });
         var eMoff = mmBox(r10, DEFAULTS.markOffset, 0);
 
-        var pMisc = col.borderPanels.add();
+        var pMisc = panel(col);
         var r11 = pMisc.dialogRows.add();
         var cFit = r11.checkboxControls.add({
             staticLabel: "サイズが違う場合は自動でフィットさせる",
@@ -559,6 +559,11 @@
     }
 
     // ------------------------------------------------------------- ユーティリティ
+    // borderPanel の直下に dialogRow は置けないため、dialogColumn を1枚挟む
+    function panel(col) {
+        return col.borderPanels.add().dialogColumns.add();
+    }
+
     function mmBox(row, value, min) {
         return row.measurementEditboxes.add({
             editUnits: MeasurementUnits.MILLIMETERS,
