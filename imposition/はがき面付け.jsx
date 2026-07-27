@@ -8,8 +8,17 @@
  *   - トンボ（レジストレーション）を自動作画
  *   - 大量ページはドキュメント分割保存に対応
  *
- * 使い方: InDesign を起動 → ファイル → スクリプト → 本ファイルをダブルクリック
- * 対応: InDesign CS6 以降（CS4/CS5 でも動作するはずですが未検証）
+ * 使い方: InDesign を起動 → ウィンドウ → ユーティリティ → スクリプト →
+ *         本ファイルをダブルクリック
+ * 対応: InDesign CS6 以降
+ *
+ * ── 単位について ─────────────────────────────────────────────
+ *   InDesign のスクリプトが返す／受け取る数値の単位は、
+ *   ルーラー設定に左右されると事故のもとなので、
+ *   app.scriptPreferences.measurementUnit を POINTS に固定して扱う。
+ *   ダイアログの measurementEditbox も editValue は常にポイントで、
+ *   editUnits は「表示と入力の単位」を変えるだけである点に注意。
+ *   → 内部計算はすべてポイント。ユーザーに見せる数値だけ mm に変換する。
  */
 
 #targetengine "session"
@@ -18,8 +27,12 @@
     "use strict";
 
     var SCRIPT_NAME = "はがき自動面付け";
+    var PT_PER_MM   = 72 / 25.4;          // 1mm = 2.834645…pt
 
-    // ---------------------------------------------------------------- 既定値
+    function mm(v) { return v * PT_PER_MM; }   // mm → ポイント
+    function toMM(v) { return v / PT_PER_MM; } // ポイント → mm
+
+    // ------------------------------------------------------- 既定値（すべて mm）
     var DEFAULTS = {
         cols: 4,
         rows: 2,
@@ -31,6 +44,7 @@
         useSheet: false,
         sheetW: 545,
         sheetH: 394,
+        placement: 0,      // 0 = 中央, 1 = 左上（0,0 起点）
         order: 0,          // 0 = 順並び, 1 = 断裁積み
         marks: true,
         markLen: 5,
@@ -46,34 +60,41 @@
         return;
     }
 
-    var pdfFile = File.openDialog("面付けする PDF を選択してください", pdfFilter());
-    if (!pdfFile) { return; }
+    var savedUnit = app.scriptPreferences.measurementUnit;
+    app.scriptPreferences.measurementUnit = MeasurementUnits.POINTS;
 
-    var detectedPages = detectPageCount(pdfFile);
-    var detectedSize  = detectTrimSize(pdfFile);
+    try {
+        var pdfFile = File.openDialog("面付けする PDF を選択してください", pdfFilter());
+        if (!pdfFile) { return; }
 
-    var cfg = showConfigDialog(detectedPages, detectedSize);
-    if (!cfg) { return; }
+        var detectedPages = detectPageCount(pdfFile);
+        var detectedSize  = detectTrimSize(pdfFile);   // mm
 
-    var outFolder = null;
-    if (cfg.splitEvery > 0) {
-        outFolder = Folder.selectDialog("分割したドキュメントの保存先フォルダーを選択してください");
-        if (!outFolder) { return; }
+        var cfg = showConfigDialog(detectedPages, detectedSize);
+        if (!cfg) { return; }
+
+        var outFolder = null;
+        if (cfg.splitEvery > 0) {
+            outFolder = Folder.selectDialog("分割したドキュメントの保存先フォルダーを選択してください");
+            if (!outFolder) { return; }
+        }
+
+        app.doScript(
+            function () { build(pdfFile, cfg, outFolder); },
+            ScriptLanguage.JAVASCRIPT,
+            undefined,
+            UndoModes.FAST_ENTIRE_SCRIPT,
+            SCRIPT_NAME
+        );
+    } finally {
+        app.scriptPreferences.measurementUnit = savedUnit;
     }
-
-    app.doScript(
-        function () { build(pdfFile, cfg, outFolder); },
-        ScriptLanguage.JAVASCRIPT,
-        undefined,
-        UndoModes.FAST_ENTIRE_SCRIPT,
-        SCRIPT_NAME
-    );
 
     // ================================================================ 本処理
     function build(pdf, c, folder) {
         var perSheet   = c.cols * c.rows;
         var totalSheet = Math.ceil(c.pageCount / perSheet);
-        var geo        = layout(c);
+        var geo        = layout(c);                    // 中身はポイント
 
         // 大量配置中にリンク／プロファイル関連のダイアログが出ないようにする
         var savedRedraw      = app.scriptPreferences.enableRedraw;
@@ -82,6 +103,7 @@
         var savedPageNo      = app.pdfPlacePreferences.pageNumber;
         var savedTransparent = app.pdfPlacePreferences.transparentBackground;
 
+        app.scriptPreferences.measurementUnit = MeasurementUnits.POINTS;
         app.scriptPreferences.enableRedraw = false;
         app.scriptPreferences.userInteractionLevel = UserInteractionLevels.NEVER_INTERACT;
         app.pdfPlacePreferences.pdfCrop = [PDFCrop.CROP_TRIM, PDFCrop.CROP_BLEED, PDFCrop.CROP_MEDIA][c.crop];
@@ -105,8 +127,7 @@
                     doc = newDocument(geo, c.splitEvery === 0);
                 }
 
-                var page = (doc.pages.length === 1 && doc.pages[0].allGraphics.length === 0 &&
-                            doc.pages[0].pageItems.length === 0)
+                var page = (doc.pages.length === 1 && doc.pages[0].pageItems.length === 0)
                          ? doc.pages[0]
                          : doc.pages.add(LocationOptions.AT_END);
 
@@ -155,21 +176,29 @@
     }
 
     // ----------------------------------------------------------- レイアウト
+    // 入力 c は mm。戻り値 geo はすべてポイント。
     function layout(c) {
-        var gridW = c.cols * c.cardW + (c.cols - 1) * c.gapX;
-        var gridH = c.rows * c.cardH + (c.rows - 1) * c.gapY;
+        var cardW = mm(c.cardW), cardH = mm(c.cardH);
+        var gapX  = mm(c.gapX),  gapY  = mm(c.gapY);
+        var gridW = c.cols * cardW + (c.cols - 1) * gapX;
+        var gridH = c.rows * cardH + (c.rows - 1) * gapY;
+        var margin = mm(c.margin);
 
         var sheetW, sheetH, left, top;
         if (c.useSheet) {
-            sheetW = c.sheetW;
-            sheetH = c.sheetH;
+            sheetW = mm(c.sheetW);
+            sheetH = mm(c.sheetH);
+        } else {
+            sheetW = gridW + margin * 2;
+            sheetH = gridH + margin * 2;
+        }
+
+        if (c.placement === 1) {          // 左上（0,0 起点）
+            left = 0;
+            top  = 0;
+        } else {                          // 中央
             left = (sheetW - gridW) / 2;
             top  = (sheetH - gridH) / 2;
-        } else {
-            sheetW = gridW + c.margin * 2;
-            sheetH = gridH + c.margin * 2;
-            left = c.margin;
-            top  = c.margin;
         }
 
         return {
@@ -178,25 +207,30 @@
             left: left,    top: top,
             right: left + gridW, bottom: top + gridH,
             cols: c.cols,  rows: c.rows,
-            cardW: c.cardW, cardH: c.cardH,
-            gapX: c.gapX,  gapY: c.gapY,
-            markLen: c.markLen, markOffset: c.markOffset
+            cardW: cardW,  cardH: cardH,
+            gapX: gapX,    gapY: gapY,
+            markLen: mm(c.markLen), markOffset: mm(c.markOffset)
         };
     }
 
     function newDocument(geo, showWindow) {
         var doc = app.documents.add(showWindow !== false);
 
+        // 表示用のルーラー単位（スクリプトの計算には影響しない）
         doc.viewPreferences.horizontalMeasurementUnits = MeasurementUnits.MILLIMETERS;
         doc.viewPreferences.verticalMeasurementUnits   = MeasurementUnits.MILLIMETERS;
         doc.viewPreferences.rulerOrigin = RulerOrigin.PAGE_ORIGIN;
 
         doc.documentPreferences.properties = {
             facingPages: false,
-            pageWidth:  geo.sheetW + "mm",
-            pageHeight: geo.sheetH + "mm",
+            pageWidth:  geo.sheetW,      // ポイント
+            pageHeight: geo.sheetH,
             pagesPerDocument: 1,
-            allowPageShuffle: false
+            allowPageShuffle: false,
+            documentBleedTopOffset: 0,
+            documentBleedBottomOffset: 0,
+            documentBleedInsideOrLeftOffset: 0,
+            documentBleedOutsideOrRightOffset: 0
         };
         doc.marginPreferences.properties =
             { top: 0, left: 0, bottom: 0, right: 0, columnCount: 1, columnGutter: 0 };
@@ -212,16 +246,14 @@
 
         var x1 = geo.left + col * (geo.cardW + geo.gapX);
         var y1 = geo.top  + row * (geo.cardH + geo.gapY);
-        var x2 = x1 + geo.cardW;
-        var y2 = y1 + geo.cardH;
 
         var frame = page.rectangles.add({
-            geometricBounds: [y1, x1, y2, x2],
-            strokeWeight: 0,
+            geometricBounds: [y1, x1, y1 + geo.cardH, x1 + geo.cardW],
             name: "P" + pdfPage
         });
-        frame.fillColor = "None";
+        frame.fillColor   = "None";
         frame.strokeColor = "None";
+        frame.strokeWeight = 0;
 
         app.pdfPlacePreferences.pageNumber = pdfPage;
         var g = frame.place(pdf)[0];
@@ -230,12 +262,11 @@
         var gw = b[3] - b[1];
         var gh = b[2] - b[0];
 
-        if (c.autoFit && (Math.abs(gw - geo.cardW) > 0.2 || Math.abs(gh - geo.cardH) > 0.2)) {
+        // 0.5pt（約0.18mm）を超えてサイズが違うときだけ拡大縮小する
+        if (c.autoFit && (Math.abs(gw - geo.cardW) > 0.5 || Math.abs(gh - geo.cardH) > 0.5)) {
             frame.fit(FitOptions.PROPORTIONALLY);
-            frame.fit(FitOptions.CENTER_CONTENT);
-        } else {
-            frame.fit(FitOptions.CENTER_CONTENT);
         }
+        frame.fit(FitOptions.CENTER_CONTENT);
     }
 
     // --------------------------------------------------------------- トンボ
@@ -282,7 +313,7 @@
     function addLine(page, layer, color, bounds) {
         var ln = page.graphicLines.add(layer, { geometricBounds: bounds });
         ln.strokeColor  = color;
-        ln.strokeWeight = "0.1mm";
+        ln.strokeWeight = mm(0.1);
         ln.strokeTint   = 100;
         ln.overprintStroke = true;
         return ln;
@@ -312,7 +343,10 @@
         var msg = [];
         msg.push("面付けが完了しました。");
         msg.push("");
-        msg.push("　用紙サイズ　: " + round2(geo.sheetW) + " × " + round2(geo.sheetH) + " mm");
+        msg.push("　用紙サイズ　: " + round2(toMM(geo.sheetW)) + " × " + round2(toMM(geo.sheetH)) + " mm");
+        msg.push("　面付けサイズ: " + round2(toMM(geo.gridW)) + " × " + round2(toMM(geo.gridH)) + " mm");
+        msg.push("　開始位置　　: X " + round2(toMM(geo.left)) + " / Y " + round2(toMM(geo.top)) + " mm");
+        msg.push("　1面のサイズ　: " + round2(toMM(geo.cardW)) + " × " + round2(toMM(geo.cardH)) + " mm");
         msg.push("　面付け　　　: " + c.cols + "列 × " + c.rows + "行 = " + (c.cols * c.rows) + "面");
         msg.push("　総ページ数　: " + c.pageCount + " ページ");
         msg.push("　シート数　　: " + totalSheet + " 枚");
@@ -358,6 +392,7 @@
         return n;
     }
 
+    // 戻り値は mm
     function detectTrimSize(f) {
         var size = { w: DEFAULTS.cardW, h: DEFAULTS.cardH };
         var tmp = null;
@@ -370,13 +405,10 @@
             app.pdfPlacePreferences.pageNumber = 1;
 
             tmp = app.documents.add(false);
-            tmp.viewPreferences.horizontalMeasurementUnits = MeasurementUnits.MILLIMETERS;
-            tmp.viewPreferences.verticalMeasurementUnits   = MeasurementUnits.MILLIMETERS;
-
             var g = tmp.pages[0].place(f)[0];
-            var b = g.geometricBounds;
-            var w = round2(b[3] - b[1]);
-            var h = round2(b[2] - b[0]);
+            var b = g.geometricBounds;                 // ポイント
+            var w = round2(toMM(b[3] - b[1]));
+            var h = round2(toMM(b[2] - b[0]));
             if (w > 0 && h > 0) { size.w = w; size.h = h; }
         } catch (e) {
         } finally {
@@ -446,6 +478,12 @@
         var r7 = pSheet.dialogRows.add();
         r7.staticTexts.add({ staticLabel: "自動時の余白" });
         var eMargin = mmBox(r7, DEFAULTS.margin, 0);
+        var r7b = pSheet.dialogRows.add();
+        r7b.staticTexts.add({ staticLabel: "用紙内の配置" });
+        var dPlace = r7b.dropdowns.add({
+            stringList: ["中央（推奨）", "左上 X=0 / Y=0 起点"],
+            selectedIndex: DEFAULTS.placement
+        });
 
         var pOrder = panel(col);
         var r8 = pOrder.dialogRows.add();
@@ -484,18 +522,19 @@
             crop:       dCrop.selectedIndex,
             cols:       eCols.editValue,
             rows:       eRows.editValue,
-            cardW:      eW.editValue,
-            cardH:      eH.editValue,
-            gapX:       eGx.editValue,
-            gapY:       eGy.editValue,
+            cardW:      readMM(eW),
+            cardH:      readMM(eH),
+            gapX:       readMM(eGx),
+            gapY:       readMM(eGy),
             useSheet:   cSheet.checkedState,
-            sheetW:     eSw.editValue,
-            sheetH:     eSh.editValue,
-            margin:     eMargin.editValue,
+            sheetW:     readMM(eSw),
+            sheetH:     readMM(eSh),
+            margin:     readMM(eMargin),
+            placement:  dPlace.selectedIndex,
             order:      dOrder.selectedIndex,
             marks:      cMarks.checkedState,
-            markLen:    eMlen.editValue,
-            markOffset: eMoff.editValue,
+            markLen:    readMM(eMlen),
+            markOffset: readMM(eMoff),
             autoFit:    cFit.checkedState,
             splitEvery: eSplit.editValue
         };
@@ -506,27 +545,33 @@
         return c;
     }
 
+    // 入力はすべて mm で検証する
     function validate(c) {
         var gridW = c.cols * c.cardW + (c.cols - 1) * c.gapX;
         var gridH = c.rows * c.cardH + (c.rows - 1) * c.gapY;
+        var need  = c.markLen + c.markOffset;
 
         if (c.useSheet) {
-            if (gridW > c.sheetW || gridH > c.sheetH) {
+            if (gridW > c.sheetW + 0.01 || gridH > c.sheetH + 0.01) {
                 return "面付けサイズ（" + round2(gridW) + " × " + round2(gridH) + " mm）が\n" +
-                       "用紙サイズ（" + round2(c.sheetW) + " × " + round2(c.sheetH) + " mm）を超えています。";
+                       "用紙サイズ（" + round2(c.sheetW) + " × " + round2(c.sheetH) + " mm）を超えています。\n\n" +
+                       "列数・行数を減らすか、用紙サイズを大きくしてください。";
             }
-            if (c.marks) {
-                var need = c.markLen + c.markOffset;
-                if ((c.sheetW - gridW) / 2 < need || (c.sheetH - gridH) / 2 < need) {
-                    return "トンボを描くための余白が足りません。\n" +
-                           "用紙を大きくするか、トンボ長さ／オフセットを小さくしてください。\n" +
-                           "（必要な余白: 各辺 " + round2(need) + " mm 以上）";
-                }
+            if (c.marks && c.placement === 0 &&
+                ((c.sheetW - gridW) / 2 < need || (c.sheetH - gridH) / 2 < need)) {
+                return "トンボを描くための余白が足りません。\n" +
+                       "用紙を大きくするか、トンボ長さ／オフセットを小さくしてください。\n" +
+                       "（必要な余白: 各辺 " + round2(need) + " mm 以上）";
             }
-        } else if (c.marks && c.margin < c.markLen + c.markOffset) {
+        } else if (c.marks && c.placement === 0 && c.margin < need) {
             return "余白（" + round2(c.margin) + " mm）がトンボ長さ＋オフセット（" +
-                   round2(c.markLen + c.markOffset) + " mm）より小さいため、\n" +
+                   round2(need) + " mm）より小さいため、\n" +
                    "トンボが用紙からはみ出します。余白を大きくしてください。";
+        }
+
+        if (c.marks && c.placement === 1) {
+            return "「左上 X=0 / Y=0 起点」ではページの外側にトンボを描けません。\n" +
+                   "「トンボを作成する」をオフにするか、配置を「中央」にしてください。";
         }
         return null;
     }
@@ -564,15 +609,19 @@
         return col.borderPanels.add().dialogColumns.add();
     }
 
-    function mmBox(row, value, min) {
+    // measurementEditbox の editValue は editUnits に関係なく常にポイント。
+    // 引数・戻り値は mm で統一し、ここだけで換算する。
+    function mmBox(row, valueMM, minMM) {
         return row.measurementEditboxes.add({
             editUnits: MeasurementUnits.MILLIMETERS,
-            editValue: value,
-            minimumValue: (min === undefined ? 1 : min),
-            maximumValue: 5000,
-            minWidth: 70
+            editValue: mm(valueMM),
+            minimumValue: mm(minMM === undefined ? 1 : minMM),
+            maximumValue: mm(5000),
+            minWidth: 90
         });
     }
+
+    function readMM(box) { return round2(toMM(box.editValue)); }
 
     function pdfFilter() {
         if (File.fs === "Windows") { return "PDF ファイル:*.pdf,すべてのファイル:*.*"; }
