@@ -40,7 +40,8 @@
         cardH: 148,
         gapX: 0,
         gapY: 0,
-        margin: 10,
+        bleed: 3,          // 面付け全体の周囲につける裁ち落とし
+        slug: 10,          // その外側の印刷可能領域（ここにトンボを描く）
         useSheet: false,
         sheetW: 545,
         sheetH: 394,
@@ -48,7 +49,6 @@
         order: 0,          // 0 = 順並び, 1 = 断裁積み
         marks: true,
         markLen: 5,
-        markOffset: 1,
         crop: 0,           // 0 = トリム, 1 = 裁ち落とし, 2 = メディア
         autoFit: true,
         splitEvery: 0      // 0 = 分割しない
@@ -177,20 +177,23 @@
 
     // ----------------------------------------------------------- レイアウト
     // 入力 c は mm。戻り値 geo はすべてポイント。
+    //
+    //   ページ（トリム） = 面付けサイズ、または指定した用紙サイズ
+    //   その外側に 裁ち落とし（bleed）→ 印刷可能領域（slug）が付く
+    //   トンボは裁ち落としの外＝印刷可能領域に描く
     function layout(c) {
         var cardW = mm(c.cardW), cardH = mm(c.cardH);
         var gapX  = mm(c.gapX),  gapY  = mm(c.gapY);
         var gridW = c.cols * cardW + (c.cols - 1) * gapX;
         var gridH = c.rows * cardH + (c.rows - 1) * gapY;
-        var margin = mm(c.margin);
 
         var sheetW, sheetH, left, top;
         if (c.useSheet) {
             sheetW = mm(c.sheetW);
             sheetH = mm(c.sheetH);
         } else {
-            sheetW = gridW + margin * 2;
-            sheetH = gridH + margin * 2;
+            sheetW = gridW;               // ページ = 面付けサイズぴったり
+            sheetH = gridH;
         }
 
         if (c.placement === 1) {          // 左上（0,0 起点）
@@ -209,7 +212,8 @@
             cols: c.cols,  rows: c.rows,
             cardW: cardW,  cardH: cardH,
             gapX: gapX,    gapY: gapY,
-            markLen: mm(c.markLen), markOffset: mm(c.markOffset)
+            bleed: mm(c.bleed), slug: mm(c.slug),
+            markLen: mm(c.markLen)
         };
     }
 
@@ -226,14 +230,26 @@
             pageWidth:  geo.sheetW,      // ポイント
             pageHeight: geo.sheetH,
             pagesPerDocument: 1,
-            allowPageShuffle: false,
-            documentBleedTopOffset: 0,
-            documentBleedBottomOffset: 0,
-            documentBleedInsideOrLeftOffset: 0,
-            documentBleedOutsideOrRightOffset: 0
+            allowPageShuffle: false
         };
         doc.marginPreferences.properties =
             { top: 0, left: 0, bottom: 0, right: 0, columnCount: 1, columnGutter: 0 };
+
+        // 裁ち落とし（周囲のドブ）と、その外側の印刷可能領域
+        var dp = doc.documentPreferences;
+        setPref(dp, "documentBleedTopOffset", geo.bleed);
+        setPref(dp, "documentBleedBottomOffset", geo.bleed);
+        setPref(dp, "documentBleedInsideOrLeftOffset", geo.bleed);
+        setPref(dp, "documentBleedOutsideOrRightOffset", geo.bleed);
+        setPref(dp, "documentBleedUniformSize", true);
+
+        // 印刷可能領域のプロパティ名は InDesign のバージョンで揺れがあるため両方試す
+        setPref(dp, "slugTopOffset", geo.slug);
+        setPref(dp, "slugBottomOffset", geo.slug);
+        setPref(dp, "slugInsideOrLeftOffset", geo.slug);
+        setPref(dp, "slugRightOrOutsideOffset", geo.slug);
+        setPref(dp, "slugOutsideOrRightOffset", geo.slug);
+        setPref(dp, "documentSlugUniformSize", true);
 
         // トンボは専用レイヤーへ（印刷前に一括で非表示にできるように）
         try { doc.layers.add({ name: "トンボ" }); } catch (e) {}
@@ -270,36 +286,53 @@
     }
 
     // --------------------------------------------------------------- トンボ
+    // 断ちトンボは裁ち落としの外側（印刷可能領域）に描く。
     function drawMarks(page, geo) {
         var doc   = page.parent.parent;
         var layer = doc.layers.itemByName("トンボ");
         if (!layer.isValid) { layer = doc.layers[0]; }
 
         var reg = registrationSwatch(doc);
-        var off = geo.markOffset;
+        var b   = geo.bleed;
         var len = geo.markLen;
 
-        var xs = cutPositions(geo.left, geo.cols, geo.cardW, geo.gapX);
-        var ys = cutPositions(geo.top,  geo.rows, geo.cardH, geo.gapY);
+        var xs = markPositions(geo.left, geo.cols, geo.cardW, geo.gapX, b);
+        var ys = markPositions(geo.top,  geo.rows, geo.cardH, geo.gapY, b);
         var i;
 
-        for (i = 0; i < xs.length; i++) {
-            addLine(page, layer, reg, [geo.top - off - len, xs[i], geo.top - off, xs[i]]);
-            addLine(page, layer, reg, [geo.bottom + off, xs[i], geo.bottom + off + len, xs[i]]);
+        for (i = 0; i < xs.length; i++) {   // 上下の辺 → 縦線
+            addLine(page, layer, reg, [geo.top - b - len, xs[i], geo.top - b, xs[i]]);
+            addLine(page, layer, reg, [geo.bottom + b, xs[i], geo.bottom + b + len, xs[i]]);
         }
-        for (i = 0; i < ys.length; i++) {
-            addLine(page, layer, reg, [ys[i], geo.left - off - len, ys[i], geo.left - off]);
-            addLine(page, layer, reg, [ys[i], geo.right + off, ys[i], geo.right + off + len]);
+        for (i = 0; i < ys.length; i++) {   // 左右の辺 → 横線
+            addLine(page, layer, reg, [ys[i], geo.left - b - len, ys[i], geo.left - b]);
+            addLine(page, layer, reg, [ys[i], geo.right + b, ys[i], geo.right + b + len]);
         }
     }
 
-    function cutPositions(start, count, size, gap) {
+    // 断ちトンボを引く座標を1軸ぶん返す。
+    //   外周     : 仕上がり線 ＋ 塗り足し線（裁ち落とし分だけ外側）の 2 本 = 日本式の角トンボ
+    //   面間ドブ : 3 本（両側の仕上がり線と、その中間。ドブ 6mm なら 3mm ＋ 3mm）
+    //   ドブ 0   : 1 本（両側の仕上がり線が重なるため）
+    function markPositions(start, count, size, gap, bleed) {
         var out = [];
-        for (var i = 0; i < count; i++) {
-            var a = start + i * (size + gap);
+
+        pushUnique(out, start);
+        if (bleed > 0) { pushUnique(out, start - bleed); }
+
+        for (var i = 0; i < count - 1; i++) {
+            var a = start + i * (size + gap) + size;   // 手前の面の仕上がり線
             pushUnique(out, a);
-            pushUnique(out, a + size);
+            if (gap > 0) {
+                pushUnique(out, a + gap / 2);          // ドブの中央
+                pushUnique(out, a + gap);              // 次の面の仕上がり線
+            }
         }
+
+        var end = start + count * size + (count - 1) * gap;
+        pushUnique(out, end);
+        if (bleed > 0) { pushUnique(out, end + bleed); }
+
         return out;
     }
 
@@ -343,16 +376,25 @@
         var msg = [];
         msg.push("面付けが完了しました。");
         msg.push("");
-        msg.push("　用紙サイズ　: " + round2(toMM(geo.sheetW)) + " × " + round2(toMM(geo.sheetH)) + " mm");
+        msg.push("　ページサイズ: " + round2(toMM(geo.sheetW)) + " × " + round2(toMM(geo.sheetH)) + " mm");
         msg.push("　面付けサイズ: " + round2(toMM(geo.gridW)) + " × " + round2(toMM(geo.gridH)) + " mm");
         msg.push("　開始位置　　: X " + round2(toMM(geo.left)) + " / Y " + round2(toMM(geo.top)) + " mm");
-        msg.push("　1面のサイズ　: " + round2(toMM(geo.cardW)) + " × " + round2(toMM(geo.cardH)) + " mm");
+        msg.push("　裁ち落とし　: " + round2(toMM(geo.bleed)) + " mm　印刷可能領域: " +
+                 round2(toMM(geo.slug)) + " mm");
+        msg.push("　1面のサイズ　: " + round2(toMM(geo.cardW)) + " × " + round2(toMM(geo.cardH)) +
+                 " mm（ドブ 横 " + round2(toMM(geo.gapX)) + " / 縦 " + round2(toMM(geo.gapY)) + " mm）");
         msg.push("　面付け　　　: " + c.cols + "列 × " + c.rows + "行 = " + (c.cols * c.rows) + "面");
         msg.push("　総ページ数　: " + c.pageCount + " ページ");
         msg.push("　シート数　　: " + totalSheet + " 枚");
         msg.push("　配置済み　　: " + placed + " 面");
         if (skipped > 0) { msg.push("　空き　　　　: " + skipped + " 面"); }
         msg.push("　面付け順　　: " + (c.order === 1 ? "断裁積み（カット&スタック）" : "順並び"));
+        if (c.marks) {
+            msg.push("");
+            msg.push("※ トンボは印刷可能領域に描いています。PDF 書き出しでは");
+            msg.push("　 「裁ち落としと印刷可能領域」→「印刷可能領域を含む」をオンにしてください。");
+            msg.push("　 書き出し側の「トンボ」はオフのままで構いません。");
+        }
         if (folder) {
             msg.push("");
             msg.push("　保存先: " + folder.fsName);
@@ -464,10 +506,19 @@
         r4.staticTexts.add({ staticLabel: "縦" });
         var eGy = mmBox(r4, DEFAULTS.gapY, 0);
 
+        var pDoc = panel(col);
+        var rB = pDoc.dialogRows.add();
+        rB.staticTexts.add({ staticLabel: "全体の裁ち落とし（周囲のドブ）" });
+        var eBleed = mmBox(rB, DEFAULTS.bleed, 0);
+        rB.staticTexts.add({ staticLabel: "印刷可能領域" });
+        var eSlug = mmBox(rB, DEFAULTS.slug, 0);
+        var rB2 = pDoc.dialogRows.add();
+        rB2.staticTexts.add({ staticLabel: "（トンボは裁ち落としの外＝印刷可能領域に描かれます）" });
+
         var pSheet = panel(col);
         var r5 = pSheet.dialogRows.add();
         var cSheet = r5.checkboxControls.add({
-            staticLabel: "用紙サイズを指定する（オフ = 面付けサイズ＋余白で自動）",
+            staticLabel: "用紙サイズを指定する（オフ = ページ＝面付けサイズぴったり）",
             checkedState: DEFAULTS.useSheet
         });
         var r6 = pSheet.dialogRows.add();
@@ -475,9 +526,6 @@
         var eSw = mmBox(r6, DEFAULTS.sheetW);
         r6.staticTexts.add({ staticLabel: "高さ" });
         var eSh = mmBox(r6, DEFAULTS.sheetH);
-        var r7 = pSheet.dialogRows.add();
-        r7.staticTexts.add({ staticLabel: "自動時の余白" });
-        var eMargin = mmBox(r7, DEFAULTS.margin, 0);
         var r7b = pSheet.dialogRows.add();
         r7b.staticTexts.add({ staticLabel: "用紙内の配置" });
         var dPlace = r7b.dropdowns.add({
@@ -495,12 +543,13 @@
 
         var pMark = panel(col);
         var r9 = pMark.dialogRows.add();
-        var cMarks = r9.checkboxControls.add({ staticLabel: "トンボを作成する", checkedState: DEFAULTS.marks });
+        var cMarks = r9.checkboxControls.add({
+            staticLabel: "断ちトンボを作成する（外周2本／ドブ3本／ドブなし1本）",
+            checkedState: DEFAULTS.marks
+        });
         var r10 = pMark.dialogRows.add();
         r10.staticTexts.add({ staticLabel: "トンボ長さ" });
         var eMlen = mmBox(r10, DEFAULTS.markLen, 0);
-        r10.staticTexts.add({ staticLabel: "オフセット" });
-        var eMoff = mmBox(r10, DEFAULTS.markOffset, 0);
 
         var pMisc = panel(col);
         var r11 = pMisc.dialogRows.add();
@@ -526,15 +575,15 @@
             cardH:      readMM(eH),
             gapX:       readMM(eGx),
             gapY:       readMM(eGy),
+            bleed:      readMM(eBleed),
+            slug:       readMM(eSlug),
             useSheet:   cSheet.checkedState,
             sheetW:     readMM(eSw),
             sheetH:     readMM(eSh),
-            margin:     readMM(eMargin),
             placement:  dPlace.selectedIndex,
             order:      dOrder.selectedIndex,
             marks:      cMarks.checkedState,
             markLen:    readMM(eMlen),
-            markOffset: readMM(eMoff),
             autoFit:    cFit.checkedState,
             splitEvery: eSplit.editValue
         };
@@ -549,30 +598,21 @@
     function validate(c) {
         var gridW = c.cols * c.cardW + (c.cols - 1) * c.gapX;
         var gridH = c.rows * c.cardH + (c.rows - 1) * c.gapY;
-        var need  = c.markLen + c.markOffset;
 
-        if (c.useSheet) {
-            if (gridW > c.sheetW + 0.01 || gridH > c.sheetH + 0.01) {
-                return "面付けサイズ（" + round2(gridW) + " × " + round2(gridH) + " mm）が\n" +
-                       "用紙サイズ（" + round2(c.sheetW) + " × " + round2(c.sheetH) + " mm）を超えています。\n\n" +
-                       "列数・行数を減らすか、用紙サイズを大きくしてください。";
-            }
-            if (c.marks && c.placement === 0 &&
-                ((c.sheetW - gridW) / 2 < need || (c.sheetH - gridH) / 2 < need)) {
-                return "トンボを描くための余白が足りません。\n" +
-                       "用紙を大きくするか、トンボ長さ／オフセットを小さくしてください。\n" +
-                       "（必要な余白: 各辺 " + round2(need) + " mm 以上）";
-            }
-        } else if (c.marks && c.placement === 0 && c.margin < need) {
-            return "余白（" + round2(c.margin) + " mm）がトンボ長さ＋オフセット（" +
-                   round2(need) + " mm）より小さいため、\n" +
-                   "トンボが用紙からはみ出します。余白を大きくしてください。";
+        if (c.useSheet && (gridW > c.sheetW + 0.01 || gridH > c.sheetH + 0.01)) {
+            return "面付けサイズ（" + round2(gridW) + " × " + round2(gridH) + " mm）が\n" +
+                   "用紙サイズ（" + round2(c.sheetW) + " × " + round2(c.sheetH) + " mm）を超えています。\n\n" +
+                   "列数・行数を減らすか、用紙サイズを大きくしてください。";
         }
 
-        if (c.marks && c.placement === 1) {
-            return "「左上 X=0 / Y=0 起点」ではページの外側にトンボを描けません。\n" +
-                   "「トンボを作成する」をオフにするか、配置を「中央」にしてください。";
+        if (c.marks && c.markLen > c.slug + 0.01) {
+            return "トンボ長さ（" + round2(c.markLen) + " mm）が印刷可能領域（" +
+                   round2(c.slug) + " mm）を超えています。\n" +
+                   "印刷可能領域を広げるか、トンボを短くしてください。";
         }
+
+        if (c.gapX > 0 && c.gapX < 0.02) { return "面間のアキ（横）の値が不正です。"; }
+        if (c.gapY > 0 && c.gapY < 0.02) { return "面間のアキ（縦）の値が不正です。"; }
         return null;
     }
 
@@ -622,6 +662,11 @@
     }
 
     function readMM(box) { return round2(toMM(box.editValue)); }
+
+    // バージョンによって存在しないプロパティがあるので、失敗しても止めない
+    function setPref(obj, name, value) {
+        try { obj[name] = value; } catch (e) {}
+    }
 
     function pdfFilter() {
         if (File.fs === "Windows") { return "PDF ファイル:*.pdf,すべてのファイル:*.*"; }

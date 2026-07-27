@@ -6,15 +6,34 @@ InDesign を開かずに、書き出し済みの PDF をそのまま面付けし
 1ページ = 1レコードの PDF を、指定グリッド（既定 4列×2行 = 8面）に並べた
 シートの PDF を出力する。
 
+出力ページの構造（`はがき面付け.jsx` と同じ）:
+
+    ┌─────────────────────────────┐ ← メディアボックス（印刷可能領域の外周）
+    │      ← 印刷可能領域（スラグ） 10mm →      │   ここに断ちトンボを描く
+    │   ┌───────────────────────┐   │ ← 裁ち落としボックス
+    │   │   ← 裁ち落とし 3mm →   │   │
+    │   │   ┌───────────────┐   │   │ ← トリムボックス = 面付けサイズ
+    │   │   │  4列 × 2行 の面付け  │   │   │
+    │   │   └───────────────┘   │   │
+    │   └───────────────────────┘   │
+    └─────────────────────────────┘
+
+断ちトンボの本数:
+    外周     … 仕上がり線＋塗り足し線の 2 本（日本式の角トンボ）
+    面間ドブ … 3 本（両側の仕上がり線＋その中間。ドブ 6mm なら 3mm＋3mm）
+    ドブ 0   … 1 本（両側の仕上がり線が重なるため）
+
 必要なもの:  pip install pypdf
 
 例:
-    # はがき（100×148mm）を 4列×2行、断裁積み、トンボ付きで面付け
-    python3 impose_pdf.py in.pdf out.pdf --cols 4 --rows 2 \
-        --order cutstack --sheet 545x394 --marks
+    # はがきを 4列×2行、ドブ6mm、裁ち落とし3mm、印刷可能領域10mm、トンボ付き
+    python3 impose_pdf.py in.pdf out.pdf --gap-x 6 --gap-y 6 --marks
 
-    # 用紙サイズ指定なし（面付けサイズ＋余白10mm で自動）
-    python3 impose_pdf.py in.pdf out.pdf --margin 10 --marks
+    # 突き合わせ（ドブなし）でトンボ1本
+    python3 impose_pdf.py in.pdf out.pdf --marks
+
+    # 刷版サイズを指定して中央配置
+    python3 impose_pdf.py in.pdf out.pdf --sheet 545x394 --gap-x 6 --gap-y 6 --marks
 """
 
 from __future__ import annotations
@@ -31,8 +50,7 @@ def mm(v: float) -> float:
 
 def parse_size(text: str) -> tuple[float, float]:
     """'545x394' 形式（mm）を (幅, 高さ) のポイント値にする。"""
-    sep = "x" if "x" in text.lower() else "*"
-    parts = text.lower().replace("×", "x").split(sep)
+    parts = text.lower().replace("×", "x").replace("*", "x").split("x")
     if len(parts) != 2:
         raise argparse.ArgumentTypeError(f"サイズは 幅x高さ (mm) で指定してください: {text}")
     return mm(float(parts[0])), mm(float(parts[1]))
@@ -50,28 +68,49 @@ def slot_to_index(sheet: int, slot: int, sheets: int, per_sheet: int, order: str
     return sheet * per_sheet + slot
 
 
-def cut_positions(start: float, count: int, size: float, gap: float) -> list[float]:
+def mark_positions(start: float, count: int, size: float, gap: float, bleed: float) -> list[float]:
+    """断ちトンボを引く座標を1軸ぶん返す。
+
+    外周は仕上がり線と塗り足し線の2本、面間のドブは3本（ドブ0なら1本）。
+    """
     out: list[float] = []
-    for i in range(count):
-        a = start + i * (size + gap)
-        for v in (a, a + size):
-            if not any(abs(v - x) < 0.01 for x in out):
-                out.append(v)
-    return out
+
+    def push(v: float) -> None:
+        if not any(abs(v - x) < 0.01 for x in out):
+            out.append(v)
+
+    push(start)
+    if bleed > 0:
+        push(start - bleed)
+
+    for i in range(count - 1):
+        a = start + i * (size + gap) + size   # 手前の面の仕上がり線
+        push(a)
+        if gap > 0:
+            push(a + gap / 2)                 # ドブの中央（3mm＋3mm の境目）
+            push(a + gap)                     # 次の面の仕上がり線
+
+    end = start + count * size + (count - 1) * gap
+    push(end)
+    if bleed > 0:
+        push(end + bleed)
+
+    return sorted(out)
 
 
-def marks_stream(geo: dict, length: float, offset: float, weight: float) -> str:
-    """トンボ（断裁位置マーク）の content stream を組み立てる。"""
-    ops = ["q", "1 1 1 1 K", f"{weight:.3f} w"]
+def marks_stream(geo: dict, length: float, weight: float) -> str:
+    """トンボの content stream を組み立てる（PDF 座標系 = 原点左下）。"""
+    ops = ["q", "1 1 1 1 K", f"{weight:.3f} w", "1 J"]
     left, right = geo["left"], geo["right"]
-    bottom, top = geo["bottom"], geo["top"]  # PDF 座標系 = 原点左下
+    bottom, top = geo["bottom"], geo["top"]
+    b = geo["bleed"]
 
-    for x in cut_positions(left, geo["cols"], geo["card_w"], geo["gap_x"]):
-        ops.append(f"{x:.3f} {top + offset:.3f} m {x:.3f} {top + offset + length:.3f} l S")
-        ops.append(f"{x:.3f} {bottom - offset:.3f} m {x:.3f} {bottom - offset - length:.3f} l S")
-    for y in cut_positions(bottom, geo["rows"], geo["card_h"], geo["gap_y"]):
-        ops.append(f"{left - offset:.3f} {y:.3f} m {left - offset - length:.3f} {y:.3f} l S")
-        ops.append(f"{right + offset:.3f} {y:.3f} m {right + offset + length:.3f} {y:.3f} l S")
+    for x in mark_positions(left, geo["cols"], geo["card_w"], geo["gap_x"], b):
+        ops.append(f"{x:.3f} {top + b:.3f} m {x:.3f} {top + b + length:.3f} l S")
+        ops.append(f"{x:.3f} {bottom - b:.3f} m {x:.3f} {bottom - b - length:.3f} l S")
+    for y in mark_positions(bottom, geo["rows"], geo["card_h"], geo["gap_y"], b):
+        ops.append(f"{left - b:.3f} {y:.3f} m {left - b - length:.3f} {y:.3f} l S")
+        ops.append(f"{right + b:.3f} {y:.3f} m {right + b + length:.3f} {y:.3f} l S")
 
     ops.append("Q")
     return "\n".join(ops)
@@ -80,26 +119,30 @@ def marks_stream(geo: dict, length: float, offset: float, weight: float) -> str:
 def build_geometry(args, card_w: float, card_h: float) -> dict:
     grid_w = args.cols * card_w + (args.cols - 1) * mm(args.gap_x)
     grid_h = args.rows * card_h + (args.rows - 1) * mm(args.gap_y)
+    bleed = mm(args.bleed)
+    slug = mm(args.slug)
+    outer = bleed + slug          # トリムボックスからメディアボックスまでの距離
 
     if args.sheet:
-        sheet_w, sheet_h = args.sheet
-        if grid_w > sheet_w + 0.01 or grid_h > sheet_h + 0.01:
+        trim_w, trim_h = args.sheet
+        if grid_w > trim_w + 0.01 or grid_h > trim_h + 0.01:
             sys.exit(
                 f"エラー: 面付けサイズ {grid_w / MM:.1f}×{grid_h / MM:.1f}mm が "
-                f"用紙 {sheet_w / MM:.1f}×{sheet_h / MM:.1f}mm を超えています。"
+                f"用紙 {trim_w / MM:.1f}×{trim_h / MM:.1f}mm を超えています。"
             )
-        left = (sheet_w - grid_w) / 2
-        bottom = (sheet_h - grid_h) / 2
     else:
-        margin = mm(args.margin)
-        sheet_w, sheet_h = grid_w + margin * 2, grid_h + margin * 2
-        left = bottom = margin
+        trim_w, trim_h = grid_w, grid_h
+
+    left = outer + (trim_w - grid_w) / 2
+    bottom = outer + (trim_h - grid_h) / 2
 
     return {
-        "sheet_w": sheet_w, "sheet_h": sheet_h,
+        "media_w": trim_w + outer * 2, "media_h": trim_h + outer * 2,
+        "trim_w": trim_w, "trim_h": trim_h,
         "grid_w": grid_w, "grid_h": grid_h,
         "left": left, "right": left + grid_w,
         "bottom": bottom, "top": bottom + grid_h,
+        "outer": outer, "bleed": bleed, "slug": slug,
         "cols": args.cols, "rows": args.rows,
         "card_w": card_w, "card_h": card_h,
         "gap_x": mm(args.gap_x), "gap_y": mm(args.gap_y),
@@ -114,21 +157,21 @@ def main() -> None:
     p.add_argument("--rows", type=int, default=2, help="行数（既定 2）")
     p.add_argument("--gap-x", type=float, default=0.0, help="面間の横アキ mm（既定 0）")
     p.add_argument("--gap-y", type=float, default=0.0, help="面間の縦アキ mm（既定 0）")
+    p.add_argument("--bleed", type=float, default=3.0, help="全体の裁ち落とし mm（既定 3）")
+    p.add_argument("--slug", type=float, default=10.0, help="印刷可能領域 mm（既定 10）")
     p.add_argument("--sheet", type=parse_size, default=None,
-                   help="用紙サイズ 幅x高さ mm（例 545x394）。省略時は面付けサイズ＋余白")
-    p.add_argument("--margin", type=float, default=10.0, help="--sheet 省略時の余白 mm（既定 10）")
+                   help="面付けを載せる用紙サイズ 幅x高さ mm（例 545x394）。省略時は面付けサイズぴったり")
     p.add_argument("--order", choices=["sequential", "cutstack"], default="sequential",
                    help="面付け順（既定 sequential）")
-    p.add_argument("--marks", action="store_true", help="トンボを描画する")
+    p.add_argument("--marks", action="store_true", help="断ちトンボを描画する")
     p.add_argument("--mark-length", type=float, default=5.0, help="トンボ長さ mm（既定 5）")
-    p.add_argument("--mark-offset", type=float, default=1.0, help="トンボのオフセット mm（既定 1）")
     p.add_argument("--box", choices=["trim", "bleed", "media"], default="trim",
                    help="配置基準のボックス（既定 trim）")
     args = p.parse_args()
 
     try:
         from pypdf import PageObject, PdfReader, PdfWriter, Transformation
-        from pypdf.generic import DecodedStreamObject, NameObject
+        from pypdf.generic import ArrayObject, DecodedStreamObject, FloatObject, NameObject
     except ImportError:
         sys.exit("pypdf が必要です:  pip install pypdf")
 
@@ -146,18 +189,16 @@ def main() -> None:
     per_sheet = args.cols * args.rows
     sheets = -(-total // per_sheet)  # 切り上げ
 
-    if args.marks:
-        need = mm(args.mark_length + args.mark_offset)
-        if min(geo["left"], geo["bottom"]) < need:
-            sys.exit(
-                f"エラー: トンボ用の余白が足りません（各辺 {need / MM:.1f}mm 以上必要）。"
-            )
+    if args.marks and mm(args.mark_length) > geo["slug"] + 0.01:
+        sys.exit(
+            f"エラー: トンボ長さ {args.mark_length}mm が印刷可能領域 {args.slug}mm を超えています。"
+        )
 
     writer = PdfWriter()
     placed = 0
 
     for s in range(sheets):
-        page = PageObject.create_blank_page(width=geo["sheet_w"], height=geo["sheet_h"])
+        page = PageObject.create_blank_page(width=geo["media_w"], height=geo["media_h"])
 
         for slot in range(per_sheet):
             idx = slot_to_index(s, slot, sheets, per_sheet, args.order)
@@ -179,12 +220,22 @@ def main() -> None:
         if args.marks:
             stream = DecodedStreamObject()
             stream.set_data(
-                marks_stream(geo, mm(args.mark_length), mm(args.mark_offset), 0.283).encode("latin-1")
+                marks_stream(geo, mm(args.mark_length), 0.283).encode("latin-1")
             )
-            marks_page = PageObject.create_blank_page(width=geo["sheet_w"], height=geo["sheet_h"])
+            marks_page = PageObject.create_blank_page(width=geo["media_w"], height=geo["media_h"])
             marks_page[NameObject("/Contents")] = stream
             page.merge_page(marks_page)
 
+        def rect(inset: float) -> ArrayObject:
+            return ArrayObject([
+                FloatObject(geo["outer"] - inset),
+                FloatObject(geo["outer"] - inset),
+                FloatObject(geo["outer"] + geo["trim_w"] + inset),
+                FloatObject(geo["outer"] + geo["trim_h"] + inset),
+            ])
+
+        page[NameObject("/TrimBox")] = rect(0)
+        page[NameObject("/BleedBox")] = rect(geo["bleed"])
         writer.add_page(page)
 
     with open(args.output, "wb") as fh:
@@ -192,10 +243,13 @@ def main() -> None:
 
     print(
         f"完了: {args.output}\n"
-        f"  用紙　　　: {geo['sheet_w'] / MM:.1f} × {geo['sheet_h'] / MM:.1f} mm\n"
-        f"  仕上りサイズ: {card_w / MM:.1f} × {card_h / MM:.1f} mm\n"
-        f"  面付け　　: {args.cols}列 × {args.rows}行 = {per_sheet}面 / {args.order}\n"
-        f"  入力　　　: {total} ページ → 出力 {sheets} シート（配置 {placed} 面 / 空き {sheets * per_sheet - placed} 面）"
+        f"  メディアボックス: {geo['media_w'] / MM:.1f} × {geo['media_h'] / MM:.1f} mm\n"
+        f"  トリムボックス　: {geo['trim_w'] / MM:.1f} × {geo['trim_h'] / MM:.1f} mm（面付けサイズ）\n"
+        f"  裁ち落とし　　　: {args.bleed} mm / 印刷可能領域: {args.slug} mm\n"
+        f"  1面のサイズ　　 : {card_w / MM:.1f} × {card_h / MM:.1f} mm（ドブ 横{args.gap_x} 縦{args.gap_y} mm）\n"
+        f"  面付け　　　　　: {args.cols}列 × {args.rows}行 = {per_sheet}面 / {args.order}\n"
+        f"  入力　　　　　　: {total} ページ → 出力 {sheets} シート"
+        f"（配置 {placed} 面 / 空き {sheets * per_sheet - placed} 面）"
     )
 
 
