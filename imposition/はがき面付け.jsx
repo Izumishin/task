@@ -112,6 +112,7 @@
         var progress = makeProgress(totalSheet);
         var docs     = [];
         var doc      = null;
+        var ctx      = null;   // ドキュメントごとのレイヤーとスウォッチ
         var docIndex = 0;
         var placed   = 0;
         var skipped  = 0;
@@ -125,6 +126,12 @@
                 if (isNewDoc) {
                     if (doc !== null) { finishDoc(doc, folder, pdf, docIndex, docs); docIndex++; }
                     doc = newDocument(geo, c.splitEvery === 0);
+                    ctx = {
+                        base: doc.layers.itemByName("面付け"),
+                        mark: doc.layers.itemByName("トンボ"),
+                        none: noneSwatch(doc),
+                        reg:  registrationSwatch(doc)
+                    };
                 }
 
                 var page = (doc.pages.length === 1 && doc.pages[0].pageItems.length === 0)
@@ -139,7 +146,7 @@
                     if (pdfPage < 1 || pdfPage > c.pageCount) { skipped++; continue; }
 
                     try {
-                        placeCard(page, pdf, pdfPage, slot, geo, c);
+                        placeCard(page, pdf, pdfPage, slot, geo, c, ctx);
                         placed++;
                     } catch (e) {
                         if (errors.length < 20) {
@@ -149,7 +156,7 @@
                     }
                 }
 
-                if (c.marks) { drawMarks(page, geo); }
+                if (c.marks) { drawMarks(page, geo, ctx); }
                 progress.step(s + 1);
             }
 
@@ -251,25 +258,39 @@
         setPref(dp, "slugOutsideOrRightOffset", geo.slug);
         setPref(dp, "documentSlugUniformSize", true);
 
-        // トンボは専用レイヤーへ（印刷前に一括で非表示にできるように）
+        // 面付け本体とトンボはレイヤーを分ける。
+        // レイヤーを追加すると新規レイヤーがアクティブになるため、
+        // はがきの画像ボックスがトンボレイヤーに乗らないよう明示的に戻しておく。
+        var base = doc.layers[0];
+        try { base.name = "面付け"; } catch (e) {}
         try { doc.layers.add({ name: "トンボ" }); } catch (e) {}
+        try { doc.activeLayer = base; } catch (e) {}
         return doc;
     }
 
-    function placeCard(page, pdf, pdfPage, slot, geo, c) {
+    function placeCard(page, pdf, pdfPage, slot, geo, c, ctx) {
         var col = slot % geo.cols;
         var row = Math.floor(slot / geo.cols);
 
         var x1 = geo.left + col * (geo.cardW + geo.gapX);
         var y1 = geo.top  + row * (geo.cardH + geo.gapY);
 
-        var frame = page.rectangles.add({
+        // 仕上がり線が刷り込まれないよう、線は作成時点で無しにしておく。
+        // スウォッチ名は日本語版だと "None" で引けないことがあるので実体で渡す。
+        var props = {
             geometricBounds: [y1, x1, y1 + geo.cardH, x1 + geo.cardW],
-            name: "P" + pdfPage
-        });
-        frame.fillColor   = "None";
-        frame.strokeColor = "None";
-        frame.strokeWeight = 0;
+            name: "P" + pdfPage,
+            strokeWeight: 0,
+            strokeTint: 0
+        };
+        if (ctx && ctx.none) {
+            props.strokeColor = ctx.none;
+            props.fillColor   = ctx.none;
+        }
+
+        var frame = (ctx && ctx.base && ctx.base.isValid)
+                  ? page.rectangles.add(ctx.base, props)
+                  : page.rectangles.add(props);
 
         app.pdfPlacePreferences.pageNumber = pdfPage;
         var g = frame.place(pdf)[0];
@@ -287,13 +308,11 @@
 
     // --------------------------------------------------------------- トンボ
     // 断ちトンボは裁ち落としの外側（印刷可能領域）に描く。
-    function drawMarks(page, geo) {
+    function drawMarks(page, geo, ctx) {
         var doc   = page.parent.parent;
-        var layer = doc.layers.itemByName("トンボ");
-        if (!layer.isValid) { layer = doc.layers[0]; }
-
-        var reg = registrationSwatch(doc);
-        var b   = geo.bleed;
+        var layer = (ctx && ctx.mark && ctx.mark.isValid) ? ctx.mark : doc.layers[0];
+        var reg   = (ctx && ctx.reg) ? ctx.reg : registrationSwatch(doc);
+        var b     = geo.bleed;
         var len = geo.markLen;
 
         var xs = markPositions(geo.left, geo.cols, geo.cardW, geo.gapX, b);
@@ -344,12 +363,28 @@
     }
 
     function addLine(page, layer, color, bounds) {
-        var ln = page.graphicLines.add(layer, { geometricBounds: bounds });
-        ln.strokeColor  = color;
-        ln.strokeWeight = mm(0.1);
-        ln.strokeTint   = 100;
-        ln.overprintStroke = true;
+        var ln = page.graphicLines.add(layer, {
+            geometricBounds: bounds,
+            strokeWeight: mm(0.1),
+            strokeTint: 100
+        });
+        if (color) { ln.strokeColor = color; }
+        try { ln.overprintStroke = true; } catch (e) {}
         return ln;
+    }
+
+    // スウォッチ名は UI 言語で変わる（日本語版では「なし」「レジストレーション」）ので、
+    // 名前ではなくオブジェクトの種別・モデルで引く。
+    //   「なし」だけはクラスが Swatch、他の色は Color / Tint / Gradient など。
+    function noneSwatch(doc) {
+        var sw = doc.swatches;
+        for (var i = 0; i < sw.length; i++) {
+            try {
+                if (sw[i].constructor.name === "Swatch") { return sw[i]; }
+            } catch (e) {}
+        }
+        try { return doc.swatches.item("None"); } catch (e2) {}
+        return null;
     }
 
     function registrationSwatch(doc) {
@@ -357,7 +392,15 @@
         for (var i = 0; i < sw.length; i++) {
             try { if (sw[i].model === ColorModel.REGISTRATION) { return sw[i]; } } catch (e) {}
         }
-        return doc.swatches.item("Black");
+        for (var j = 0; j < sw.length; j++) {   // 見つからなければ黒で代用
+            try {
+                if (sw[j].space === ColorSpace.CMYK) {
+                    var v = sw[j].colorValue;
+                    if (v[0] === 0 && v[1] === 0 && v[2] === 0 && v[3] === 100) { return sw[j]; }
+                }
+            } catch (e3) {}
+        }
+        return null;
     }
 
     // --------------------------------------------------------- 保存 / 集計
@@ -391,10 +434,14 @@
         msg.push("　面付け順　　: " + (c.order === 1 ? "断裁積み（カット&スタック）" : "順並び"));
         if (c.marks) {
             msg.push("");
-            msg.push("※ トンボは印刷可能領域に描いています。PDF 書き出しでは");
+            msg.push("※ トンボは「トンボ」レイヤーの印刷可能領域に描いています。PDF 書き出しでは");
             msg.push("　 「裁ち落としと印刷可能領域」→「印刷可能領域を含む」をオンにしてください。");
             msg.push("　 書き出し側の「トンボ」はオフのままで構いません。");
         }
+        msg.push("");
+        msg.push("※ はがきの画像ボックスは線なし（線幅 0・線カラーなし）です。");
+        msg.push("　 画面で仕上がり位置に細い線が見える場合はフレーム端の表示なので、");
+        msg.push("　 表示 → エクストラ → フレーム端を隠す で消えます（印刷されません）。");
         if (folder) {
             msg.push("");
             msg.push("　保存先: " + folder.fsName);
