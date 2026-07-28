@@ -93,6 +93,10 @@ class Found {
 /* ---------- グローバル ---------- */
 const alerts = [];
 global.alert = m => alerts.push(m);
+/* confirm の戻り値をテストごとに差し替える */
+let confirmAnswer = false;
+const confirms = [];
+global.confirm = m => { confirms.push(m); return confirmAnswer; };
 global.File = function () { this.open = () => {}; this.write = () => {}; this.close = () => {}; };
 global.Folder = { desktop: '/tmp' };
 global.ScriptLanguage = { JAVASCRIPT: 1 };
@@ -110,6 +114,8 @@ function makeApp(doc) {
     activeDocument: doc,
     scriptPreferences: { enableRedraw: true },
     findChangeTextOptions: {},
+    /* doScript は関数をそのまま実行するだけ */
+    doScript: (fn) => fn(),
     get findTextPreferences() { return findPrefs; },
     set findTextPreferences(v) { findPrefs.appliedParagraphStyle = null; },
     get changeTextPreferences() { return {}; },
@@ -194,10 +200,14 @@ function check(label, cond) {
   if (!cond) failures++;
 }
 
-function runCase(label, layout, cfgPatch, pages) {
+/* opts.batch = true でバッチモード（確認ダイアログを出さない経路）を検証する */
+function runCase(label, layout, cfgPatch, pages, opts) {
+  opts = opts || {};
   const doc = buildDoc(layout, pages || 3);
   global.app = makeApp(doc);
-  const mod = new Function(src + '\n; return { run: run, CONFIG: CONFIG };')();
+  const mod = new Function(
+    src + '\n; return { run: run, CONFIG: CONFIG, setBatch: function (v) { BATCH = v; } };')();
+  mod.setBatch(!!opts.batch);      // 読み込み時の自動実行だけ BATCH_MODE で抑止している
   Object.assign(mod.CONFIG, cfgPatch);
   const t0 = Date.now();
   const res = mod.run();
@@ -256,16 +266,32 @@ r = runCase('表 / カッコ=none', 'tableCells', Object.assign({}, base, { PARE
 check('両方カッコなし', r.texts.indexOf('Alfarisi Abdullah1　様　保証人様') >= 0 &&
                         r.texts.indexOf('Dewanto Priyanggoro1　様') >= 0);
 
-/* --- 7. DRY RUN --- */
-r = runCase('表 / DRY RUN', 'tableCells', Object.assign({}, base, { DRY_RUN: true }));
+/* --- 7. 下見 → 確認ダイアログで「いいえ」 --- */
+confirmAnswer = false;
+confirms.length = 0;
+r = runCase('下見 → いいえ', 'tableCells', Object.assign({}, base, { DRY_RUN: true }));
+check('確認ダイアログが出る', confirms.length === 1);
+check('文面に件数が入っている', /対象: 3 組/.test(confirms[0]));
+check('文面に変更前後が入っている', /Dewanto Priyanggoro1/.test(confirms[0]) &&
+                                    /Alfarisi Abdullah1/.test(confirms[0]));
 check('検出はする', r.res.pairs === N);
 check('1文字も変わらない', r.res.done === 0 &&
       r.texts.indexOf('Dewanto Priyanggoro1　様') >= 0 &&
       r.texts.indexOf('（Alfarisi Abdullah1　様　保証人様）') >= 0);
 
-/* --- 8. スタイル名が違う --- */
+/* --- 7b. 下見 → 確認ダイアログで「はい」 --- */
+confirmAnswer = true;
+confirms.length = 0;
+r = runCase('下見 → はい', 'tableCells', Object.assign({}, base, { DRY_RUN: true }));
+check('確認ダイアログが出る', confirms.length === 1);
+check('その場で3件実行される', r.res.done === N);
+check('上が保証人名', r.texts.indexOf('Alfarisi Abdullah1　様　保証人様') >= 0);
+check('下が学生名',   r.texts.indexOf('（Dewanto Priyanggoro1　様）') >= 0);
+confirmAnswer = false;
+
+/* --- 8. スタイル名が違う（バッチモードで戻り値を確認） --- */
 r = runCase('存在しないスタイル名', 'tableCells',
-            Object.assign({}, base, { STYLE_TOP: 'ないスタイル' }));
+            Object.assign({}, base, { STYLE_TOP: 'ないスタイル' }), 3, { batch: true });
 check('エラーを返して中断する', r.res && r.res.error && r.res.pairs === 0);
 check('何も書き換わっていない', r.texts.indexOf('Dewanto Priyanggoro1　様') >= 0);
 

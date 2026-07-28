@@ -26,10 +26,13 @@
  * 使い方：
  *   1) まず 01_inspect_styles.jsx を実行して段落スタイル名を確認
  *   2) 下の CONFIG に、その 2 つのスタイル名を書き写す
- *   3) DRY_RUN: true のまま実行して、プレビュー（何も書き換わりません）を確認
- *   4) 問題なければ DRY_RUN: false にして本番実行
+ *   3) 実行すると、まず「これから何をどう変えるか」の下見が出ます。
+ *      この時点ではまだ 1 文字も変わっていません。
+ *      内容を確認して［はい］を押すと、その場で入れ替えが実行されます。
+ *      ［いいえ］なら何も変更しません。
  *
  * ※ 必ずファイルのコピーで試してください。
+ * ※ 取り消しは 編集 → 取り消し で一括で戻せます。
  * ------------------------------------------------------------
  */
 
@@ -56,7 +59,8 @@ var CONFIG = {
          "keep"   … 何もしない。カッコごと丸ごと入れ替える                */
     PAREN_POSITION: "bottom",
 
-    /* true = 下見だけ（1文字も書き換えない）／ false = 実際に入れ替える */
+    /* true  = まず下見を見せて「実行しますか？」と確認してから入れ替える（推奨）
+       false = 確認なしでいきなり入れ替える                                    */
     DRY_RUN: true,
 
     /* マスターページ上のテキストも対象にするか（通常は false のまま） */
@@ -94,7 +98,7 @@ if (!BATCH) {
 
 function run() {
     var doc = app.activeDocument;
-    g = { pairs: [], errors: [], warns: [], useAuto: false,
+    g = { pairs: [], errors: [], warns: [], useAuto: false, done: 0,
           stTop: null, stBottom: null, foundTop: 0, foundBottom: 0, method: "" };
 
     /* --- 段落スタイルの解決 --- */
@@ -156,26 +160,32 @@ function run() {
             }
         }
 
-        /* --- 実行 ---
-         * 後ろから処理する。テキストを書き換えると同じストーリー内の
-         * 後方の位置指定がずれるため、必ず「後ろ → 前」の順で書き込む。 */
-        var done = 0;
-        if (!CONFIG.DRY_RUN) {
-            prog = openProgress("入れ替えています…", g.pairs.length);
-            for (i = g.pairs.length - 1; i >= 0; i--) {
-                var q = g.pairs[i];
-                try {
-                    applyPair(q);
-                    done++;
-                } catch (e) {
-                    g.errors.push(describe(q) + ": " + e);
-                }
-                if (prog && (i % 25 === 0)) stepProgress(prog, g.pairs.length - i);
+        /* --- 下見モード：内容を見せて、そのまま実行するか確認する --- */
+        if (CONFIG.DRY_RUN) {
+            var report = buildReport(doc, 0);
+            saveLog(report);
+            if (BATCH) return result(0, report);
+
+            if (!confirm(previewMessage(), true, "宛名2行の入れ替え（下見）")) {
+                alert("中止しました。ドキュメントは変更していません。\n\n" +
+                      "詳細ログ: デスクトップ / indesign_swap_log.txt");
+                return result(0, report);
             }
-            closeProgress(prog); prog = null;
+            /* 取り消し 1 回で全部戻せるよう、書き込みだけを 1 つの操作にまとめる */
+            app.doScript(applyAll, ScriptLanguage.JAVASCRIPT, undefined,
+                         UndoModes.ENTIRE_SCRIPT, "宛名2行の入れ替え");
+            var report2 = buildReport(doc, g.done);
+            saveLog(report2);
+            alert(doneMessage(g.done));
+            return result(g.done, report2);
         }
 
-        return writeLog(doc, done);
+        /* --- 本番モード（すでに doScript の中） --- */
+        applyAll();
+        var rep = buildReport(doc, g.done);
+        saveLog(rep);
+        if (!BATCH) alert(doneMessage(g.done));
+        return result(g.done, rep);
 
     } finally {
         closeProgress(prog);
@@ -441,8 +451,31 @@ function classifyAuto(txt) {
 }
 
 /* ------------------------------------------------------------
- * 書き込み。下の行 → 上の行 の順（後方から）で書く。
+ * 書き込み
+ *
+ * 後ろのペアから処理する。テキストを書き換えると同じストーリー内の
+ * 後方の位置指定がずれるため、必ず「後ろ → 前」の順で書き込む。
  * ---------------------------------------------------------- */
+function applyAll() {
+    var prog = openProgress("入れ替えています…", g.pairs.length);
+    g.done = 0;
+    try {
+        for (var i = g.pairs.length - 1; i >= 0; i--) {
+            try {
+                applyPair(g.pairs[i]);
+                g.done++;
+            } catch (e) {
+                g.errors.push(describe(g.pairs[i]) + ": " + e);
+            }
+            if (prog && (i % 25 === 0)) stepProgress(prog, g.pairs.length - i);
+        }
+    } finally {
+        closeProgress(prog);
+    }
+    return g.done;
+}
+
+/** 下の行 → 上の行 の順で書く（下の行の方が後ろにあるため） */
 function applyPair(p) {
     if (p.kind === "range") {
         p.botObj.contents = p.newBottom + p.botBreak;
@@ -590,19 +623,54 @@ function closeProgress(w) {
     try { w.close(); } catch (e) {}
 }
 
-/* ---------- ログ ---------- */
+/* ---------- 画面表示とログ ---------- */
 
-function writeLog(doc, done) {
+/** 下見のあとに出す確認ダイアログの文面 */
+function previewMessage() {
+    var s = "【下見】まだ 1 文字も変更していません。\n";
+    s += "これから次の内容で入れ替えます。\n\n";
+    s += "対象: " + g.pairs.length + " 組\n";
+    s += "（検出: 上の行 " + g.foundTop + " 件 ／ 下の行 " + g.foundBottom + " 件）\n";
+    if (g.warns.length) s += "警告: " + g.warns.length + " 件 ← ログを確認してください\n";
+
+    for (var i = 0; i < Math.min(3, g.pairs.length); i++) {
+        var p = g.pairs[i];
+        s += "\n──────────────\n";
+        s += "上 : " + p.oldTop    + "\n   → " + p.newTop    + "\n";
+        s += "下 : " + p.oldBottom + "\n   → " + p.newBottom + "\n";
+    }
+    if (g.pairs.length > 3) s += "\n… 他 " + (g.pairs.length - 3) + " 組\n";
+
+    s += "\n詳細ログ: デスクトップ / indesign_swap_log.txt\n\n";
+    s += "この内容で実際に入れ替えますか？\n";
+    s += "（取り消しは 編集 → 取り消し で一括で戻せます）";
+    return s;
+}
+
+function doneMessage(done) {
+    var s = "【完了】" + done + " 件を入れ替えました。\n";
+    s += "取り消しは 編集 → 取り消し で一括で戻せます。\n\n";
+    if (g.errors.length) s += "■ 失敗: " + g.errors.length + " 件（ログを確認してください）\n";
+    if (g.warns.length)  s += "■ 警告: " + g.warns.length + " 件（ログを確認してください）\n";
+    s += "\n詳細ログ: デスクトップ / indesign_swap_log.txt";
+    return s;
+}
+
+function result(done, report) {
+    return { pairs: g.pairs.length, done: done,
+             warns: g.warns.length, errors: g.errors.length, report: report };
+}
+
+function buildReport(doc, done) {
     var lines = [];
     lines.push("ドキュメント: " + doc.name);
-    lines.push("モード: " + (CONFIG.DRY_RUN ? "下見（DRY RUN・未変更）" : "本番実行"));
+    lines.push("状態: " + (done > 0 ? "実行済み" : "未変更（下見）"));
     lines.push("方式: " + g.method);
     lines.push("判定: " + (g.useAuto ? "自動判定" : "段落スタイル指定（" +
                             CONFIG.STYLE_TOP + " / " + CONFIG.STYLE_BOTTOM + "）"));
     lines.push("カッコ: " + CONFIG.PAREN_POSITION);
     lines.push("検出: 上の行 " + g.foundTop + " 件 ／ 下の行 " + g.foundBottom + " 件");
-    lines.push("対象ペア: " + g.pairs.length + " 件" +
-               (CONFIG.DRY_RUN ? "" : "  ／ 書き換え成功: " + done + " 件"));
+    lines.push("対象ペア: " + g.pairs.length + " 件  ／ 書き換え済み: " + done + " 件");
     lines.push("");
 
     var lim = Math.min(CONFIG.LOG_LIMIT, g.pairs.length), i;
@@ -624,14 +692,11 @@ function writeLog(doc, done) {
         lines.push("■ エラー (" + g.errors.length + " 件)");
         for (i = 0; i < Math.min(30, g.errors.length); i++) lines.push("   " + g.errors[i]);
     }
+    return lines.join("\n");
+}
 
-    var report = lines.join("\n");
-
-    if (BATCH) {
-        return { pairs: g.pairs.length, done: done,
-                 warns: g.warns.length, errors: g.errors.length, report: report };
-    }
-
+function saveLog(report) {
+    if (BATCH) return;
     try {
         var f = new File(Folder.desktop + "/indesign_swap_log.txt");
         f.encoding = "UTF-8";
@@ -639,13 +704,4 @@ function writeLog(doc, done) {
         f.write(report);
         f.close();
     } catch (e) {}
-
-    alert((CONFIG.DRY_RUN
-            ? "【下見モード】ドキュメントは変更していません。\n内容を確認して問題なければ CONFIG.DRY_RUN を false にして再実行してください。\n\n"
-            : "【完了】" + done + " 件を入れ替えました。\n（取り消しは 編集 → 取り消し で一括で戻せます）\n\n")
-          + "詳細ログ: デスクトップ / indesign_swap_log.txt\n\n"
-          + report.substr(0, 1500));
-
-    return { pairs: g.pairs.length, done: done,
-             warns: g.warns.length, errors: g.errors.length, report: report };
 }
