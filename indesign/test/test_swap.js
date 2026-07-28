@@ -21,6 +21,7 @@ class Paragraph {
     this._text = text; this.appliedParagraphStyle = style; this._frame = frame;
   }
   get contents() { return this._text; }
+  set contents(v) { this._text = v; }
   get parentTextFrames() { return this._frame ? [this._frame] : []; }
   get texts() {
     const self = this;
@@ -56,7 +57,7 @@ function coll(arr) { const c = new Collection(); arr.forEach(x => c.push(x)); re
 class Cell {
   constructor(paras, table) { this._paras = paras; this.parent = table; }
   get paragraphs() { return coll(this._paras); }
-  get tables() { return coll([]); }          // 入れ子の表なし
+  get tables() { return coll([]); }
 }
 class Table {
   constructor(id, cellParas, frame) {
@@ -71,8 +72,23 @@ class Story {
   constructor(id, paras, tables) { this.id = id; this._paras = paras; this._tables = tables || []; }
   get paragraphs() { return coll(this._paras); }
   get tables() { return coll(this._tables); }
+  /* 段落を「ストーリー本文 → 表のセル」の順に平坦化（＝ドキュメント順の近似） */
+  flatten() {
+    const out = this._paras.slice();
+    this._tables.forEach(t => t._cells.forEach(c => c._paras.forEach(p => out.push(p))));
+    return out;
+  }
 }
 class TextFrame { constructor(pageName) { this.parentPage = { name: pageName }; } }
+
+/* findText が返すオブジェクト。段落の実体を指し、contents で丸ごと置換できる */
+class Found {
+  constructor(para, story) { this._p = para; this._story = story; }
+  get contents() { return this._p._text; }
+  set contents(v) { this._p._text = v; }
+  get parentStory() { return this._story; }
+  get parentTextFrames() { return this._p.parentTextFrames; }
+}
 
 /* ---------- グローバル ---------- */
 const alerts = [];
@@ -81,8 +97,37 @@ global.File = function () { this.open = () => {}; this.write = () => {}; this.cl
 global.Folder = { desktop: '/tmp' };
 global.ScriptLanguage = { JAVASCRIPT: 1 };
 global.UndoModes = { ENTIRE_SCRIPT: 1 };
+global.NothingEnum = { NOTHING: null };
 global.ParagraphStyleGroup = class ParagraphStyleGroup {};
 global.BATCH_MODE = true;   // 自動実行を止める
+/* Window は未定義 → openProgress は try/catch で null を返す（ヘッドレス動作の確認も兼ねる） */
+
+let findCalls = 0;
+function makeApp(doc) {
+  const findPrefs = { appliedParagraphStyle: null };
+  const app = {
+    documents: { length: 1 },
+    activeDocument: doc,
+    scriptPreferences: { enableRedraw: true },
+    findChangeTextOptions: {},
+    get findTextPreferences() { return findPrefs; },
+    set findTextPreferences(v) { findPrefs.appliedParagraphStyle = null; },
+    get changeTextPreferences() { return {}; },
+    set changeTextPreferences(v) {},
+  };
+  doc.findText = () => {
+    findCalls++;
+    const want = findPrefs.appliedParagraphStyle;
+    const out = [];
+    doc.stories.forEach(s => {
+      s.flatten().forEach(p => {
+        if (want && p.appliedParagraphStyle === want) out.push(new Found(p, s));
+      });
+    });
+    return out;
+  };
+  return app;
+}
 
 /* ---------- ドキュメント生成 ---------- */
 const stBig = new Style('保護者氏名', 1);
@@ -92,7 +137,7 @@ const stAddr = new Style('住所', 3);
 /**
  * layout:
  *   'frame'         … 1つのテキストフレームに 住所/上/下 の3段落
- *   'twoFrames'     … 上と下が別々のテキストフレーム
+ *   'twoFrames'     … 上と下が別々のテキストフレーム（別ストーリー）
  *   'tableCells'    … 上と下が同じ表の別セル（今回の実際のレイアウト）
  *   'cellPlusFrame' … 上が表のセル、下が普通のテキストフレーム
  */
@@ -111,19 +156,19 @@ function buildDoc(layout, pages) {
       ]));
     } else if (layout === 'twoFrames') {
       const f2 = new TextFrame(String(i));
-      stories.push(new Story(200 + i, [new Paragraph(top, stBig, f)]));
-      stories.push(new Story(300 + i, [new Paragraph(bot, stSmall, f2)]));
+      stories.push(new Story(200000 + i, [new Paragraph(top, stBig, f)]));
+      stories.push(new Story(300000 + i, [new Paragraph(bot, stSmall, f2)]));
     } else if (layout === 'tableCells') {
-      const tbl = new Table(400 + i, [
-        [new Paragraph('東京都板橋区志村 3 丁目 -18-18\rコーポアスカ 204 号', stAddr, null)],
-        [new Paragraph(top, stBig, null)],
-        [new Paragraph(bot, stSmall, null)],
+      const tbl = new Table(400000 + i, [
+        [new Paragraph('東京都板橋区志村 3 丁目 -18-18\rコーポアスカ 204 号', stAddr, f)],
+        [new Paragraph(top, stBig, f)],
+        [new Paragraph(bot, stSmall, f)],
       ], f);
-      stories.push(new Story(500 + i, [new Paragraph('\r', stAddr, f)], [tbl]));
+      stories.push(new Story(500000 + i, [new Paragraph('\r', stAddr, f)], [tbl]));
     } else if (layout === 'cellPlusFrame') {
-      const tbl = new Table(600 + i, [[new Paragraph(top, stBig, null)]], f);
-      stories.push(new Story(700 + i, [new Paragraph('\r', stAddr, f)], [tbl]));
-      stories.push(new Story(800 + i, [new Paragraph(bot, stSmall, f)]));
+      const tbl = new Table(600000 + i, [[new Paragraph(top, stBig, f)]], f);
+      stories.push(new Story(700000 + i, [new Paragraph('\r', stAddr, f)], [tbl]));
+      stories.push(new Story(800000 + i, [new Paragraph(bot, stSmall, f)]));
     }
   }
   return {
@@ -134,13 +179,9 @@ function buildDoc(layout, pages) {
   };
 }
 
-/* すべての段落テキストを平坦に取り出す（検証用） */
 function allTexts(doc) {
   const out = [];
-  doc.stories.forEach(s => {
-    s._paras.forEach(p => out.push(p.contents));
-    s._tables.forEach(t => t._cells.forEach(c => c._paras.forEach(p => out.push(p.contents))));
-  });
+  doc.stories.forEach(s => s.flatten().forEach(p => out.push(p.contents)));
   return out;
 }
 
@@ -155,14 +196,16 @@ function check(label, cond) {
 
 function runCase(label, layout, cfgPatch, pages) {
   const doc = buildDoc(layout, pages || 3);
-  global.app = { activeDocument: doc, documents: { length: 1 } };
+  global.app = makeApp(doc);
   const mod = new Function(src + '\n; return { run: run, CONFIG: CONFIG };')();
   Object.assign(mod.CONFIG, cfgPatch);
+  const t0 = Date.now();
   const res = mod.run();
   console.log('=== ' + label + ' ===');
   console.log('  ペア数: ' + (res ? res.pairs : 0) + ' / 実行: ' + (res ? res.done : 0) +
               ' / 警告: ' + (res ? res.warns : '-') + ' / エラー: ' + (res ? res.errors : '-') +
-              (res && res.error ? ' / ' + res.error : ''));
+              (res && res.error ? ' / ' + res.error : '') + ' / ' + (Date.now() - t0) + 'ms');
+  check('画面更新フラグが元に戻っている', global.app.scriptPreferences.enableRedraw === true);
   return { doc, res, texts: allTexts(doc) };
 }
 
@@ -176,8 +219,9 @@ r = runCase('同一フレームの3段落', 'frame', base);
 check('3件処理された', r.res.pairs === N && r.res.done === N);
 check('上が保証人名（カッコなし）', r.texts.indexOf('Alfarisi Abdullah1　様　保証人様\r') >= 0);
 check('下が学生名（カッコ付き）',   r.texts.indexOf('（Dewanto Priyanggoro1　様）') >= 0);
+check('段落の区切りが保たれている', r.texts.indexOf('東京都板橋区志村 3 丁目 -18-18\r') >= 0);
 
-/* --- 2. 別フレーム --- */
+/* --- 2. 別フレーム（別ストーリー） --- */
 r = runCase('上下が別のテキストフレーム', 'twoFrames', base);
 check('3件処理された', r.res.pairs === N && r.res.done === N);
 check('上が保証人名', r.texts.indexOf('Alfarisi Abdullah1　様　保証人様') >= 0);
@@ -195,9 +239,10 @@ check('住所セルは無傷', r.texts.indexOf('東京都板橋区志村 3 丁�
 r = runCase('上が表のセル・下がテキストフレーム', 'cellPlusFrame', base);
 check('3件処理された', r.res.pairs === N && r.res.done === N);
 check('上が保証人名', r.texts.indexOf('Alfarisi Abdullah1　様　保証人様') >= 0);
+check('下が学生名',   r.texts.indexOf('（Dewanto Priyanggoro1　様）') >= 0);
 
-/* --- 5. 自動判定モード（表） --- */
-r = runCase('表 / 自動判定モード', 'tableCells',
+/* --- 5. 自動判定モード（低速な全走査パス） --- */
+r = runCase('表 / 自動判定モード（全走査）', 'tableCells',
             { STYLE_TOP: '', STYLE_BOTTOM: '', DRY_RUN: false, PAREN_POSITION: 'bottom' });
 check('3件処理された', r.res.pairs === N && r.res.done === N);
 check('上が保証人名', r.texts.indexOf('Alfarisi Abdullah1　様　保証人様') >= 0);
@@ -218,10 +263,20 @@ check('1文字も変わらない', r.res.done === 0 &&
       r.texts.indexOf('Dewanto Priyanggoro1　様') >= 0 &&
       r.texts.indexOf('（Alfarisi Abdullah1　様　保証人様）') >= 0);
 
-/* --- 8. 3000ページ規模 --- */
+/* --- 8. スタイル名が違う --- */
+r = runCase('存在しないスタイル名', 'tableCells',
+            Object.assign({}, base, { STYLE_TOP: 'ないスタイル' }));
+check('エラーを返して中断する', r.res && r.res.error && r.res.pairs === 0);
+check('何も書き換わっていない', r.texts.indexOf('Dewanto Priyanggoro1　様') >= 0);
+
+/* --- 9. 3000ページ規模（findText 呼び出しは 2 回で済むこと） --- */
+findCalls = 0;
 r = runCase('表 / 3000ページ', 'tableCells', base, 3000);
 check('3000件処理された', r.res.pairs === 3000 && r.res.done === 3000);
 check('警告なし', r.res.warns === 0);
+check('findText はドキュメント全体で2回だけ', findCalls === 2);
+check('先頭レコードが正しい', r.texts.indexOf('Alfarisi Abdullah1　様　保証人様') >= 0);
+check('最終レコードが正しい', r.texts.indexOf('（Dewanto Priyanggoro3000　様）') >= 0);
 
 console.log('');
 console.log(failures === 0 ? '全テスト成功' : (failures + ' 件失敗'));
