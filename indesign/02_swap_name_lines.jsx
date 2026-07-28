@@ -11,6 +11,12 @@
  * 段落スタイルは行の位置に貼りついたままなので、
  * 文字サイズ・行間・字送りなどは自動的にご希望どおりに入れ替わります。
  *
+ * 対応レイアウト：
+ *   ・2 行が同じテキストフレームに並んでいる
+ *   ・2 行が別々のテキストフレームに分かれている
+ *   ・2 行が表（テーブル）の別々のセルに入っている  ← 入れ子の表も可
+ *   ・片方がセル、もう片方がテキストフレーム
+ *
  * 使い方：
  *   1) まず 01_inspect_styles.jsx を実行して段落スタイル名を確認
  *   2) 下の CONFIG に、その 2 つのスタイル名を書き写す
@@ -128,8 +134,8 @@ function run() {
         for (i = 0; i < g.pairs.length; i++) {
             var q = g.pairs[i];
             try {
-                setParagraphText(q.story, q.topIdx, q.newTop);
-                setParagraphText(q.story2 ? q.story2 : q.story, q.bottomIdx, q.newBottom);
+                setParagraphText(q.topC.obj, q.topIdx, q.newTop);
+                setParagraphText(q.botC.obj, q.bottomIdx, q.newBottom);
                 done++;
             } catch (e) {
                 g.errors.push(q.pageName + " ページ: " + e);
@@ -141,100 +147,147 @@ function run() {
 }
 
 /* ------------------------------------------------------------
- * 対象ペアの収集
- *   ① 同じストーリー（同じテキストフレーム）内で上下に並んでいる場合
- *   ② 2 行が別々のテキストフレームに分かれている場合（同一ページで組む）
+ * テキストの入れ物（コンテナ）を全部集める
+ *
+ * InDesign の story.paragraphs は「表のセルの中身」を含まない。
+ * そのため、ストーリーだけでなく 表のセル（入れ子の表も）を
+ * 個別のコンテナとして集める必要がある。
+ *
+ *   { obj: Story または Cell, groupId: 同じ表/ストーリーをまとめる鍵, order: 並び順 }
  * ---------------------------------------------------------- */
-function collectPairs(doc) {
-    var leftoverTop = [], leftoverBottom = [];
+function collectContainers(doc) {
+    var list = [];
     var stories = doc.stories;
-
     for (var s = 0; s < stories.length; s++) {
         var story = stories[s];
-        var n = story.paragraphs.length;
-        if (n === 0) continue;
+        list.push({ obj: story, kind: "story", groupId: "S" + story.id, order: 0, label: "ストーリー" + story.id });
+        collectTables(story, list, "S" + story.id);
+    }
+    return list;
+}
 
-        var contents = asArray(story.paragraphs.everyItem().contents, n);
+function collectTables(textObj, list, parentKey) {
+    var tables;
+    try { tables = textObj.tables; } catch (e) { return; }
+    if (!tables) return;
+    for (var t = 0; t < tables.length; t++) {
+        var tbl = tables[t];
+        var key, cells;
+        try {
+            key = "T" + tbl.id;
+            cells = tbl.cells;
+        } catch (e) { continue; }
+        for (var c = 0; c < cells.length; c++) {
+            var cell = cells[c];
+            list.push({ obj: cell, kind: "cell", groupId: key, order: c,
+                        label: "表" + tbl.id + " セル" + c });
+            collectTables(cell, list, key);      // セルの中の入れ子の表
+        }
+    }
+}
+
+/* ------------------------------------------------------------
+ * 対象ペアの収集（3 段階）
+ *   ① 同じ入れ物（同じフレーム／同じセル）の中で上下に並んでいる場合
+ *   ② 同じ表の中で、上下がセルに分かれている場合
+ *   ③ それでも余ったものを、同じページどうしで組む
+ * ---------------------------------------------------------- */
+function collectPairs(doc) {
+    var containers = collectContainers(doc);
+    var leftovers = [];
+
+    for (var ci = 0; ci < containers.length; ci++) {
+        var ct = containers[ci];
+        var paras, n;
+        try {
+            paras = ct.obj.paragraphs;
+            n = paras.length;
+        } catch (e) { continue; }
+        if (!n) continue;
+
+        var contents = asArray(paras.everyItem().contents, n);
         var styles   = g.useAuto ? null
-                                 : asArray(story.paragraphs.everyItem().appliedParagraphStyle, n);
+                                 : asArray(paras.everyItem().appliedParagraphStyle, n);
 
         var tops = [], bottoms = [];
         for (var k = 0; k < n; k++) {
             var txt = trimPara(contents[k]);
             if (txt === "") continue;
             var kind = g.useAuto ? classifyAuto(txt) : classifyByStyle(styles[k]);
-            if (kind === "T") tops.push({ idx: k, txt: txt });
-            else if (kind === "B") bottoms.push({ idx: k, txt: txt });
+            if (kind === "T")      tops.push({ ct: ct, idx: k, txt: txt, kind: "T" });
+            else if (kind === "B") bottoms.push({ ct: ct, idx: k, txt: txt, kind: "B" });
         }
         if (tops.length === 0 && bottoms.length === 0) continue;
 
-        /* ① 同一ストーリー内で、出現順に 上→下 で組にする */
-        var pairCount = Math.min(tops.length, bottoms.length);
-        var used = 0;
-        for (var c = 0; c < pairCount; c++) {
-            if (bottoms[c].idx <= tops[c].idx) {      // 想定と上下が逆
-                g.warns.push("ストーリーID " + story.id + ": 上下の順序が想定と異なるため飛ばしました。");
-                continue;
+        /* ① 同じ入れ物の中で出現順に組にする */
+        var m = Math.min(tops.length, bottoms.length);
+        for (var c2 = 0; c2 < m; c2++) {
+            if (bottoms[c2].idx < tops[c2].idx) {
+                g.warns.push(ct.label + ": 上下の順序が想定と逆ですが、段落スタイルを優先して組みました。");
             }
-            g.pairs.push({
-                story: story,
-                topIdx: tops[c].idx, bottomIdx: bottoms[c].idx,
-                oldTop: tops[c].txt, oldBottom: bottoms[c].txt,
-                pageName: pageNameOf(story, tops[c].idx)
-            });
-            used++;
+            g.pairs.push(makePair(tops[c2], bottoms[c2], "同一フレーム"));
         }
-
-        /* ② 余った行はページ単位で組み直す（フレームが別々のレイアウト用） */
-        for (var t = pairCount; t < tops.length; t++)
-            leftoverTop.push({ story: story, idx: tops[t].idx, txt: tops[t].txt,
-                               page: pageNameOf(story, tops[t].idx) });
-        for (var b = pairCount; b < bottoms.length; b++)
-            leftoverBottom.push({ story: story, idx: bottoms[b].idx, txt: bottoms[b].txt,
-                                  page: pageNameOf(story, bottoms[b].idx) });
-        if (used === 0 && pairCount > 0) { /* 順序異常のみ。警告済み */ }
+        for (var t2 = m; t2 < tops.length; t2++)    leftovers.push(tops[t2]);
+        for (var b2 = m; b2 < bottoms.length; b2++) leftovers.push(bottoms[b2]);
     }
 
-    /* 余りをページで突き合わせ */
-    if (leftoverTop.length || leftoverBottom.length) {
-        var byPage = {}, i;
-        for (i = 0; i < leftoverTop.length; i++) {
-            var kt = leftoverTop[i].page;
-            if (!byPage[kt]) byPage[kt] = { t: [], b: [] };
-            byPage[kt].t.push(leftoverTop[i]);
-        }
-        for (i = 0; i < leftoverBottom.length; i++) {
-            var kb = leftoverBottom[i].page;
-            if (!byPage[kb]) byPage[kb] = { t: [], b: [] };
-            byPage[kb].b.push(leftoverBottom[i]);
-        }
-        for (var pg in byPage) {
-            var box = byPage[pg];
-            if (box.t.length !== box.b.length) {
-                g.warns.push(pg + " ページ: 上の行 " + box.t.length + " 件／下の行 " +
-                             box.b.length + " 件 で数が合わないため飛ばしました。");
-                continue;
-            }
-            for (var m = 0; m < box.t.length; m++) {
-                if (box.t[m].story.id !== box.b[m].story.id) {
-                    /* 別ストーリーどうし。個別に書き換えるので story を分けて持つ */
-                    g.pairs.push({
-                        story: box.t[m].story, topIdx: box.t[m].idx,
-                        story2: box.b[m].story, bottomIdx: box.b[m].idx,
-                        oldTop: box.t[m].txt, oldBottom: box.b[m].txt,
-                        pageName: pg
-                    });
-                } else {
-                    g.pairs.push({
-                        story: box.t[m].story,
-                        topIdx: box.t[m].idx, bottomIdx: box.b[m].idx,
-                        oldTop: box.t[m].txt, oldBottom: box.b[m].txt,
-                        pageName: pg
-                    });
-                }
-            }
+    /* ② 同じ表の中で組む（上下がセルに分かれているレイアウト） */
+    leftovers = pairLeftovers(leftovers, function (it) { return it.ct.groupId; }, "同一の表");
+
+    /* ③ 残りを同じページどうしで組む */
+    var i;
+    for (i = 0; i < leftovers.length; i++) leftovers[i].page = pageNameOf(leftovers[i].ct, leftovers[i].idx);
+    leftovers = pairLeftovers(leftovers, function (it) { return it.page; }, "同一ページ");
+
+    /* 最後まで相手が見つからなかったもの */
+    var restT = 0, restB = 0;
+    for (i = 0; i < leftovers.length; i++) {
+        if (leftovers[i].kind === "T") restT++; else restB++;
+    }
+    if (restT || restB) {
+        g.warns.push("相手が見つからなかった行: 上の行 " + restT + " 件 ／ 下の行 " + restB + " 件");
+        for (i = 0; i < Math.min(10, leftovers.length); i++) {
+            g.warns.push("   ・[" + leftovers[i].kind + "] " + leftovers[i].ct.label +
+                         " 「" + leftovers[i].txt + "」");
         }
     }
+}
+
+/** 余った行を key ごとにまとめて、出現順に上下を突き合わせる */
+function pairLeftovers(list, keyFn, where) {
+    var buckets = {}, order = [], i, key;
+    for (i = 0; i < list.length; i++) {
+        key = String(keyFn(list[i]));
+        if (!buckets[key]) { buckets[key] = { t: [], b: [] }; order.push(key); }
+        buckets[key][list[i].kind === "T" ? "t" : "b"].push(list[i]);
+    }
+
+    var rest = [];
+    for (i = 0; i < order.length; i++) {
+        var box = buckets[order[i]];
+        box.t.sort(byPosition);
+        box.b.sort(byPosition);
+        var m = Math.min(box.t.length, box.b.length);
+        for (var j = 0; j < m; j++) g.pairs.push(makePair(box.t[j], box.b[j], where));
+        for (j = m; j < box.t.length; j++) rest.push(box.t[j]);
+        for (j = m; j < box.b.length; j++) rest.push(box.b[j]);
+    }
+    return rest;
+}
+
+function byPosition(a, b) {
+    if (a.ct.order !== b.ct.order) return a.ct.order - b.ct.order;
+    return a.idx - b.idx;
+}
+
+function makePair(top, bottom, where) {
+    return {
+        topC: top.ct,       topIdx: top.idx,
+        botC: bottom.ct,    bottomIdx: bottom.idx,
+        oldTop: top.txt,    oldBottom: bottom.txt,
+        where: where,
+        pageName: top.page ? top.page : pageNameOf(top.ct, top.idx)
+    };
 }
 
 function classifyByStyle(style) {
@@ -252,8 +305,8 @@ function classifyAuto(txt) {
 /* ------------------------------------------------------------
  * 段落の本文だけを差し替える（末尾の改行文字は残す＝段落数を変えない）
  * ---------------------------------------------------------- */
-function setParagraphText(story, idx, newText) {
-    var p = story.paragraphs[idx];
+function setParagraphText(container, idx, newText) {
+    var p = container.paragraphs[idx];
     var n = p.characters.length;
     if (n === 0) return;
     var last = p.characters[n - 1].contents;
@@ -320,11 +373,22 @@ function fullStyleName(style) {
     return name;
 }
 
-function pageNameOf(story, idx) {
+function pageNameOf(container, idx) {
+    /* 1) 段落から直接たどる */
     try {
-        var frames = story.paragraphs[idx].parentTextFrames;
+        var frames = container.obj.paragraphs[idx].parentTextFrames;
         if (frames.length > 0 && frames[0].parentPage) return String(frames[0].parentPage.name);
     } catch (e) {}
+
+    /* 2) セルの場合は 表 → 親ストーリー上の位置 からたどる */
+    if (container.kind === "cell") {
+        try {
+            var tbl = container.obj.parent;                 // Table
+            while (tbl && tbl.constructor.name !== "Table") tbl = tbl.parent;
+            var fr = tbl.storyOffset.parentTextFrames;
+            if (fr.length > 0 && fr[0].parentPage) return String(fr[0].parentPage.name);
+        } catch (e2) {}
+    }
     return "(不明)";
 }
 
@@ -344,7 +408,7 @@ function writeLog(doc, done) {
     var lim = Math.min(CONFIG.LOG_LIMIT, g.pairs.length);
     for (var i = 0; i < lim; i++) {
         var p = g.pairs[i];
-        lines.push("[" + p.pageName + " ページ]");
+        lines.push("[" + p.pageName + " ページ / " + p.where + "]");
         lines.push("   上 : " + p.oldTop    + "   →   " + p.newTop);
         lines.push("   下 : " + p.oldBottom + "   →   " + p.newBottom);
     }

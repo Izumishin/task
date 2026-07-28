@@ -7,6 +7,8 @@
  *   ・（末吉　康志　様　保証人様） の段落スタイル名
  * を控えてから 02_swap_name_lines.jsx の CONFIG に書き写してください。
  *
+ * 表（テーブル）で組んである場合も、セルの中まで調べます。
+ *
  * 使い方：対象の InDesign ドキュメントを開いた状態で
  *         [ファイル] → [スクリプト] からダブルクリック実行。
  * ------------------------------------------------------------
@@ -51,14 +53,8 @@ function main() {
             frameNo++;
             out.push("-- テキストフレーム " + frameNo +
                      " (ストーリーID: " + it.parentStory.id + ")");
-            var paras = it.paragraphs;
-            for (var j = 0; j < paras.length; j++) {
-                var txt = String(paras[j].contents).replace(/[\r\n\u2029]+$/, "");
-                out.push("   [" + j + "] スタイル=「" +
-                         fullStyleName(paras[j].appliedParagraphStyle) +
-                         "」 / 文字サイズ=" + sizeOf(paras[j]) +
-                         " / 本文=「" + txt + "」");
-            }
+            dumpParagraphs(it, out, "   ");
+            dumpTables(it, out, "   ");
         }
         out.push("");
     }
@@ -72,6 +68,46 @@ function main() {
 
     alert("デスクトップに indesign_style_report.txt を書き出しました。\n\n" +
           report.substr(0, 1800));
+}
+
+/** テキストの入れ物（フレーム／セル）の段落を書き出す */
+function dumpParagraphs(container, out, indent) {
+    var paras;
+    try { paras = container.paragraphs; } catch (e) { return; }
+    for (var j = 0; j < paras.length; j++) {
+        var txt = String(paras[j].contents).replace(/[\r\n\u2029]+$/, "");
+        if (txt === "") continue;
+        out.push(indent + "[" + j + "] スタイル=「" +
+                 fullStyleName(paras[j].appliedParagraphStyle) +
+                 "」 / 文字サイズ=" + sizeOf(paras[j]) +
+                 " / 本文=「" + txt + "」");
+    }
+}
+
+/** 表の中（セル・入れ子の表）を書き出す */
+function dumpTables(container, out, indent) {
+    var tables;
+    try { tables = container.tables; } catch (e) { return; }
+    if (!tables) return;
+    for (var t = 0; t < tables.length; t++) {
+        var tbl = tables[t];
+        out.push(indent + "◆ 表 " + (t + 1) +
+                 " (" + tbl.rows.length + "行 × " + tbl.columns.length + "列)");
+        var cells = tbl.cells;
+        for (var c = 0; c < cells.length; c++) {
+            var cell = cells[c];
+            var pos = "";
+            try { pos = " (" + (cell.rowIndex + 1) + "行" + (cell.columnIndex + 1) + "列)"; } catch (e2) {}
+            out.push(indent + "  ● セル " + c + pos +
+                     " / セルスタイル=「" + safeCellStyle(cell) + "」");
+            dumpParagraphs(cell, out, indent + "     ");
+            dumpTables(cell, out, indent + "     ");
+        }
+    }
+}
+
+function safeCellStyle(cell) {
+    try { return cell.appliedCellStyle.name; } catch (e) { return "?"; }
 }
 
 /** スタイルグループに入っている場合は「グループ名:スタイル名」で返す */
