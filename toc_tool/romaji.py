@@ -53,6 +53,27 @@ KNOWN_NAMES = {
     "hanako": "はなこ", "noriko": "のりこ", "yoshitomo": "よしとも",
     "keiko": "けいこ", "taeko": "たえこ", "kei": "けい", "etsuyo": "えつよ",
     "maki": "まき", "koichi": "こういち",
+    # Vol.37 No.7
+    "niimi": "にいみ", "kazui": "かずい", "wada": "わだ", "shimizu": "しみず",
+    "bun": "ぶん", "kamimura": "かみむら", "adachi": "あだち", "kowa": "こわ",
+    "tabira": "たびら", "kume": "くめ", "tanaka": "たなか",
+    "shimokihara": "しもきはら", "murai": "むらい", "kii": "きい",
+    "kato": "かとう", "matsuoka": "まつおか", "nakayama": "なかやま",
+    "imai": "いまい", "oya": "おおや", "hiyama": "ひやま",
+    "tadokoro": "たどころ", "kinoshita": "きのした", "narumoto": "なるもと",
+    "tsunoda": "つのだ", "hashimoto": "はしもと", "yokota": "よこた",
+    "nakahira": "なかひら", "okamoto": "おかもと", "edahiro": "えだひろ",
+    "miki": "みき", "ishizu": "いしづ", "yasuda": "やすだ",
+    "haraguchi": "はらぐち", "takaki": "たかき", "iritani": "いりたに",
+    "yoshiki": "よしき", "hiroaki": "ひろあき", "soichiro": "そういちろう",
+    "harumasa": "はるまさ", "shogyoku": "しょうぎょく", "naoto": "なおと",
+    "tadashi": "ただし", "hisatomo": "ひさとも", "takayuki": "たかゆき",
+    "yu": "ゆたか", "suguru": "すぐる", "chiga": "ちが", "nobuyuki": "のぶゆき",
+    "yuka": "ゆうか", "teruyuki": "てるゆき", "ayu": "あゆ",
+    "masami": "まさみ", "jin": "じん", "naoko": "なおこ", "mamoru": "まもる",
+    "osamu": "おさむ", "kaho": "かほ", "satoru": "さとる", "tomoko": "ともこ",
+    "hideki": "ひでき", "hanae": "はなえ", "takashi": "たかし",
+    "manabu": "まなぶ", "shuji": "しゅうじ",
 }
 
 # 2文字の子音＋母音／特殊音の変換表（長い綴りを優先してマッチ）。
