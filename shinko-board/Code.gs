@@ -12,7 +12,7 @@ const CONFIG = {
   BOARD_SHEET_NAME: '進行ボード',
   TIMEZONE: 'Asia/Tokyo',
   DATE_FORMAT: 'yyyy/MM/dd',
-  PRODUCTION_HEADER_ROWS: 1,   // 生産表の見出し行数
+  PRODUCTION_HEADER_ROWS: 3,   // 生産表の見出し行数（1行目=表題 2行目=工程見出し 3行目=項目名）
   COMPLETED_VISIBLE_DAYS: 7,   // 納品完了から何日で完了カラムから消すか
   UNDECIDED_STALE_DAYS: 14,    // 「未定」のまま何日で注意表示を出すか
   LOCK_WAIT_MS: 20000,
@@ -50,8 +50,58 @@ const HEADERS = [
   '納品完了日', 'メモ', '外注スキップ', '区分', '区分確定日', '最終更新日時'
 ];
 
-/** 生産表の列（1始まり）。A=受注NO / B=営業担当 / C=得意先名 / D=品名 / E=仕上寸法 / F=金額 / G=受注日付 / H=納期 */
-const SRC = { ORDER_NO: 1, SALES: 2, CUSTOMER: 3, ITEM: 4, DUE: 8 };
+/**
+ * 生産表のどの列を読むか。既定値は 2026年8月シートの構成。
+ * 列がずれている場合は、スクリプトプロパティに列名（例 M / AH）を入れれば変更できる。
+ * 「-」を入れるとその項目は取り込まない（空欄になる）。
+ */
+const SRC_DEFAULT = {
+  ORDER_NO: 'M',   // 受注番号
+  CUSTOMER: 'N',   // 得意先
+  ITEM:     'O',   // 品名
+  SALES:    'D',   // 担当
+  DUE:      'AH'   // 納品日
+};
+const SRC_PROP = {
+  ORDER_NO: 'SRC_COL_ORDER_NO',
+  CUSTOMER: 'SRC_COL_CUSTOMER',
+  ITEM:     'SRC_COL_ITEM',
+  SALES:    'SRC_COL_SALES',
+  DUE:      'SRC_COL_DUE'
+};
+
+/** 列名（A / M / AH）→ 列番号。空や「-」は 0（取り込まない）。 */
+function colToIndex_(letter) {
+  const s = String(letter === null || letter === undefined ? '' : letter).trim().toUpperCase();
+  if (!s || s === '-' || s === 'なし') return 0;
+  if (/^\d+$/.test(s)) return Number(s);
+  if (!/^[A-Z]{1,2}$/.test(s)) throw new Error('列の指定が正しくありません：' + letter);
+  let n = 0;
+  for (let i = 0; i < s.length; i++) n = n * 26 + (s.charCodeAt(i) - 64);
+  return n;
+}
+
+/** 列番号 → 列名（表示用）。 */
+function indexToCol_(n) {
+  let s = '';
+  let v = Number(n);
+  while (v > 0) { const m = (v - 1) % 26; s = String.fromCharCode(65 + m) + s; v = Math.floor((v - m) / 26); }
+  return s || '(なし)';
+}
+
+/** 現在の列マッピング（列番号）。 */
+function srcCols_() {
+  const out = {};
+  Object.keys(SRC_DEFAULT).forEach(function (k) {
+    out[k] = colToIndex_(getProp_(SRC_PROP[k], SRC_DEFAULT[k]));
+  });
+  return out;
+}
+
+/** 行データから指定列を取り出す（列が 0 のときは空文字）。 */
+function pick_(row, colIndex) {
+  return colIndex ? row[colIndex - 1] : '';
+}
 
 /** 工程定義。納品は予定日欄を持たないため、配置日は納期を使う。 */
 const STAGES = [
@@ -289,9 +339,12 @@ function importFromProductionSheet() {
     const board = ss.getSheetByName(CONFIG.BOARD_SHEET_NAME) || createBoardSheet_(ss);
 
     const headerRows = Number(getProp_('PRODUCTION_HEADER_ROWS', CONFIG.PRODUCTION_HEADER_ROWS));
+    const cols = srcCols_();
+    const maxCol = Math.max(cols.ORDER_NO, cols.CUSTOMER, cols.ITEM, cols.SALES, cols.DUE);
+    if (!cols.ORDER_NO) throw new Error('受注番号の列が設定されていません。');
     const srcLastRow = src.getLastRow();
     const srcRows = srcLastRow > headerRows
-      ? src.getRange(headerRows + 1, 1, srcLastRow - headerRows, SRC.DUE).getValues()
+      ? src.getRange(headerRows + 1, 1, srcLastRow - headerRows, maxCol).getValues()
       : [];
 
     const boardDataLastRow = boardLastDataRow_(board);
@@ -310,15 +363,15 @@ function importFromProductionSheet() {
     const seen = {};
 
     srcRows.forEach(function (r) {
-      const orderNo = toText_(r[SRC.ORDER_NO - 1]);
+      const orderNo = toText_(pick_(r, cols.ORDER_NO));
       if (!orderNo) return;
       if (seen[orderNo]) return;
       seen[orderNo] = true;
 
-      const customer = toText_(r[SRC.CUSTOMER - 1]);
-      const item = toText_(r[SRC.ITEM - 1]);
-      const sales = toText_(r[SRC.SALES - 1]);
-      const due = toDateString_(r[SRC.DUE - 1]);
+      const customer = toText_(pick_(r, cols.CUSTOMER));
+      const item = toText_(pick_(r, cols.ITEM));
+      const sales = toText_(pick_(r, cols.SALES));
+      const due = toDateString_(pick_(r, cols.DUE));
 
       const idx = indexByOrderNo[orderNo];
       if (idx === undefined) {
@@ -390,6 +443,7 @@ function deleteImportTriggers() {
 function diagnoseImport() {
   const ss = openProductionSpreadsheet_();
   const headerRows = Number(getProp_('PRODUCTION_HEADER_ROWS', CONFIG.PRODUCTION_HEADER_ROWS));
+  const cols = srcCols_();
   const lines = [];
   lines.push('スプレッドシート：' + ss.getName());
   lines.push('シート（左から）：' + ss.getSheets().map(function (sh) {
@@ -399,22 +453,47 @@ function diagnoseImport() {
   const src = latestProductionSheet_(ss);
   lines.push('取込対象に選ばれたシート：' + src.getName());
   lines.push('そのシートの最終行：' + src.getLastRow() + '　／　見出し行数の設定：' + headerRows);
+  lines.push('読んでいる列：受注NO=' + indexToCol_(cols.ORDER_NO) +
+    '　得意先=' + indexToCol_(cols.CUSTOMER) +
+    '　品名=' + indexToCol_(cols.ITEM) +
+    '　担当=' + indexToCol_(cols.SALES) +
+    '　納期=' + indexToCol_(cols.DUE));
+
+  const maxCol = Math.max(cols.ORDER_NO, cols.CUSTOMER, cols.ITEM, cols.SALES, cols.DUE, 1);
+  const width = Math.min(Math.max(maxCol, 1), src.getMaxColumns());
+
+  // 見出しが複数行に分かれている生産表があるため、見出し行はすべて書き出す。
+  for (let hr = 1; hr <= headerRows && hr <= src.getLastRow(); hr++) {
+    const header = src.getRange(hr, 1, 1, width).getValues()[0];
+    const named = [];
+    header.forEach(function (v, i) {
+      const t = toText_(v);
+      if (t) named.push(indexToCol_(i + 1) + '=' + t);
+    });
+    if (named.length > 0) lines.push('見出し ' + hr + '行目：' + named.join('  '));
+  }
 
   const lastRow = src.getLastRow();
   if (lastRow > headerRows) {
-    const rows = src.getRange(headerRows + 1, 1, Math.min(5, lastRow - headerRows), SRC.DUE).getValues();
-    lines.push('データの先頭' + rows.length + '行（A列＝受注NO / C列＝得意先 / D列＝品名 / H列＝納期）：');
+    const rows = src.getRange(headerRows + 1, 1, Math.min(3, lastRow - headerRows), width).getValues();
+    lines.push('この設定で読み取れる先頭' + rows.length + '行：');
     rows.forEach(function (r, i) {
-      lines.push('  ' + (headerRows + 1 + i) + '行目： A=「' + toText_(r[SRC.ORDER_NO - 1]) +
-        '」 C=「' + toText_(r[SRC.CUSTOMER - 1]) + '」 D=「' + toText_(r[SRC.ITEM - 1]) +
-        '」 H=「' + toDateString_(r[SRC.DUE - 1]) + '」');
+      lines.push('  ' + (headerRows + 1 + i) + '行目：' +
+        ' 受注NO=「' + toText_(pick_(r, cols.ORDER_NO)) + '」' +
+        ' 得意先=「' + toText_(pick_(r, cols.CUSTOMER)) + '」' +
+        ' 品名=「' + toText_(pick_(r, cols.ITEM)) + '」' +
+        ' 担当=「' + toText_(pick_(r, cols.SALES)) + '」' +
+        ' 納期=「' + toDateString_(pick_(r, cols.DUE)) + '」');
     });
-    const all = src.getRange(headerRows + 1, SRC.ORDER_NO, lastRow - headerRows, 1).getValues();
+    const all = src.getRange(headerRows + 1, cols.ORDER_NO, lastRow - headerRows, 1).getValues();
     const withNo = all.filter(function (r) { return toText_(r[0]) !== ''; }).length;
-    lines.push('受注NO（A列）が入っている行数：' + withNo + ' 行');
-    if (withNo === 0) lines.push('  → A列が空です。受注NOが別の列にあるか、シートの選択が違います。');
+    lines.push('受注NOが入っている行数：' + withNo + ' 行');
+    if (withNo === 0) {
+      lines.push('  → 指定した列に受注NOがありません。スクリプトプロパティ ' +
+        SRC_PROP.ORDER_NO + ' に正しい列名を設定してください。');
+    }
   } else {
-    lines.push('  → 見出し行より下にデータがありません。シートの選択が違う可能性があります。');
+    lines.push('  → 見出し行より下にデータがありません。見出し行数かシートの選択を確認してください。');
   }
 
   const board = ss.getSheetByName(CONFIG.BOARD_SHEET_NAME);
