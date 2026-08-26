@@ -30,7 +30,10 @@ class FakeRange {
   setValues(v){for(let i=0;i<v.length;i++)for(let j=0;j<v[i].length;j++)this.sheet.set(this.r+i,this.c+j,v[i][j]);return this;}
   setValue(v){this.sheet.set(this.r,this.c,v);return this;}
   setFontWeight(){return this;} setBackground(){return this;} setNumberFormat(){return this;}
-  insertCheckboxes(){return this;} setDataValidation(){return this;}
+  setDataValidation(){return this;} clearDataValidations(){return this;}
+  clearContent(){for(let i=0;i<this.nr;i++)for(let j=0;j<this.nc;j++)this.sheet.set(this.r+i,this.c+j,'');return this;}
+  // 本物の insertCheckboxes() は範囲内の全セルを false にする（＝getLastRow が伸びる）
+  insertCheckboxes(){for(let i=0;i<this.nr;i++)for(let j=0;j<this.nc;j++)this.sheet.set(this.r+i,this.c+j,false);return this;}
 }
 class FakeSheet {
   constructor(name){this.name=name;this.data=[];}
@@ -41,7 +44,7 @@ class FakeSheet {
   getLastRow(){let last=0;this.data.forEach((row,i)=>{if(row.some(v=>v!==''&&v!==null&&v!==undefined))last=i+1;});return last;}
   getMaxRows(){return Math.max(1000,this.getLastRow());}
   getRange(r,c,nr,nc){return new FakeRange(this,r,c,nr===undefined?1:nr,nc===undefined?1:nc);}
-  setFrozenRows(){} setFrozenColumns(){} setColumnWidth(){}
+  setFrozenRows(){} setFrozenColumns(){} setColumnWidth(){} insertRowsAfter(){}
 }
 class FakeSS {
   constructor(){this.sheets=[];}
@@ -52,7 +55,10 @@ class FakeSS {
 const ss = new FakeSS();
 const SpreadsheetApp = {
   openById: () => ss,
-  newDataValidation: () => ({ requireValueInList: () => ({ build: () => ({}) }) })
+  newDataValidation: () => ({
+    requireValueInList: () => ({ build: () => ({}) }),
+    requireCheckbox: () => ({ build: () => ({}) })
+  })
 };
 const ScriptApp = { getProjectTriggers: () => [], newTrigger(){}, deleteTrigger(){} };
 const HtmlService = {};
@@ -70,7 +76,7 @@ rows.forEach((r,i)=>r.forEach((v,j)=>prod.set(i+2,j+1,v)));
 
 // ---- Code.gs をロード ----
 const ctx = { Utilities, PropertiesService, Session, LockService, SpreadsheetApp, ScriptApp, HtmlService, console };
-const fn = new Function(...Object.keys(ctx), src + '\nreturn {importFromProductionSheet,getBoardData,setCategory,completeCurrentStage,undoComplete,saveRow,setupBoardSheet,getBoardSheet_,today_,COL};');
+const fn = new Function(...Object.keys(ctx), src + '\nreturn {importFromProductionSheet,getBoardData,setCategory,completeCurrentStage,undoComplete,saveRow,setupBoardSheet,getBoardSheet_,repairBoardSheet,diagnoseImport,boardLastDataRow_,today_,COL};');
 const api = fn(...Object.values(ctx));
 
 let fails = 0;
@@ -83,6 +89,10 @@ console.log('--- 1回目の取込 ---');
 let r1 = api.importFromProductionSheet();
 console.log(r1);
 check('新規3件', r1.added === 3, r1);
+
+const boardSheet = ss.getSheetByName('進行ボード');
+check('案件は2行目から入る', boardSheet.cell(2, 1) === '26-0001', {row2: boardSheet.cell(2,1), lastRow: boardSheet.getLastRow()});
+check('空行が挟まらない', boardSheet.cell(4, 1) === '26-0003', boardSheet.cell(4,1));
 
 console.log('--- 2回目の取込（重複追加しない） ---');
 let r2 = api.importFromProductionSheet();
@@ -171,6 +181,30 @@ check('canEdit false', api.getBoardData({}).canEdit === false);
 let threw = false;
 try { api.completeCurrentStage('26-0002'); } catch(e) { threw = true; }
 check('閲覧専用は書き込み不可', threw);
+
+console.log('--- 1000行目付近に飛んでしまったシートの復旧 ---');
+// 旧バージョンで起きた状態を再現：P2:P1000 が false、案件は1001行目以降
+const broken = ss.insertSheet('壊れたボード');
+ss.sheets = ss.sheets.filter(s => s.getName() !== '進行ボード');
+broken.name = '進行ボード';
+['受注NO','得意先名','品名','営業担当','納期','下版予定日','下版完了日','印刷予定日','印刷完了日',
+ '外注予定日','外注完了日','工務予定日','工務完了日','納品完了日','メモ','外注スキップ','区分','区分確定日','最終更新日時']
+ .forEach((h,i)=>broken.set(1,i+1,h));
+for (let r = 2; r <= 1000; r++) broken.set(r, 16, false);          // P列のチェックボックス
+broken.set(1001, 1, '26-0001'); broken.set(1001, 2, 'A商事'); broken.set(1001, 17, '社内');
+broken.set(1001, 6, '2026/09/01');                                  // 工務が入れた下版予定日
+broken.set(1002, 1, '26-0002'); broken.set(1002, 2, 'B工業'); broken.set(1002, 17, '未定');
+check('壊れた状態の実データ最終行を正しく見る', api.boardLastDataRow_(broken) === 1002, api.boardLastDataRow_(broken));
+const repaired = api.repairBoardSheet();
+console.log('  ' + repaired);
+check('2行目から並び直る', broken.cell(2,1) === '26-0001' && broken.cell(3,1) === '26-0002',
+  [broken.cell(2,1), broken.cell(3,1)]);
+check('入力済みの予定日が残る', broken.cell(2,6) === '2026/09/01', broken.cell(2,6));
+check('1001行目は空になる', broken.cell(1001,1) === '', broken.cell(1001,1));
+_props['EDITOR_EMAILS'] = 'komu@example.co.jp';
+const after = api.importFromProductionSheet();
+check('復旧後の取込は既存を重複させない', after.added === 1, after);   // 26-0003 のみ新規
+check('追記も詰めて入る', broken.cell(4,1) === '26-0003', broken.cell(4,1));
 
 console.log(fails === 0 ? '\nすべて成功' : `\n失敗 ${fails} 件`);
 process.exit(fails === 0 ? 0 : 1);

@@ -231,16 +231,40 @@ function createBoardSheet_(ss) {
   });
   sh.getRange(1, COL.ORDER_NO, sh.getMaxRows(), 1).setNumberFormat('@');
 
-  // 区分・外注スキップは直接編集できるよう入力規則を付けておく（画面が使えないときの逃げ道）。
-  const catRule = SpreadsheetApp.newDataValidation().requireValueInList(CATEGORIES, true).build();
-  sh.getRange(2, COL.CATEGORY, sh.getMaxRows() - 1, 1).setDataValidation(catRule);
-  sh.getRange(2, COL.SKIP_OUTER, sh.getMaxRows() - 1, 1).insertCheckboxes();
+  applyBoardValidations_(sh);
 
   sh.setColumnWidth(COL.ORDER_NO, 110);
   sh.setColumnWidth(COL.CUSTOMER, 160);
   sh.setColumnWidth(COL.ITEM, 220);
   sh.setColumnWidth(COL.MEMO, 220);
   return sh;
+}
+
+/**
+ * 区分・外注スキップの入力規則（シートを直接編集するときの逃げ道）。
+ * insertCheckboxes() は範囲内の全セルに FALSE を書き込んでしまい、
+ * getLastRow() が最終行まで伸びる（＝追記位置がずれる）ため、入力規則だけを付ける。
+ */
+function applyBoardValidations_(sh) {
+  const rows = sh.getMaxRows() - 1;
+  const catRule = SpreadsheetApp.newDataValidation().requireValueInList(CATEGORIES, true).build();
+  sh.getRange(2, COL.CATEGORY, rows, 1).setDataValidation(catRule);
+  const checkRule = SpreadsheetApp.newDataValidation().requireCheckbox().build();
+  sh.getRange(2, COL.SKIP_OUTER, rows, 1).setDataValidation(checkRule);
+}
+
+/**
+ * 受注NO（A列）が入っている最後の行。データが無ければ 1 を返す。
+ * チェックボックスや書式だけの空行に引きずられないよう、getLastRow() ではなくA列で判断する。
+ */
+function boardLastDataRow_(sh) {
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return 1;
+  const col = sh.getRange(2, COL.ORDER_NO, lastRow - 1, 1).getValues();
+  for (let i = col.length - 1; i >= 0; i--) {
+    if (toText_(col[i][0]) !== '') return i + 2;
+  }
+  return 1;
 }
 
 /** 手動セットアップ用。シートを作るだけ。 */
@@ -270,9 +294,9 @@ function importFromProductionSheet() {
       ? src.getRange(headerRows + 1, 1, srcLastRow - headerRows, SRC.DUE).getValues()
       : [];
 
-    const boardLastRow = board.getLastRow();
-    const boardRows = boardLastRow > 1
-      ? board.getRange(2, 1, boardLastRow - 1, LAST_COL).getValues()
+    const boardDataLastRow = boardLastDataRow_(board);
+    const boardRows = boardDataLastRow > 1
+      ? board.getRange(2, 1, boardDataLastRow - 1, LAST_COL).getValues()
       : [];
 
     const indexByOrderNo = {};
@@ -326,9 +350,10 @@ function importFromProductionSheet() {
       board.getRange(u.row, COL.UPDATED_AT).setValue(nowStamp_());
     });
     if (appends.length > 0) {
-      const start = board.getLastRow() + 1;
+      const start = boardDataLastRow + 1;
+      const needRows = start + appends.length - 1 - board.getMaxRows();
+      if (needRows > 0) board.insertRowsAfter(board.getMaxRows(), needRows);
       board.getRange(start, 1, appends.length, LAST_COL).setValues(appends);
-      board.getRange(start, COL.SKIP_OUTER, appends.length, 1).insertCheckboxes();
     }
 
     props_().setProperty('LAST_IMPORT_AT', nowStamp_());
@@ -359,6 +384,79 @@ function deleteImportTriggers() {
   });
 }
 
+/**
+ * 取込がうまくいかないときの調査用。実行ログに状況を書き出す。
+ */
+function diagnoseImport() {
+  const ss = openProductionSpreadsheet_();
+  const headerRows = Number(getProp_('PRODUCTION_HEADER_ROWS', CONFIG.PRODUCTION_HEADER_ROWS));
+  const lines = [];
+  lines.push('スプレッドシート：' + ss.getName());
+  lines.push('シート（左から）：' + ss.getSheets().map(function (sh) {
+    return sh.getName() + (sh.isSheetHidden() ? '（非表示）' : '');
+  }).join('  /  '));
+
+  const src = latestProductionSheet_(ss);
+  lines.push('取込対象に選ばれたシート：' + src.getName());
+  lines.push('そのシートの最終行：' + src.getLastRow() + '　／　見出し行数の設定：' + headerRows);
+
+  const lastRow = src.getLastRow();
+  if (lastRow > headerRows) {
+    const rows = src.getRange(headerRows + 1, 1, Math.min(5, lastRow - headerRows), SRC.DUE).getValues();
+    lines.push('データの先頭' + rows.length + '行（A列＝受注NO / C列＝得意先 / D列＝品名 / H列＝納期）：');
+    rows.forEach(function (r, i) {
+      lines.push('  ' + (headerRows + 1 + i) + '行目： A=「' + toText_(r[SRC.ORDER_NO - 1]) +
+        '」 C=「' + toText_(r[SRC.CUSTOMER - 1]) + '」 D=「' + toText_(r[SRC.ITEM - 1]) +
+        '」 H=「' + toDateString_(r[SRC.DUE - 1]) + '」');
+    });
+    const all = src.getRange(headerRows + 1, SRC.ORDER_NO, lastRow - headerRows, 1).getValues();
+    const withNo = all.filter(function (r) { return toText_(r[0]) !== ''; }).length;
+    lines.push('受注NO（A列）が入っている行数：' + withNo + ' 行');
+    if (withNo === 0) lines.push('  → A列が空です。受注NOが別の列にあるか、シートの選択が違います。');
+  } else {
+    lines.push('  → 見出し行より下にデータがありません。シートの選択が違う可能性があります。');
+  }
+
+  const board = ss.getSheetByName(CONFIG.BOARD_SHEET_NAME);
+  if (!board) {
+    lines.push('進行ボードシート：まだありません（setupBoardSheet を実行してください）');
+  } else {
+    lines.push('進行ボードシート：最終行 ' + board.getLastRow() +
+      '　／　案件が入っている最終行 ' + boardLastDataRow_(board));
+  }
+
+  const msg = lines.join('\n');
+  console.log(msg);
+  return msg;
+}
+
+/**
+ * 進行ボードシートの並びを整える。
+ * 空行をつめて2行目から並べ直し、入力規則を付け直す。
+ * （案件が1000行目付近から始まってしまった場合の復旧用。入力済みの日付は保持される）
+ */
+function repairBoardSheet() {
+  return withLock_(function () {
+    const ss = openProductionSpreadsheet_();
+    const sh = ss.getSheetByName(CONFIG.BOARD_SHEET_NAME);
+    if (!sh) throw new Error('進行ボードシートがありません。先に setupBoardSheet を実行してください。');
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return '並べ直す案件がありません。';
+
+    const values = sh.getRange(2, 1, lastRow - 1, LAST_COL).getValues();
+    const kept = values.filter(function (r) { return toText_(r[COL.ORDER_NO - 1]) !== ''; });
+
+    sh.getRange(2, 1, lastRow - 1, LAST_COL).clearContent();
+    sh.getRange(2, 1, lastRow - 1, LAST_COL).clearDataValidations();
+    if (kept.length > 0) sh.getRange(2, 1, kept.length, LAST_COL).setValues(kept);
+    applyBoardValidations_(sh);
+
+    const msg = kept.length + ' 件を2行目から並べ直しました。';
+    console.log(msg);
+    return msg;
+  });
+}
+
 /** スプレッドシートを開いたときのメニュー（画面が使えないときの逃げ道）。 */
 function onOpen() {
   SpreadsheetApp.getUi()
@@ -367,6 +465,9 @@ function onOpen() {
     .addItem('いま取込む', 'importFromProductionSheet')
     .addSeparator()
     .addItem('毎朝の取込トリガーを設定', 'createDailyImportTrigger')
+    .addSeparator()
+    .addItem('取込を診断する', 'diagnoseImport')
+    .addItem('シートの並びを整える', 'repairBoardSheet')
     .addToUi();
 }
 
@@ -458,7 +559,7 @@ function getBoardData(options) {
   const todayStr = today_();
   const editable = canEdit_();
 
-  const lastRow = sh.getLastRow();
+  const lastRow = boardLastDataRow_(sh);
   const values = lastRow > 1 ? sh.getRange(2, 1, lastRow - 1, LAST_COL).getValues() : [];
 
   const rows = [];
@@ -495,7 +596,7 @@ function getBoardData(options) {
 
 /** 受注NO から行番号を引く。 */
 function findRow_(sh, orderNo) {
-  const lastRow = sh.getLastRow();
+  const lastRow = boardLastDataRow_(sh);
   if (lastRow < 2) return 0;
   const col = sh.getRange(2, COL.ORDER_NO, lastRow - 1, 1).getValues();
   const key = String(orderNo).trim();
