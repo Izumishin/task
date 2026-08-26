@@ -46,6 +46,7 @@ class FakeSheet {
   getRange(r,c,nr,nc){return new FakeRange(this,r,c,nr===undefined?1:nr,nc===undefined?1:nc);}
   setFrozenRows(){} setFrozenColumns(){} setColumnWidth(){} insertRowsAfter(){}
   getMaxColumns(){let m=0;this.data.forEach(row=>{if(row.length>m)m=row.length;});return Math.max(m,26);}
+  getLastColumn(){let m=0;this.data.forEach(row=>{for(let j=row.length-1;j>=0;j--){if(row[j]!==''&&row[j]!==null&&row[j]!==undefined){if(j+1>m)m=j+1;break;}}});return m;}
 }
 class FakeSS {
   constructor(){this.sheets=[];}
@@ -71,13 +72,13 @@ const C = (letter) => { let n=0; for (const ch of letter) n = n*26 + (ch.charCod
 prod.set(1, C('N'), '2026年8月　編集室生産表');
 prod.set(2, C('Z'), '入稿日'); prod.set(2, C('AG'), '下版日'); prod.set(2, C('AH'), '納品日');
 [['A','電算'],['B','日付'],['C','品川'],['D','担当'],['E','和泉'],['M','受注番号'],
- ['N','得意先'],['O','品名'],['V','生産金額'],['X','備考'],['AI','大分類']]
+ ['N','得意先'],['O','品名'],['V','生産金額'],['W','納期'],['X','備考'],['AI','大分類']]
  .forEach(([col, name]) => prod.set(3, C(col), name));
 
 const rows = [
-  { 電算:'済', 日付:5,  担当:'中澤', 受注番号:'22670-000', 得意先:'東洋音楽学会',   品名:'東洋音楽研究 第91号', 納品日:'2026/08/24' },
-  { 電算:'済', 日付:7,  担当:'田邉', 受注番号:'22694-000', 得意先:'台東区',         品名:'各会計歳入歳出決算書', 納品日:'2026/08/08' },
-  { 電算:'済', 日付:20, 担当:'中澤', 受注番号:'22795-000', 得意先:'日本テレワーク学会', 品名:'日本テレワーク学会誌', 納品日:'2026/08/25' },
+  { 電算:'済', 日付:5,  担当:'中澤', 受注番号:'22670-000', 得意先:'東洋音楽学会',   品名:'東洋音楽研究 第91号', 納期:'2026/08/24', 下版日:'2026/08/04', 納品日:'2026/08/24' },
+  { 電算:'済', 日付:7,  担当:'田邉', 受注番号:'22694-000', 得意先:'台東区',         品名:'各会計歳入歳出決算書', 納期:'2026/08/08', 下版日:'2026/08/04', 納品日:'2026/08/08' },
+  { 電算:'済', 日付:20, 担当:'中澤', 受注番号:'22795-000', 得意先:'日本テレワーク学会', 品名:'日本テレワーク学会誌', 納期:'2026/08/25', 下版日:'',           納品日:'2026/08/25' },
 ];
 rows.forEach((r, i) => {
   const row = i + 4;                       // データは4行目から
@@ -87,6 +88,8 @@ rows.forEach((r, i) => {
   prod.set(row, C('M'), r.受注番号);
   prod.set(row, C('N'), r.得意先);
   prod.set(row, C('O'), r.品名);
+  prod.set(row, C('W'), r.納期);
+  prod.set(row, C('AG'), r.下版日);
   prod.set(row, C('AH'), r.納品日);
 });
 
@@ -182,7 +185,7 @@ data = api.getBoardData({});
 check('7日超の完了は非表示', !data.rows.find(r=>r.orderNo==='22670-000'), data.rows.map(r=>r.orderNo));
 
 console.log('--- 生産表側の納期変更に追随／工務入力は保護 ---');
-prod.set(5, C('AH'), '2026/09/25');      // 22694-000 の納品日を変更
+prod.set(5, C('W'), '2026/09/25');      // 22694-000 の納期を変更
 api.saveRow('22694-000', {plans:{komu:'2026-09-15'}});
 const r3 = api.importFromProductionSheet();
 check('更新1件', r3.updated === 1, r3);
@@ -203,12 +206,27 @@ check('受注番号はM列から読む', boardSheet.cell(2,1) === '22670-000', b
 check('得意先はN列', boardSheet.cell(2,2) === '東洋音楽学会', boardSheet.cell(2,2));
 check('品名はO列', boardSheet.cell(2,3) === '東洋音楽研究 第91号', boardSheet.cell(2,3));
 check('担当はD列', boardSheet.cell(2,4) === '中澤', boardSheet.cell(2,4));
-check('納期はAH列', boardSheet.cell(2,5) === '2026/08/24', boardSheet.cell(2,5));
+check('納期はW列', boardSheet.cell(2,5) === '2026/08/24', boardSheet.cell(2,5));
 const diag = api.diagnoseImport();
 check('診断が3行目の見出しを出す', diag.indexOf('見出し 3行目：') >= 0 && diag.indexOf('M=受注番号') >= 0);
-check('診断が2行目の見出しも出す（納品日はここ）', diag.indexOf('見出し 2行目：') >= 0 && diag.indexOf('AH=納品日') >= 0);
+check('診断が2行目の見出しも出す（下版日・納品日はここ）', diag.indexOf('見出し 2行目：') >= 0 && diag.indexOf('AG=下版日') >= 0);
 check('診断が読み取り結果を出す', diag.indexOf('受注NO=「22670-000」') >= 0);
 check('診断が件数を出す', diag.indexOf('受注NOが入っている行数：3 行') >= 0, diag.split('\n').pop());
+
+console.log('--- 下版予定日の任意取込（既定はオフ）---');
+check('既定では下版予定日を取り込まない', boardSheet.cell(3, 6) === '', boardSheet.cell(3,6));
+_props['SRC_COL_GEHAN_PLAN'] = 'AG';
+// 既存行には入らない（F列以降は取込で触らない）
+api.importFromProductionSheet();
+check('既存行の下版予定日は変わらない', boardSheet.cell(3, 6) === '', boardSheet.cell(3,6));
+// 新規案件では初期値として入る
+[['A','済'],['D','深澤'],['M','22903-000'],['N','日本公認会計士協会'],['O','CPDレター 2026年8月号'],
+ ['W','2026/08/10'],['AG','2026/08/05']].forEach(([col,v]) => prod.set(7, C(col), v));
+const seeded = api.importFromProductionSheet();
+check('新規1件', seeded.added === 1, seeded);
+const newRow = api.getBoardData({}).rows.find(r => r.orderNo === '22903-000');
+check('新規案件は下版予定日が入った状態で入る', newRow.plans.gehan === '2026/08/05', newRow.plans.gehan);
+_props['SRC_COL_GEHAN_PLAN'] = '-';
 
 console.log('--- プロパティで列を変更できる ---');
 _props['SRC_COL_SALES'] = 'B';        // 担当をD列からB列（日付）に変えてみる
@@ -239,7 +257,7 @@ check('入力済みの予定日が残る', broken.cell(2,6) === '2026/09/01', br
 check('1001行目は空になる', broken.cell(1001,1) === '', broken.cell(1001,1));
 _props['EDITOR_EMAILS'] = 'komu@example.co.jp';
 const after = api.importFromProductionSheet();
-check('復旧後の取込は既存を重複させない', after.added === 1, after);   // 26-0003 のみ新規
+check('復旧後の取込は既存を重複させない', after.added === 2, after);   // 22795-000 と 22903-000 が新規
 check('追記も詰めて入る', broken.cell(4,1) === '22795-000', broken.cell(4,1));
 
 console.log(fails === 0 ? '\nすべて成功' : `\n失敗 ${fails} 件`);

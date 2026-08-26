@@ -56,18 +56,20 @@ const HEADERS = [
  * 「-」を入れるとその項目は取り込まない（空欄になる）。
  */
 const SRC_DEFAULT = {
-  ORDER_NO: 'M',   // 受注番号
-  CUSTOMER: 'N',   // 得意先
-  ITEM:     'O',   // 品名
-  SALES:    'D',   // 担当
-  DUE:      'AH'   // 納品日
+  ORDER_NO:   'M',   // 受注番号
+  CUSTOMER:   'N',   // 得意先
+  ITEM:       'O',   // 品名
+  SALES:      'D',   // 営業担当
+  DUE:        'W',   // 納期
+  GEHAN_PLAN: '-'    // 下版予定日の初期値に使う列（既定は使わない。例：AG＝下版日）
 };
 const SRC_PROP = {
-  ORDER_NO: 'SRC_COL_ORDER_NO',
-  CUSTOMER: 'SRC_COL_CUSTOMER',
-  ITEM:     'SRC_COL_ITEM',
-  SALES:    'SRC_COL_SALES',
-  DUE:      'SRC_COL_DUE'
+  ORDER_NO:   'SRC_COL_ORDER_NO',
+  CUSTOMER:   'SRC_COL_CUSTOMER',
+  ITEM:       'SRC_COL_ITEM',
+  SALES:      'SRC_COL_SALES',
+  DUE:        'SRC_COL_DUE',
+  GEHAN_PLAN: 'SRC_COL_GEHAN_PLAN'
 };
 
 /** 列名（A / M / AH）→ 列番号。空や「-」は 0（取り込まない）。 */
@@ -340,7 +342,7 @@ function importFromProductionSheet() {
 
     const headerRows = Number(getProp_('PRODUCTION_HEADER_ROWS', CONFIG.PRODUCTION_HEADER_ROWS));
     const cols = srcCols_();
-    const maxCol = Math.max(cols.ORDER_NO, cols.CUSTOMER, cols.ITEM, cols.SALES, cols.DUE);
+    const maxCol = Math.max(cols.ORDER_NO, cols.CUSTOMER, cols.ITEM, cols.SALES, cols.DUE, cols.GEHAN_PLAN);
     if (!cols.ORDER_NO) throw new Error('受注番号の列が設定されていません。');
     const srcLastRow = src.getLastRow();
     const srcRows = srcLastRow > headerRows
@@ -381,6 +383,9 @@ function importFromProductionSheet() {
         row[COL.ITEM - 1] = item;
         row[COL.SALES - 1] = sales;
         row[COL.DUE - 1] = due;
+        // 生産表側に下版の予定が組まれている場合のみ、新規行の下版予定日に写す。
+        // （既存行の F列以降は取込では一切書き換えない）
+        if (cols.GEHAN_PLAN) row[COL.PLAN_GEHAN - 1] = toDateString_(pick_(r, cols.GEHAN_PLAN));
         row[COL.SKIP_OUTER - 1] = false;
         row[COL.CATEGORY - 1] = CATEGORY.UNDECIDED;
         row[COL.UPDATED_AT - 1] = nowStamp_();
@@ -456,15 +461,18 @@ function diagnoseImport() {
   lines.push('読んでいる列：受注NO=' + indexToCol_(cols.ORDER_NO) +
     '　得意先=' + indexToCol_(cols.CUSTOMER) +
     '　品名=' + indexToCol_(cols.ITEM) +
-    '　担当=' + indexToCol_(cols.SALES) +
-    '　納期=' + indexToCol_(cols.DUE));
+    '　営業担当=' + indexToCol_(cols.SALES) +
+    '　納期=' + indexToCol_(cols.DUE) +
+    '　下版予定日=' + indexToCol_(cols.GEHAN_PLAN));
 
-  const maxCol = Math.max(cols.ORDER_NO, cols.CUSTOMER, cols.ITEM, cols.SALES, cols.DUE, 1);
+  const maxCol = Math.max(cols.ORDER_NO, cols.CUSTOMER, cols.ITEM, cols.SALES, cols.DUE, cols.GEHAN_PLAN, 1);
   const width = Math.min(Math.max(maxCol, 1), src.getMaxColumns());
 
-  // 見出しが複数行に分かれている生産表があるため、見出し行はすべて書き出す。
+  // 見出しが複数行に分かれている生産表があるため、見出し行はすべて、シートの右端まで書き出す
+  // （どの列を指定すればよいか、このログだけで分かるようにするため）。
+  const headerWidth = Math.max(src.getLastColumn(), width);
   for (let hr = 1; hr <= headerRows && hr <= src.getLastRow(); hr++) {
-    const header = src.getRange(hr, 1, 1, width).getValues()[0];
+    const header = src.getRange(hr, 1, 1, headerWidth).getValues()[0];
     const named = [];
     header.forEach(function (v, i) {
       const t = toText_(v);
@@ -482,8 +490,9 @@ function diagnoseImport() {
         ' 受注NO=「' + toText_(pick_(r, cols.ORDER_NO)) + '」' +
         ' 得意先=「' + toText_(pick_(r, cols.CUSTOMER)) + '」' +
         ' 品名=「' + toText_(pick_(r, cols.ITEM)) + '」' +
-        ' 担当=「' + toText_(pick_(r, cols.SALES)) + '」' +
-        ' 納期=「' + toDateString_(pick_(r, cols.DUE)) + '」');
+        ' 営業担当=「' + toText_(pick_(r, cols.SALES)) + '」' +
+        ' 納期=「' + toDateString_(pick_(r, cols.DUE)) + '」' +
+        (cols.GEHAN_PLAN ? ' 下版予定日=「' + toDateString_(pick_(r, cols.GEHAN_PLAN)) + '」' : ''));
     });
     const all = src.getRange(headerRows + 1, cols.ORDER_NO, lastRow - headerRows, 1).getValues();
     const withNo = all.filter(function (r) { return toText_(r[0]) !== ''; }).length;
