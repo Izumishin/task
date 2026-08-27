@@ -283,6 +283,7 @@
   <button class="linkbtn" id="thisWeek">今週へ</button>
 
   <span id="editorTools" style="display:inline-flex;gap:8px;align-items:center;">
+    <button class="btn primary" id="addBtn">＋ 案件を追加</button>
     <button class="btn" id="importBtn">いま取込む</button>
   </span>
   <button class="iconbtn" id="themeBtn" title="配色を切り替え" aria-label="配色を切り替え">
@@ -349,10 +350,12 @@ const state = {
   undecidedOpen: false,
   includeExcluded: false,
   editingOrderNo: null,
+  openAfterLoad: '',
   undoToken: null,
   busy: false
 };
 const REFRESH_MS = 30000;
+const NEW_CASE = '__new__';
 const WEEKDAY_JA = ['日', '月', '火', '水', '木', '金', '土'];
 
 // ===========================================================================
@@ -463,6 +466,12 @@ function render() {
   renderUndecided();
   renderBoard();
   applySearch();
+
+  if (state.openAfterLoad) {
+    const target = state.openAfterLoad;
+    state.openAfterLoad = '';
+    openPanel(target);
+  }
 }
 
 function renderUndecided() {
@@ -696,6 +705,66 @@ function openPanel(orderNo) {
   document.getElementById('panelSave').addEventListener('click', savePanel);
 }
 
+function openAddPanel() {
+  const d = state.data;
+  if (!d || !d.canEdit) return;
+  state.editingOrderNo = NEW_CASE;   // 自動更新を止めるための目印
+
+  document.getElementById('panel').innerHTML =
+    '<h2>案件を追加</h2>' +
+    '<div class="panel-sub">生産表に載る案件は毎朝の取込で自動的に入ります。' +
+      'ここで足すのは、生産表に無い案件（飛び込み・社内案件など）だけにしてください。</div>' +
+    '<div class="field"><label for="a_orderNo">受注NO</label>' +
+      '<input type="text" id="a_orderNo" placeholder="例：22995-000" autocomplete="off"></div>' +
+    '<div class="field"><label for="a_item">品名</label>' +
+      '<input type="text" id="a_item" placeholder="例：暑中見舞はがき" autocomplete="off"></div>' +
+    '<div class="field"><label for="a_customer">得意先</label>' +
+      '<input type="text" id="a_customer" autocomplete="off"></div>' +
+    '<div class="field"><label for="a_sales">営業担当</label>' +
+      '<input type="text" id="a_sales" autocomplete="off"></div>' +
+    '<div class="field"><label for="a_due">納期</label><input type="date" id="a_due"></div>' +
+    '<div class="field"><label for="a_category">区分</label>' +
+      '<select id="a_category">' + d.categories.filter(function (c) { return c !== '対象外'; })
+        .map(function (c) {
+          return '<option value="' + esc(c) + '"' + (c === '未定' ? ' selected' : '') + '>' + esc(c) + '</option>';
+        }).join('') + '</select></div>' +
+    '<div class="field"><label for="a_memo">メモ</label>' +
+      '<input type="text" id="a_memo" maxlength="120" placeholder="例：用紙は支給" autocomplete="off"></div>' +
+    '<div class="panel-actions">' +
+      '<button class="btn" id="panelCancel">キャンセル</button>' +
+      '<button class="btn primary" id="addSave">追加する</button>' +
+    '</div>';
+
+  document.getElementById('overlay').classList.remove('hidden');
+  document.getElementById('a_orderNo').focus();
+  document.getElementById('panelCancel').addEventListener('click', closePanel);
+  document.getElementById('addSave').addEventListener('click', saveNewCase);
+}
+
+function saveNewCase() {
+  const rec = {
+    orderNo: document.getElementById('a_orderNo').value,
+    item: document.getElementById('a_item').value,
+    customer: document.getElementById('a_customer').value,
+    sales: document.getElementById('a_sales').value,
+    due: document.getElementById('a_due').value,
+    category: document.getElementById('a_category').value,
+    memo: document.getElementById('a_memo').value
+  };
+  if (!String(rec.orderNo).trim()) { showToast('受注NOを入力してください', true); return; }
+  if (!String(rec.item).trim()) { showToast('品名を入力してください', true); return; }
+
+  const btn = document.getElementById('addSave');
+  btn.disabled = true;
+  call('addCase', [rec, auth_()], function (added) {
+    closePanel();
+    showToast(added.orderNo + ' を追加しました');
+    // 続けて日程を入れられるよう、追加した案件の編集パネルを開く
+    state.openAfterLoad = (added.category === '未定') ? '' : added.orderNo;
+    load(true);
+  });
+}
+
 function closePanel() {
   state.editingOrderNo = null;
   document.getElementById('overlay').classList.add('hidden');
@@ -828,6 +897,8 @@ document.getElementById('nextWeek').addEventListener('click', function () {
   renderBoard();
   applySearch();
 });
+
+document.getElementById('addBtn').addEventListener('click', openAddPanel);
 
 document.getElementById('importBtn').addEventListener('click', function () {
   const btn = this;

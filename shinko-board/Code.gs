@@ -798,6 +798,47 @@ function undoComplete(token, auth) {
 }
 
 /**
+ * 画面から案件を1件追加する（生産表に載らない案件・飛び込み案件用）。
+ * 受注NOは主キーなので、すでにある場合は追加せずエラーにする。
+ * 取込は受注NOで突き合わせるため、あとから同じ受注NOが生産表に現れた場合は
+ * この行の得意先・品名・営業担当・納期が生産表の内容で更新される（重複行はできない）。
+ */
+function addCase(record, auth) {
+  assertEditor_(auth);
+  const rec = record || {};
+  const orderNo = toText_(rec.orderNo);
+  const item = toText_(rec.item);
+  if (!orderNo) throw new Error('受注NOを入力してください。');
+  if (!item) throw new Error('品名を入力してください。');
+  const category = CATEGORIES.indexOf(rec.category) >= 0 ? rec.category : CATEGORY.UNDECIDED;
+
+  return withLock_(function () {
+    const sh = getBoardSheet_();
+    if (findRow_(sh, orderNo)) {
+      throw new Error('受注NO ' + orderNo + ' はすでにボードにあります。検索で探してください。');
+    }
+    const row = new Array(LAST_COL).fill('');
+    row[COL.ORDER_NO - 1] = orderNo;
+    row[COL.CUSTOMER - 1] = toText_(rec.customer);
+    row[COL.ITEM - 1] = item;
+    row[COL.SALES - 1] = toText_(rec.sales);
+    row[COL.DUE - 1] = normalizeInputDate_(rec.due);
+    row[COL.MEMO - 1] = String(rec.memo || '').replace(/[\r\n]+/g, ' ').trim();
+    row[COL.SKIP_OUTER - 1] = false;
+    row[COL.CATEGORY - 1] = category;
+    if (category !== CATEGORY.UNDECIDED) row[COL.CATEGORY_FIXED_AT - 1] = today_();
+    row[COL.UPDATED_AT - 1] = nowStamp_();
+
+    const start = boardLastDataRow_(sh) + 1;
+    const needRows = start - sh.getMaxRows();
+    if (needRows > 0) sh.insertRowsAfter(sh.getMaxRows(), needRows);
+    sh.getRange(start, 1, 1, LAST_COL).setValues([row]);
+    console.log('案件を手動追加: %s', orderNo);
+    return buildRecord_(row, start, today_());
+  });
+}
+
+/**
  * 編集パネルの保存。
  * patch: { plans:{key:date}, dones:{key:date}, memo, skipOuter, category }
  * 日付は yyyy-MM-dd / yyyy/MM/dd のどちらでも受け付け、yyyy/MM/dd で保存する。

@@ -95,7 +95,7 @@ rows.forEach((r, i) => {
 
 // ---- Code.gs をロード ----
 const ctx = { Utilities, PropertiesService, Session, LockService, SpreadsheetApp, ScriptApp, HtmlService, console };
-const fn = new Function(...Object.keys(ctx), src + '\nreturn {importFromProductionSheet,getBoardData,setCategory,completeCurrentStage,undoComplete,saveRow,setupBoardSheet,getBoardSheet_,repairBoardSheet,diagnoseImport,boardLastDataRow_,today_,COL};');
+const fn = new Function(...Object.keys(ctx), src + '\nreturn {importFromProductionSheet,getBoardData,setCategory,completeCurrentStage,undoComplete,saveRow,setupBoardSheet,getBoardSheet_,repairBoardSheet,diagnoseImport,boardLastDataRow_,addCase,today_,COL};');
 const api = fn(...Object.values(ctx));
 
 let fails = 0;
@@ -201,6 +201,42 @@ let threw = false;
 try { api.completeCurrentStage('22694-000'); } catch(e) { threw = true; }
 check('閲覧専用は書き込み不可', threw);
 
+console.log('--- 画面からの案件追加 ---');
+_props['EDITOR_EMAILS'] = 'komu@example.co.jp';   // 直前の権限テストで別アドレスにしているため戻す
+const added = api.addCase({orderNo:'23001-000', item:'暑中見舞はがき', customer:'港製作所',
+  sales:'佐藤', due:'2026-09-30', category:'社内', memo:'用紙は支給'});
+check('追加した案件が返る', added.orderNo === '23001-000' && added.category === '社内', added.orderNo);
+check('区分確定日が入る', !!added.categoryFixedAt, added.categoryFixedAt);
+const boardAfterAdd = api.getBoardData({});
+const manual = boardAfterAdd.rows.find(r => r.orderNo === '23001-000');
+check('ボードに出る', !!manual);
+check('納期が入る', manual.due === '2026/09/30', manual.due);
+check('メモが入る', manual.memo === '用紙は支給', manual.memo);
+check('現在工程は下版から', manual.currentStageName === '下版', manual.currentStageName);
+check('空行を挟まず詰めて入る', boardSheet.cell(api.boardLastDataRow_(boardSheet), 1) === '23001-000',
+  boardSheet.cell(api.boardLastDataRow_(boardSheet), 1));
+
+let dupThrew = false;
+try { api.addCase({orderNo:'23001-000', item:'重複テスト'}); } catch (e) { dupThrew = true; }
+check('同じ受注NOは追加できない', dupThrew);
+let emptyThrew = false;
+try { api.addCase({orderNo:'', item:'受注NOなし'}); } catch (e) { emptyThrew = true; }
+check('受注NOなしは追加できない', emptyThrew);
+let noItemThrew = false;
+try { api.addCase({orderNo:'23002-000', item:''}); } catch (e) { noItemThrew = true; }
+check('品名なしは追加できない', noItemThrew);
+check('区分を省くと未定になる', api.addCase({orderNo:'23003-000', item:'区分省略テスト'}).category === '未定');
+
+// 手動追加した案件と同じ受注NOが生産表に現れたら、重複せず内容が更新される
+[['A','済'],['D','山田'],['M','23001-000'],['N','港製作所株式会社'],['O','暑中見舞はがき 2000枚'],
+ ['W','2026/10/05']].forEach(([col,v]) => prod.set(8, C(col), v));
+const merged = api.importFromProductionSheet();
+check('生産表に現れても重複しない', merged.added === 0, merged);
+const mergedRow = api.getBoardData({}).rows.find(r => r.orderNo === '23001-000');
+check('生産表の内容で更新される', mergedRow.item === '暑中見舞はがき 2000枚' && mergedRow.due === '2026/10/05',
+  {item: mergedRow.item, due: mergedRow.due});
+check('手動で入れた区分は残る', mergedRow.category === '社内', mergedRow.category);
+
 console.log('--- 合言葉（EDITOR_PIN）方式 ---');
 _props['EDITOR_EMAILS'] = '';
 _props['EDITOR_PIN'] = 'inkan-2026';
@@ -227,7 +263,11 @@ const diag = api.diagnoseImport();
 check('診断が3行目の見出しを出す', diag.indexOf('見出し 3行目：') >= 0 && diag.indexOf('M=受注番号') >= 0);
 check('診断が2行目の見出しも出す（下版日・納品日はここ）', diag.indexOf('見出し 2行目：') >= 0 && diag.indexOf('AG=下版日') >= 0);
 check('診断が読み取り結果を出す', diag.indexOf('受注NO=「22670-000」') >= 0);
-check('診断が件数を出す', diag.indexOf('受注NOが入っている行数：3 行') >= 0, diag.split('\n').pop());
+// 生産表の行数はテストの進行で増えるので、実際の行数から期待値を作る
+let srcWithNo = 0;
+for (let r = 4; r <= 30; r++) { if (prod.cell(r, C('M')) !== '') srcWithNo++; }
+check('診断が件数を出す', diag.indexOf('受注NOが入っている行数：' + srcWithNo + ' 行') >= 0,
+  {expected: srcWithNo, tail: diag.split('\n').slice(-3)});
 
 console.log('--- 下版予定日の任意取込（既定はオフ）---');
 check('既定では下版予定日を取り込まない', boardSheet.cell(3, 6) === '', boardSheet.cell(3,6));
@@ -272,8 +312,11 @@ check('2行目から並び直る', broken.cell(2,1) === '22670-000' && broken.ce
 check('入力済みの予定日が残る', broken.cell(2,6) === '2026/09/01', broken.cell(2,6));
 check('1001行目は空になる', broken.cell(1001,1) === '', broken.cell(1001,1));
 _props['EDITOR_EMAILS'] = 'komu@example.co.jp';
-const after = api.importFromProductionSheet();
-check('復旧後の取込は既存を重複させない', after.added === 2, after);   // 22795-000 と 22903-000 が新規
+api.importFromProductionSheet();
+const ordersNow = api.getBoardData({includeExcluded: true}).rows.map(function (r) { return r.orderNo; });
+check('復旧後の取込で重複が出ない', ordersNow.length === new Set(ordersNow).size, ordersNow);
+check('復旧前の2件がそのまま残る',
+  ordersNow.indexOf('22670-000') >= 0 && ordersNow.indexOf('22694-000') >= 0, ordersNow);
 check('追記も詰めて入る', broken.cell(4,1) === '22795-000', broken.cell(4,1));
 
 console.log(fails === 0 ? '\nすべて成功' : `\n失敗 ${fails} 件`);
