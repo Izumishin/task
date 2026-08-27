@@ -59,12 +59,32 @@ def build_page_map(pdf_paths):
     return page_map, docs
 
 
+# Symbol フォントの文字は PDF から私用領域(U+F0xx)として抽出される。
+# 誌面の「抗アミロイドβ抗体薬」等が抽出時に消えてしまうため、ギリシャ文字へ戻す。
+# （Symbol は ASCII 位置にギリシャ文字を割り当てる：a→α, b→β, m→μ …）
+_SYMBOL_MAP = {
+    0xF061: "α", 0xF062: "β", 0xF067: "γ", 0xF064: "δ", 0xF065: "ε",
+    0xF07A: "ζ", 0xF068: "η", 0xF071: "θ", 0xF069: "ι", 0xF06B: "κ",
+    0xF06C: "λ", 0xF06D: "μ", 0xF06E: "ν", 0xF078: "ξ", 0xF06F: "ο",
+    0xF070: "π", 0xF072: "ρ", 0xF073: "σ", 0xF074: "τ", 0xF075: "υ",
+    0xF066: "φ", 0xF063: "χ", 0xF079: "ψ", 0xF077: "ω",
+    0xF044: "Δ", 0xF057: "Ω", 0xF053: "Σ", 0xF050: "Π",
+}
+
+
+def normalize_symbols(text):
+    """私用領域の Symbol 文字を通常のギリシャ文字へ置換する。"""
+    if not text:
+        return text
+    return text.translate(_SYMBOL_MAP)
+
+
 def page_text(page_map, docs, num):
     """誌面ページ番号のテキストを返す（無ければ None）。"""
     if num not in page_map:
         return None
     path, idx = page_map[num]
-    return docs[path][idx].get_text()
+    return normalize_symbols(docs[path][idx].get_text())
 
 
 # ---------------------------------------------------------------------------
