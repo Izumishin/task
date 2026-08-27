@@ -4,240 +4,327 @@
   <base target="_top">
   <meta charset="utf-8">
   <style>
+    /* ダークを既定にし、明るい場所（工場・配送）向けに切替できるようにする */
     :root {
-      --bg: #f4f6f9;
-      --panel: #ffffff;
-      --line: #d9dee6;
-      --text: #1f2733;
-      --muted: #6b7686;
-      --accent: #1a5fb4;
-      --accent-weak: #e7effa;
-      --warn: #b3261e;
-      --warn-weak: #fdecea;
-      --ok: #2e7d32;
-      --shadow: 0 1px 2px rgba(16, 24, 40, .08);
+      --bg: #0d0d0f;
+      --panel: #141416;
+      --card: #1c1c20;
+      --card-hover: #232329;
+      --line: #2a2a31;
+      --line-soft: #202027;
+      --text: #f2f2f4;
+      --muted: #9a9aa4;
+      --faint: #6d6d77;
+      --btn-line: #3a3a43;
+      --gehan-bg: #e7e0ff; --gehan-fg: #4733a6;
+      --print-bg: #d7f2e2; --print-fg: #196443;
+      --outer-bg: #ffeacd; --outer-fg: #8a5514;
+      --komu-bg:  #ffdfe4; --komu-fg:  #a32c45;
+      --none-bg:  #26262d; --none-fg:  #9a9aa4;
+      --warn-bg:  #3b1b1f; --warn-fg:  #ff909a;
+      --memo: #e8b04b;
+      --ok: #4fc98a;
+      --accent: #8b7bf3;
+      --accent-fg: #12111c;
+      --shadow: 0 1px 2px rgba(0,0,0,.4);
     }
+    :root[data-theme="light"] {
+      --bg: #eef0f3;
+      --panel: #ffffff;
+      --card: #ffffff;
+      --card-hover: #f6f8fb;
+      --line: #dfe3e9;
+      --line-soft: #eceff3;
+      --text: #1b1d21;
+      --muted: #626973;
+      --faint: #8a919c;
+      --btn-line: #cfd5de;
+      --gehan-bg: #ece6ff; --gehan-fg: #4733a6;
+      --print-bg: #ddf3e6; --print-fg: #166139;
+      --outer-bg: #ffeed7; --outer-fg: #7d4d11;
+      --komu-bg:  #ffe3e8; --komu-fg:  #9c2740;
+      --none-bg:  #eceff3; --none-fg:  #626973;
+      --warn-bg:  #fdecec; --warn-fg:  #b3261e;
+      --memo: #a06b12;
+      --ok: #1f7a4d;
+      --accent: #4b3fd4;
+      --accent-fg: #ffffff;
+      --shadow: 0 1px 2px rgba(16,24,40,.06);
+    }
+
     * { box-sizing: border-box; }
     body {
       margin: 0;
       background: var(--bg);
       color: var(--text);
-      font-family: "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif;
+      font-family: "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, system-ui, sans-serif;
       font-size: 15px;
-      line-height: 1.5;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
     }
-    button { font-family: inherit; font-size: 14px; cursor: pointer; }
-    input, select, textarea { font-family: inherit; font-size: 14px; }
+    button { font-family: inherit; font-size: 14px; cursor: pointer; color: inherit; }
+    input, select { font-family: inherit; font-size: 14px; color: inherit; }
+    svg { flex: none; }
 
     /* ------- 上部バー ------- */
     .topbar {
       position: sticky; top: 0; z-index: 30;
-      background: var(--panel);
-      border-bottom: 1px solid var(--line);
-      padding: 10px 16px;
-      display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center;
+      background: var(--bg);
+      padding: 14px 20px 10px;
+      display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
     }
-    .topbar h1 { font-size: 17px; margin: 0 8px 0 0; white-space: nowrap; }
-    .tool { display: flex; align-items: center; gap: 6px; }
-    .tool label { font-size: 13px; color: var(--muted); white-space: nowrap; }
-    .tool input[type="search"] { width: 170px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; }
-    .tool input[type="date"] { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; }
+    .search {
+      flex: 1 1 320px; min-width: 200px;
+      display: flex; align-items: center; gap: 10px;
+      background: var(--panel); border: 1px solid var(--line);
+      border-radius: 12px; padding: 0 14px; height: 46px;
+    }
+    .search svg { color: var(--faint); }
+    .search input {
+      flex: 1; background: none; border: none; outline: none;
+      font-size: 15px; height: 100%;
+    }
+    .search input::placeholder { color: var(--faint); }
+    .datebox {
+      display: flex; align-items: center; gap: 10px;
+      background: var(--panel); border: 1px solid var(--line);
+      border-radius: 12px; padding: 0 14px; height: 46px;
+    }
+    .datebox svg { color: var(--faint); }
+    .datebox input { background: none; border: none; outline: none; font-size: 15px; }
+    .linkbtn {
+      background: none; border: none; color: var(--muted);
+      padding: 6px 8px; border-radius: 8px;
+    }
+    .linkbtn:hover { color: var(--text); background: var(--panel); }
     .btn {
-      padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px;
-      background: #fff; color: var(--text);
+      background: var(--panel); border: 1px solid var(--btn-line);
+      border-radius: 10px; padding: 8px 14px;
     }
-    .btn:hover { background: #f0f3f8; }
-    .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-    .btn.primary:hover { background: #17529b; }
-    .btn:disabled { opacity: .5; cursor: default; }
-    .spacer { flex: 1 1 auto; }
-    .meta { font-size: 12px; color: var(--muted); text-align: right; white-space: nowrap; }
-    .notice { width: 100%; font-size: 13px; color: var(--warn); background: var(--warn-weak);
-      border: 1px solid #f2c4c0; border-radius: 6px; padding: 6px 10px; }
+    .btn:hover { background: var(--card-hover); }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 700; }
+    .btn.primary:hover { filter: brightness(1.08); }
+    .btn:disabled { opacity: .45; cursor: default; }
+    .iconbtn {
+      background: var(--panel); border: 1px solid var(--line);
+      border-radius: 10px; width: 40px; height: 40px;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .iconbtn:hover { background: var(--card-hover); }
+    .toolrow {
+      width: 100%; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+      font-size: 12.5px; color: var(--faint);
+    }
+    .toolrow label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+    .notice {
+      width: 100%; font-size: 13px; color: var(--warn-fg); background: var(--warn-bg);
+      border-radius: 10px; padding: 8px 12px;
+    }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
     /* ------- 未定エリア ------- */
-    .undecided {
-      background: #fffdf3; border-bottom: 1px solid #ecdfae;
-      padding: 8px 16px;
+    .undecided { padding: 0 20px 4px; }
+    .undecided-inner {
+      background: var(--panel); border: 1px solid var(--line);
+      border-radius: 14px; padding: 10px 14px;
     }
-    .undecided-head { display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; }
+    .undecided-head { display: flex; align-items: center; gap: 12px; cursor: pointer; user-select: none; }
     .undecided-head .badge {
-      background: #8a6d1f; color: #fff; border-radius: 999px;
-      padding: 2px 12px; font-size: 13px; font-weight: 700;
+      background: var(--memo); color: #23180a; border-radius: 999px;
+      padding: 3px 14px; font-size: 13px; font-weight: 700;
     }
-    .undecided-head .hint { font-size: 12px; color: var(--muted); }
-    .undecided-list {
-      display: flex; gap: 10px; overflow-x: auto; padding: 10px 2px 4px;
-    }
+    .undecided-head .hint { font-size: 12.5px; color: var(--faint); }
+    .undecided-list { display: flex; gap: 10px; overflow-x: auto; padding: 12px 2px 4px; }
     .u-card {
-      flex: 0 0 240px; background: #fff; border: 1px solid #e3d9b5; border-radius: 8px;
-      padding: 8px 10px; box-shadow: var(--shadow);
+      flex: 0 0 250px; background: var(--card); border: 1px solid var(--line);
+      border-radius: 12px; padding: 12px 14px;
     }
-    .u-card.stale { border-color: #d9a441; background: #fffaf0; }
-    .u-card .stale-mark { font-size: 12px; color: #8a6d1f; }
-    .u-card .u-buttons { display: flex; gap: 6px; margin-top: 8px; }
-    .u-card .u-buttons .btn { flex: 1; padding: 5px 0; }
+    .u-card.stale { border-color: var(--memo); }
+    .u-card .stale-mark { font-size: 12px; color: var(--memo); margin-top: 2px; }
+    .u-buttons { display: flex; gap: 6px; margin-top: 10px; }
+    .u-buttons .btn { flex: 1; padding: 6px 0; font-size: 13px; }
 
     /* ------- ボード ------- */
     .board {
-      display: grid;
-      grid-template-columns: 0.85fr 1.5fr 1fr;
-      gap: 12px;
-      padding: 12px 16px 40px;
-      align-items: start;
+      display: grid; grid-template-columns: 0.9fr 1.45fr 1fr;
+      gap: 16px; padding: 12px 20px 48px; align-items: start;
     }
-    .col { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; min-height: 120px; }
     .col-head {
-      position: sticky; top: 0;
-      display: flex; align-items: center; gap: 8px;
-      padding: 10px 12px; border-bottom: 1px solid var(--line);
-      background: var(--panel); border-radius: 10px 10px 0 0;
-      font-weight: 700;
+      display: flex; align-items: baseline; gap: 10px;
+      padding: 4px 4px 10px; flex-wrap: wrap;
     }
-    .col-head .count { font-weight: 400; font-size: 12px; color: var(--muted); }
+    .col-head .name { font-size: 15px; font-weight: 700; color: var(--muted); }
+    .col-head .sub { font-size: 12.5px; color: var(--faint); }
     .col-head .week-nav { margin-left: auto; display: flex; gap: 4px; }
-    .col-head .week-nav .btn { padding: 3px 8px; }
-    .col-body { padding: 8px; display: flex; flex-direction: column; gap: 10px; }
-    .group-title {
-      font-size: 13px; font-weight: 700; color: var(--muted);
-      padding: 4px 2px; border-bottom: 1px dashed var(--line);
+    .col-head .week-nav button {
+      background: none; border: 1px solid var(--line); border-radius: 8px;
+      width: 26px; height: 26px; line-height: 1; color: var(--muted);
     }
-    .group-title.today { color: var(--accent); }
-    .group-title.late { color: var(--warn); }
-    .group { display: flex; flex-direction: column; gap: 8px; }
-    .empty { color: var(--muted); font-size: 13px; padding: 8px 2px; }
+    .col-head .week-nav button:hover { color: var(--text); background: var(--panel); }
+    .col-body {
+      background: var(--panel); border-radius: 16px; padding: 14px;
+      display: flex; flex-direction: column; gap: 10px; min-height: 90px;
+    }
+    .group-title { font-size: 13.5px; font-weight: 500; color: var(--muted); padding: 6px 2px 0; }
+    .group-title.today { color: var(--accent); font-weight: 700; }
+    .group-title.late { color: var(--warn-fg); }
+    .group { display: flex; flex-direction: column; gap: 10px; }
+    .empty { color: var(--faint); font-size: 13px; padding: 2px 2px 6px; }
 
     /* ------- カード ------- */
     .card {
-      border: 1px solid var(--line); border-left: 4px solid var(--accent);
-      border-radius: 8px; background: #fff; padding: 8px 10px; box-shadow: var(--shadow);
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: 12px; padding: 12px 14px; box-shadow: var(--shadow);
     }
     .card.clickable { cursor: pointer; }
-    .card.warn { border-left-color: var(--warn); }
-    .card.done { border-left-color: #b9c0cb; opacity: .62; }
-    .card.hit { outline: 3px solid #f5c518; outline-offset: 1px; }
+    .card.clickable:hover { background: var(--card-hover); }
+    .card.warn { border-color: var(--warn-fg); }
+    .card.hit { outline: 2px solid var(--memo); outline-offset: 1px; }
+    .card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
     .order-no {
       font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
-      font-size: 12px; color: var(--muted);
+      font-size: 12.5px; color: var(--faint); letter-spacing: .02em;
     }
-    .item { font-weight: 700; margin: 1px 0 4px; }
-    .sub { font-size: 12.5px; color: var(--muted); }
-    .memo { font-size: 12.5px; margin-top: 4px; background: #f6f8fb; border-radius: 4px; padding: 3px 6px; }
-    .badges { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
+    .card-top .badges { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+    .item { font-weight: 700; font-size: 15.5px; line-height: 1.45; margin-bottom: 8px; }
+    .card-bottom { display: flex; align-items: flex-end; gap: 10px; }
+    .card-bottom .info { flex: 1; min-width: 0; }
+    .meta { font-size: 12.5px; color: var(--muted); }
+    .memo { font-size: 12.5px; color: var(--memo); display: flex; gap: 5px; align-items: flex-start; margin-top: 4px; }
+    .memo svg { margin-top: 3px; }
+    .complete {
+      background: none; border: 1px solid var(--btn-line); color: var(--text);
+      border-radius: 9px; padding: 6px 14px; font-size: 13.5px;
+      display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+    }
+    .complete:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
     .stage-badge {
-      font-size: 12px; font-weight: 700; border-radius: 999px; padding: 1px 10px;
-      background: var(--accent-weak); color: var(--accent);
+      font-size: 12px; font-weight: 700; border-radius: 999px; padding: 2px 12px;
+      background: var(--none-bg); color: var(--none-fg); white-space: nowrap;
     }
-    .stage-badge.none { background: #eceff3; color: var(--muted); }
+    .stage-badge.gehan { background: var(--gehan-bg); color: var(--gehan-fg); }
+    .stage-badge.print { background: var(--print-bg); color: var(--print-fg); }
+    .stage-badge.outer { background: var(--outer-bg); color: var(--outer-fg); }
+    .stage-badge.komu  { background: var(--komu-bg);  color: var(--komu-fg); }
     .warn-badge {
-      font-size: 12px; font-weight: 700; border-radius: 999px; padding: 1px 10px;
-      background: var(--warn-weak); color: var(--warn);
+      font-size: 12px; font-weight: 700; border-radius: 999px; padding: 2px 12px;
+      background: var(--warn-bg); color: var(--warn-fg); white-space: nowrap;
     }
-    .cat-badge { font-size: 12px; border-radius: 999px; padding: 1px 10px; background: #eef1f5; color: var(--muted); }
-    .card-actions { display: flex; justify-content: flex-end; margin-top: 6px; }
+    .card.done { background: none; border-color: var(--line-soft); box-shadow: none; }
+    .card.done .item { color: var(--muted); font-weight: 500; margin-bottom: 4px; }
+    .delivered { font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+    .delivered svg { color: var(--ok); }
 
     /* ------- 編集パネル ------- */
     .overlay {
-      position: fixed; inset: 0; background: rgba(20, 26, 34, .45);
+      position: fixed; inset: 0; background: rgba(0,0,0,.6);
       display: flex; align-items: flex-start; justify-content: center;
       padding: 40px 16px; z-index: 60; overflow-y: auto;
     }
     .panel {
-      background: #fff; border-radius: 12px; width: 100%; max-width: 560px;
-      padding: 18px 20px; box-shadow: 0 12px 32px rgba(16, 24, 40, .25);
+      background: var(--panel); border: 1px solid var(--line);
+      border-radius: 16px; width: 100%; max-width: 560px; padding: 20px 22px;
     }
     .panel h2 { margin: 0 0 2px; font-size: 17px; }
-    .panel .panel-sub { font-size: 13px; color: var(--muted); margin-bottom: 14px; }
-    .field { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+    .panel .panel-sub { font-size: 12.5px; color: var(--muted); margin-bottom: 16px; }
+    .field { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
     .field > label { width: 96px; font-size: 13px; color: var(--muted); flex: none; }
     .field input[type="date"], .field input[type="text"], .field select {
-      flex: 1; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
+      flex: 1; background: var(--card); border: 1px solid var(--line);
+      border-radius: 9px; padding: 8px 10px;
     }
-    .stage-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-    .stage-row > .name { width: 60px; font-weight: 700; font-size: 14px; flex: none; }
+    .stage-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+    .stage-row > .name { width: 56px; font-weight: 700; font-size: 14px; flex: none; }
     .stage-row .pair { flex: 1; display: flex; align-items: center; gap: 6px; }
-    .stage-row .pair small { color: var(--muted); }
-    .stage-row input[type="date"] { flex: 1; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; }
-    .panel-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
-    .divider { border-top: 1px solid var(--line); margin: 12px 0; }
+    .stage-row .pair small { color: var(--faint); }
+    .stage-row input[type="date"] {
+      flex: 1; background: var(--card); border: 1px solid var(--line);
+      border-radius: 9px; padding: 8px 10px;
+    }
+    .panel-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+    .divider { border-top: 1px solid var(--line); margin: 14px 0; }
 
     /* ------- トースト ------- */
     .toast {
       position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
-      background: #23303f; color: #fff; border-radius: 8px; padding: 10px 14px;
-      display: flex; align-items: center; gap: 12px; z-index: 80;
-      box-shadow: 0 6px 20px rgba(16, 24, 40, .3); font-size: 14px;
+      background: var(--card); border: 1px solid var(--line); color: var(--text);
+      border-radius: 12px; padding: 12px 16px;
+      display: flex; align-items: center; gap: 14px; z-index: 80;
+      box-shadow: 0 8px 24px rgba(0,0,0,.45); font-size: 14px;
     }
-    .toast .btn { background: transparent; color: #ffd66b; border-color: #55636f; }
-    .toast.err { background: #7a1b16; }
+    .toast .btn { padding: 5px 12px; }
+    .toast.err { border-color: var(--warn-fg); color: var(--warn-fg); }
     .hidden { display: none !important; }
 
     @media (max-width: 900px) {
-      .board { grid-template-columns: 1fr; padding: 10px 10px 40px; }
-      .topbar { position: static; padding: 10px; gap: 8px 12px; }
-      .col-head { position: static; }
-      .undecided { padding: 8px 10px; }
-      .spacer { display: none; }
-      .meta { width: 100%; text-align: left; white-space: normal; }
-      .tool input[type="search"] { width: 140px; }
+      .board { grid-template-columns: 1fr; padding: 10px 12px 40px; gap: 20px; }
+      .topbar { position: static; padding: 12px; }
+      .undecided { padding: 0 12px 4px; }
+      .search { flex-basis: 100%; }
       .field > label { width: 76px; }
       .stage-row { flex-wrap: wrap; }
     }
+    @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
   </style>
 </head>
 <body>
 
 <header class="topbar">
-  <h1>印刷進行ボード</h1>
-
-  <div class="tool">
-    <label for="q">受注NO</label>
-    <input id="q" type="search" placeholder="部分一致で検索" autocomplete="off">
+  <div class="search">
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+    <input id="q" type="search" placeholder="受注NOで検索" autocomplete="off" aria-label="受注NOで検索">
   </div>
 
-  <div class="tool">
-    <label for="jump">週へ移動</label>
-    <input id="jump" type="date">
-    <button class="btn" id="thisWeek">今週へ</button>
+  <div class="datebox">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18"/></svg>
+    <input id="jump" type="date" aria-label="表示する週の日付">
   </div>
 
-  <div class="tool" id="editorTools">
+  <button class="linkbtn" id="thisWeek">今週へ</button>
+
+  <span id="editorTools" style="display:inline-flex;gap:8px;align-items:center;">
     <button class="btn" id="importBtn">いま取込む</button>
-    <label style="cursor:pointer;"><input type="checkbox" id="showExcluded"> 対象外も表示</label>
-  </div>
+  </span>
+  <button class="iconbtn" id="themeBtn" title="配色を切り替え" aria-label="配色を切り替え">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  </button>
 
-  <div class="spacer"></div>
-  <div class="meta" id="meta">読み込み中…</div>
+  <div class="toolrow">
+    <span id="meta">読み込み中…</span>
+    <label id="excludedWrap" class="hidden"><input type="checkbox" id="showExcluded"> 対象外も表示</label>
+  </div>
   <div class="notice hidden" id="notice"></div>
 </header>
 
 <section class="undecided" id="undecidedArea">
-  <div class="undecided-head" id="undecidedHead">
-    <span class="badge" id="undecidedBadge">未定 0件</span>
-    <span class="hint" id="undecidedHint">クリックで展開／営業に確認するリスト</span>
+  <div class="undecided-inner">
+    <div class="undecided-head" id="undecidedHead">
+      <span class="badge" id="undecidedBadge">未定 0件</span>
+      <span class="hint" id="undecidedHint">クリックで展開／営業に確認するリスト</span>
+    </div>
+    <div class="undecided-list hidden" id="undecidedList"></div>
   </div>
-  <div class="undecided-list hidden" id="undecidedList"></div>
 </section>
 
 <main class="board" id="board">
-  <section class="col" id="colDone">
-    <div class="col-head">完了 <span class="count" id="countDone"></span></div>
+  <section id="colDone">
+    <div class="col-head"><span class="name">完了</span><span class="sub" id="countDone"></span></div>
     <div class="col-body" id="bodyDone"></div>
   </section>
 
-  <section class="col" id="colWeek">
+  <section id="colWeek">
     <div class="col-head">
-      <span id="weekTitle">今週</span> <span class="count" id="countWeek"></span>
+      <span class="name" id="weekTitle">今週</span><span class="sub" id="weekRange"></span><span class="sub" id="countWeek"></span>
       <span class="week-nav">
-        <button class="btn" id="prevWeek" title="前の週">‹</button>
-        <button class="btn" id="nextWeek" title="次の週">›</button>
+        <button id="prevWeek" title="前の週" aria-label="前の週">‹</button>
+        <button id="nextWeek" title="次の週" aria-label="次の週">›</button>
       </span>
     </div>
     <div class="col-body" id="bodyWeek"></div>
   </section>
 
-  <section class="col" id="colLater">
-    <div class="col-head">来週以降 <span class="count" id="countLater"></span></div>
+  <section id="colLater">
+    <div class="col-head"><span class="name">来週以降</span><span class="sub" id="countLater"></span></div>
     <div class="col-body" id="bodyLater"></div>
   </section>
 </main>
@@ -283,10 +370,14 @@ function mondayOf(d) {
   const diff = (w === 0) ? -6 : 1 - w; // 月曜起点
   return addDays(x, diff);
 }
+function shortDate(s) {
+  const d = parseYmd(s);
+  return d ? (d.getMonth() + 1) + '/' + d.getDate() : s;
+}
 function labelDate(s) {
   const d = parseYmd(s);
   if (!d) return s;
-  return (d.getMonth() + 1) + '/' + d.getDate() + '(' + WEEKDAY_JA[d.getDay()] + ')';
+  return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + WEEKDAY_JA[d.getDay()];
 }
 function toInputDate(s) {
   const d = parseYmd(s);
@@ -341,8 +432,9 @@ function render() {
   } else {
     notice.classList.add('hidden');
   }
-  setMeta((d.canEdit ? '更新可' : '閲覧のみ') + ' / ' + esc(d.userEmail) +
-    ' ・ 最終取込 ' + (d.lastImportAt || '—') + ' ・ 表示 ' + d.fetchedAt);
+  document.getElementById('excludedWrap').classList.toggle('hidden', !d.canEdit);
+  setMeta((d.canEdit ? '更新可' : '閲覧のみ') + '・' + esc(d.userEmail) +
+    '　最終取込 ' + (d.lastImportAt || '—') + '　表示 ' + d.fetchedAt.split(' ')[1]);
 
   renderUndecided();
   renderBoard();
@@ -372,9 +464,9 @@ function renderUndecided() {
     const isStale = r.undecidedDays !== null && r.undecidedDays >= d.staleDays;
     return '<div class="u-card' + (isStale ? ' stale' : '') + '" data-order="' + esc(r.orderNo) + '">' +
       '<div class="order-no">' + esc(r.orderNo) + '</div>' +
-      '<div class="item">' + esc(r.item) + '</div>' +
-      '<div class="sub">' + esc(r.customer) + ' ／ ' + esc(r.sales) + '</div>' +
-      '<div class="sub">納期 ' + (r.due ? esc(r.due) : '—') + '</div>' +
+      '<div class="item" style="margin-bottom:4px;">' + esc(r.item) + '</div>' +
+      '<div class="meta">' + esc(r.customer) + ' ／ ' + esc(r.sales) + '</div>' +
+      '<div class="meta">納期 ' + (r.due ? shortDate(r.due) : '—') + '</div>' +
       (isStale ? '<div class="stale-mark">未定のまま ' + r.undecidedDays + '日</div>' : '') +
       (d.canEdit
         ? '<div class="u-buttons">' +
@@ -395,8 +487,9 @@ function renderBoard() {
   const weekEndStr = fmt(weekEnd);
 
   document.getElementById('weekTitle').textContent =
-    (fmt(mondayOf(new Date())) === weekStartStr ? '今週' : '週') +
-    '　' + labelDate(weekStartStr) + ' 〜 ' + labelDate(weekEndStr);
+    fmt(mondayOf(new Date())) === weekStartStr ? '今週' : '表示中の週';
+  document.getElementById('weekRange').textContent =
+    shortDate(weekStartStr) + ' – ' + shortDate(weekEndStr);
 
   const active = [], completed = [], excluded = [];
   d.rows.forEach(function (r) {
@@ -408,7 +501,7 @@ function renderBoard() {
 
   // --- 完了カラム ---
   completed.sort(function (a, b) { return (b.deliveredAt || '').localeCompare(a.deliveredAt || ''); });
-  document.getElementById('countDone').textContent = completed.length + '件';
+  document.getElementById('countDone').textContent = d.completedVisibleDays + '日間で自動非表示';
   document.getElementById('bodyDone').innerHTML = completed.length
     ? '<div class="group">' + completed.map(completedCardHtml).join('') + '</div>'
     : '<div class="empty">直近' + d.completedVisibleDays + '日に納品完了した案件はありません。</div>';
@@ -421,17 +514,21 @@ function renderBoard() {
     weekHtml += '<div class="group-title late">遅れ（予定日超過） ' + late.length + '件</div>' +
       '<div class="group">' + sortRows(late).map(cardHtml).join('') + '</div>';
   }
+  let hadAnyDay = false;
   for (let i = 0; i < 5; i++) {
     const dayStr = fmt(addDays(weekStart, i));
     const rows = active.filter(function (r) { return r.placeDate === dayStr; });
     weekCount += rows.length;
     const isToday = dayStr === d.today;
+    if (rows.length === 0 && !isToday) continue;   // 空の日は見出しを出さない（本日だけは常に出す）
+    hadAnyDay = true;
     weekHtml += '<div class="group-title' + (isToday ? ' today' : '') + '">' + labelDate(dayStr) +
-      (isToday ? '　本日' : '') + '　<span style="font-weight:400">' + rows.length + '件</span></div>' +
+      (isToday ? '（本日）' : '') + '</div>' +
       (rows.length
         ? '<div class="group">' + sortRows(rows).map(cardHtml).join('') + '</div>'
-        : '<div class="empty">—</div>');
+        : '<div class="empty">本日の予定はありません</div>');
   }
+  if (!hadAnyDay && late.length === 0) weekHtml += '<div class="empty">この週に予定されている案件はありません</div>';
   document.getElementById('countWeek').textContent = weekCount + '件';
   document.getElementById('bodyWeek').innerHTML = weekHtml;
 
@@ -443,20 +540,19 @@ function renderBoard() {
   const dates = Object.keys(byDate).sort();
 
   let laterHtml = dates.map(function (day) {
-    return '<div class="group-title">' + labelDate(day) + '　<span style="font-weight:400">' +
-      byDate[day].length + '件</span></div>' +
+    return '<div class="group-title">' + labelDate(day) + '</div>' +
       '<div class="group">' + sortRows(byDate[day]).map(cardHtml).join('') + '</div>';
   }).join('');
 
-  laterHtml += '<div class="group-title">日程未定　<span style="font-weight:400">' + undated.length + '件</span></div>' +
-    (undated.length
-      ? '<div class="group">' + sortRows(undated).map(cardHtml).join('') + '</div>'
-      : '<div class="empty">—</div>');
-
+  if (undated.length > 0) {
+    laterHtml += '<div class="group-title">日程未定</div>' +
+      '<div class="group">' + sortRows(undated).map(cardHtml).join('') + '</div>';
+  }
   if (state.includeExcluded && excluded.length > 0) {
-    laterHtml += '<div class="group-title">対象外　<span style="font-weight:400">' + excluded.length + '件</span></div>' +
+    laterHtml += '<div class="group-title">対象外</div>' +
       '<div class="group">' + sortRows(excluded).map(cardHtml).join('') + '</div>';
   }
+  if (!laterHtml) laterHtml = '<div class="empty">来週以降の予定はありません</div>';
   document.getElementById('countLater').textContent = (later.length + undated.length) + '件';
   document.getElementById('bodyLater').innerHTML = laterHtml;
 }
@@ -471,30 +567,40 @@ function sortRows(rows) {
 function cardHtml(r) {
   const d = state.data;
   const warn = r.warnings.length > 0;
-  const stageName = r.currentStageName || (r.placeDate ? '' : '日程未定');
+  const badge = r.placeDate
+    ? '<span class="stage-badge ' + r.currentStage + '">' + esc(r.currentStageName) + '</span>'
+    : '<span class="stage-badge">日程未定</span>';
   return '<div class="card clickable' + (warn ? ' warn' : '') + '" data-order="' + esc(r.orderNo) + '">' +
-    '<div class="order-no">' + esc(r.orderNo) + '</div>' +
-    '<div class="item">' + esc(r.item) + '</div>' +
-    '<div class="badges">' +
-      '<span class="stage-badge' + (r.placeDate ? '' : ' none') + '">' +
-        esc(r.placeDate ? stageName : '日程未定') + '</span>' +
-      (r.category === '対象外' ? '<span class="cat-badge">対象外</span>' : '') +
-      (r.skipOuter ? '<span class="cat-badge">外注スキップ</span>' : '') +
-      r.warnings.map(function (w) { return '<span class="warn-badge">' + esc(w) + '</span>'; }).join('') +
+    '<div class="card-top">' +
+      '<span class="order-no">' + esc(r.orderNo) + '</span>' +
+      '<span class="badges">' +
+        r.warnings.map(function (w) { return '<span class="warn-badge">' + esc(w) + '</span>'; }).join('') +
+        (r.category === '対象外' ? '<span class="stage-badge">対象外</span>' : '') +
+        (r.skipOuter ? '<span class="stage-badge">外注スキップ</span>' : '') +
+        badge +
+      '</span>' +
     '</div>' +
-    '<div class="sub">' + esc(r.customer) + ' ／ ' + esc(r.sales) + ' ／ 納期 ' + esc(r.due || '—') + '</div>' +
-    (r.memo ? '<div class="memo">' + esc(r.memo) + '</div>' : '') +
-    (d.canEdit && r.currentStage
-      ? '<div class="card-actions"><button class="btn primary" data-complete="' + esc(r.orderNo) + '">完了 →</button></div>'
-      : '') +
-    '</div>';
+    '<div class="item">' + esc(r.item) + '</div>' +
+    '<div class="card-bottom">' +
+      '<div class="info">' +
+        '<div class="meta">' + esc(r.customer) + ' ／ ' + esc(r.sales) +
+          (r.due ? ' ／ 納期 ' + shortDate(r.due) : '') + '</div>' +
+        (r.memo
+          ? '<div class="memo"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg><span>' + esc(r.memo) + '</span></div>'
+          : '') +
+      '</div>' +
+      (d.canEdit && r.currentStage
+        ? '<button class="complete" data-complete="' + esc(r.orderNo) + '">完了 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>'
+        : '') +
+    '</div>' +
+  '</div>';
 }
 
 function completedCardHtml(r) {
   return '<div class="card done clickable" data-order="' + esc(r.orderNo) + '">' +
-    '<div class="order-no">' + esc(r.orderNo) + '</div>' +
+    '<div class="card-top"><span class="order-no">' + esc(r.orderNo) + '</span></div>' +
     '<div class="item">' + esc(r.item) + '</div>' +
-    '<div class="sub">納品 ' + esc(r.deliveredAt) + '</div>' +
+    '<div class="delivered"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>納品済 ' + shortDate(r.deliveredAt) + '</div>' +
     '</div>';
 }
 
@@ -719,6 +825,19 @@ document.getElementById('showExcluded').addEventListener('change', function () {
 document.addEventListener('keydown', function (ev) {
   if (ev.key === 'Escape' && state.editingOrderNo) closePanel();
 });
+
+// 配色切替（既定はダーク。工場・配送の明るい場所向けにライトも用意）
+(function () {
+  let saved = '';
+  try { saved = localStorage.getItem('board-theme') || ''; } catch (e) { saved = ''; }
+  if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
+  document.getElementById('themeBtn').addEventListener('click', function () {
+    const light = document.documentElement.getAttribute('data-theme') === 'light';
+    if (light) document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', 'light');
+    try { localStorage.setItem('board-theme', light ? '' : 'light'); } catch (e) {}
+  });
+})();
 
 // 30秒ごとの自動更新。編集パネルを開いている間は止める。
 setInterval(function () {
