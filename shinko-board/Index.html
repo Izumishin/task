@@ -105,6 +105,8 @@
     .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 700; }
     .btn.primary:hover { filter: brightness(1.08); }
     .btn:disabled { opacity: .45; cursor: default; }
+    .btn.danger { border-color: var(--btn-line); color: var(--warn-fg); }
+    .btn.danger:hover { background: var(--warn-bg); border-color: var(--warn-fg); }
     .iconbtn {
       background: var(--panel); border: 1px solid var(--line);
       border-radius: 10px; width: 40px; height: 40px;
@@ -691,11 +693,15 @@ function openPanel(orderNo) {
     '<div class="divider"></div>' +
     stageRows +
     '<div class="panel-actions">' +
+      '<button class="btn danger" id="panelDelete" style="margin-right:auto;">この案件を削除</button>' +
       '<button class="btn" id="panelCancel">キャンセル</button>' +
       '<button class="btn primary" id="panelSave">保存</button>' +
     '</div>';
 
   document.getElementById('overlay').classList.remove('hidden');
+  document.getElementById('panelDelete').addEventListener('click', function () {
+    deleteCurrentCase(r);
+  });
   document.getElementById('f_category').addEventListener('change', function () {
     const skip = document.getElementById('f_skip');
     skip.disabled = (this.value !== '社内');
@@ -763,6 +769,36 @@ function saveNewCase() {
     state.openAfterLoad = (added.category === '未定') ? '' : added.orderNo;
     load(true);
   });
+}
+
+function deleteCurrentCase(r) {
+  if (!window.confirm(r.orderNo + '　' + r.item + '\n\nこの案件をボードから削除します。元に戻せません。よろしいですか？')) return;
+  if (state.busy) return;
+  state.busy = true;
+  google.script.run
+    .withSuccessHandler(function () {
+      state.busy = false;
+      closePanel();
+      showToast(r.orderNo + ' を削除しました');
+      load(true);
+    })
+    .withFailureHandler(function (err) {
+      state.busy = false;
+      // 生産表にある案件は削除できない。代わりに「対象外」にするか確認する
+      if (String(err.message).indexOf('対象外') >= 0) {
+        if (window.confirm('この案件は生産表にあるため削除できません。\n翌朝の取込でまた出てきてしまいます。\n\n代わりに区分を「対象外」にして、画面から消しますか？')) {
+          call('setCategory', [r.orderNo, '対象外', auth_()], function () {
+            closePanel();
+            showToast(r.orderNo + ' を対象外にしました');
+            load(true);
+          });
+          return;
+        }
+        return;
+      }
+      showToast(err.message, true);
+    })
+    .deleteCase(r.orderNo, auth_());
 }
 
 function closePanel() {

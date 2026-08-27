@@ -45,6 +45,7 @@ class FakeSheet {
   getMaxRows(){return Math.max(1000,this.getLastRow());}
   getRange(r,c,nr,nc){return new FakeRange(this,r,c,nr===undefined?1:nr,nc===undefined?1:nc);}
   setFrozenRows(){} setFrozenColumns(){} setColumnWidth(){} insertRowsAfter(){}
+  deleteRow(r){this.data.splice(r-1,1);}
   getMaxColumns(){let m=0;this.data.forEach(row=>{if(row.length>m)m=row.length;});return Math.max(m,26);}
   getLastColumn(){let m=0;this.data.forEach(row=>{for(let j=row.length-1;j>=0;j--){if(row[j]!==''&&row[j]!==null&&row[j]!==undefined){if(j+1>m)m=j+1;break;}}});return m;}
 }
@@ -95,7 +96,7 @@ rows.forEach((r, i) => {
 
 // ---- Code.gs をロード ----
 const ctx = { Utilities, PropertiesService, Session, LockService, SpreadsheetApp, ScriptApp, HtmlService, console };
-const fn = new Function(...Object.keys(ctx), src + '\nreturn {importFromProductionSheet,getBoardData,setCategory,completeCurrentStage,undoComplete,saveRow,setupBoardSheet,getBoardSheet_,repairBoardSheet,diagnoseImport,boardLastDataRow_,addCase,today_,COL};');
+const fn = new Function(...Object.keys(ctx), src + '\nreturn {importFromProductionSheet,getBoardData,setCategory,completeCurrentStage,undoComplete,saveRow,setupBoardSheet,getBoardSheet_,repairBoardSheet,diagnoseImport,boardLastDataRow_,addCase,deleteCase,today_,COL};');
 const api = fn(...Object.values(ctx));
 
 let fails = 0;
@@ -236,6 +237,33 @@ const mergedRow = api.getBoardData({}).rows.find(r => r.orderNo === '23001-000')
 check('生産表の内容で更新される', mergedRow.item === '暑中見舞はがき 2000枚' && mergedRow.due === '2026/10/05',
   {item: mergedRow.item, due: mergedRow.due});
 check('手動で入れた区分は残る', mergedRow.category === '社内', mergedRow.category);
+
+console.log('--- 案件の削除 ---');
+// 生産表に無い案件（手動追加）は削除できる
+api.addCase({orderNo:'23009-000', item:'削除テスト用', category:'社内'});
+check('追加された', !!api.getBoardData({}).rows.find(r => r.orderNo === '23009-000'));
+const before = api.getBoardData({includeExcluded:true}).rows.length;
+api.deleteCase('23009-000');
+const afterRows = api.getBoardData({includeExcluded:true}).rows;
+check('削除された', !afterRows.find(r => r.orderNo === '23009-000'));
+check('他の案件は残る', afterRows.length === before - 1, {before: before, after: afterRows.length});
+check('行が詰まって壊れない',
+  afterRows.every(r => r.orderNo !== '') && new Set(afterRows.map(r=>r.orderNo)).size === afterRows.length);
+
+// 生産表にある案件は削除できない（翌朝の取込で戻ってしまうため）
+let importedThrew = '';
+try { api.deleteCase('22670-000'); } catch (e) { importedThrew = e.message; }
+check('生産表にある案件は削除できない', importedThrew.indexOf('対象外') >= 0, importedThrew);
+// 22670-000 は前のテストで納品済（7日超）なので画面には出ない。シート上に残っていることを確認する
+let stillOnSheet = false;
+for (let r = 2; r <= boardSheet.getLastRow(); r++) {
+  if (boardSheet.cell(r, 1) === '22670-000') stillOnSheet = true;
+}
+check('その案件はシートに残っている', stillOnSheet);
+
+let missingThrew = false;
+try { api.deleteCase('99999-000'); } catch (e) { missingThrew = true; }
+check('無い受注NOはエラー', missingThrew);
 
 console.log('--- 合言葉（EDITOR_PIN）方式 ---');
 _props['EDITOR_EMAILS'] = '';

@@ -838,6 +838,46 @@ function addCase(record, auth) {
   });
 }
 
+/** その受注NOが生産表（取込対象のシート）にあるか。 */
+function existsInProduction_(orderNo) {
+  const cols = srcCols_();
+  if (!cols.ORDER_NO) return false;
+  const ss = openProductionSpreadsheet_();
+  const src = latestProductionSheet_(ss);
+  const headerRows = Number(getProp_('PRODUCTION_HEADER_ROWS', CONFIG.PRODUCTION_HEADER_ROWS));
+  const lastRow = src.getLastRow();
+  if (lastRow <= headerRows) return false;
+  const values = src.getRange(headerRows + 1, cols.ORDER_NO, lastRow - headerRows, 1).getValues();
+  const key = String(orderNo).trim();
+  for (let i = 0; i < values.length; i++) {
+    if (toText_(values[i][0]) === key) return true;
+  }
+  return false;
+}
+
+/**
+ * 案件を1件削除する（行ごと消す）。
+ * 生産表にある案件は削除しても翌朝の取込で戻ってくる（区分や日付は失われる）ため、
+ * 削除は生産表に無い案件だけに限る。生産表にある案件は区分「対象外」で画面から消す。
+ */
+function deleteCase(orderNo, auth) {
+  assertEditor_(auth);
+  const key = toText_(orderNo);
+  if (!key) throw new Error('受注NOがありません。');
+  return withLock_(function () {
+    const sh = getBoardSheet_();
+    const row = findRow_(sh, key);
+    if (!row) throw new Error('受注NO ' + key + ' が見つかりません。');
+    if (existsInProduction_(key)) {
+      throw new Error('この案件は生産表にあるため削除できません。翌朝の取込でまた出てきます。'
+        + '画面から消すには、区分を「対象外」にしてください。');
+    }
+    sh.deleteRow(row);
+    console.log('案件を削除: %s', key);
+    return { orderNo: key };
+  });
+}
+
 /**
  * 編集パネルの保存。
  * patch: { plans:{key:date}, dones:{key:date}, memo, skipOuter, category }
