@@ -219,15 +219,27 @@ function editorEmails_() {
     .filter(function (s) { return !!s; });
 }
 
+function editorPin_() {
+  return String(getProp_('EDITOR_PIN', '')).trim();
+}
+
 /**
- * 更新権限の判定。編集者リストが未設定のときは、暫定的にスクリプト所有者のみを編集者とする
- * （運用開始前に画面へ注意を出す）。
+ * 更新権限の判定。次のどちらかを満たせば編集者。
+ *  1. 合言葉方式：スクリプトプロパティ EDITOR_PIN と一致する合言葉を画面で入力している
+ *     （公開設定が「全員」などで、開いた人のメールアドレスが取得できない場合はこちらを使う）
+ *  2. メール方式：Session.getActiveUser().getEmail() が EDITOR_EMAILS のリストにある
+ *     （Google Workspace の「組織内」公開で有効。組織外の公開ではメールが空になり判定できない）
+ * どちらも未設定のときは、暫定的にスクリプト所有者のみを編集者とする（画面に注意を出す）。
  */
-function canEdit_() {
+function canEdit_(auth) {
+  const pin = editorPin_();
+  if (pin && auth && String(auth.pin || '').trim() === pin) return true;
+
   const me = getUserEmail_();
   if (!me) return false;
   const list = editorEmails_();
   if (list.length === 0) {
+    if (pin) return false;   // 合言葉運用中は、合言葉なしの所有者フォールバックはしない
     let owner = '';
     try { owner = (Session.getEffectiveUser().getEmail() || '').toLowerCase(); } catch (e) { owner = ''; }
     return !!owner && owner === me;
@@ -235,9 +247,11 @@ function canEdit_() {
   return list.indexOf(me) >= 0;
 }
 
-function assertEditor_() {
-  if (!canEdit_()) {
-    throw new Error('更新権限がありません。工務担当者のアカウントでアクセスしてください。');
+function assertEditor_(auth) {
+  if (!canEdit_(auth)) {
+    throw new Error(editorPin_()
+      ? '更新権限がありません。画面右上の「編集モード」から合言葉を入力してください。'
+      : '更新権限がありません。工務担当者のアカウントでアクセスしてください。');
   }
 }
 
@@ -645,7 +659,7 @@ function getBoardData(options) {
   const opts = options || {};
   const sh = getBoardSheet_();
   const todayStr = today_();
-  const editable = canEdit_();
+  const editable = canEdit_(opts);
 
   const lastRow = boardLastDataRow_(sh);
   const values = lastRow > 1 ? sh.getRange(2, 1, lastRow - 1, LAST_COL).getValues() : [];
@@ -668,7 +682,8 @@ function getBoardData(options) {
     today: todayStr,
     canEdit: editable,
     userEmail: getUserEmail_(),
-    editorListConfigured: editorEmails_().length > 0,
+    editorListConfigured: editorEmails_().length > 0 || !!editorPin_(),
+    pinConfigured: !!editorPin_(),
     staleDays: staleDays_(),
     completedVisibleDays: CONFIG.COMPLETED_VISIBLE_DAYS,
     lastImportAt: getProp_('LAST_IMPORT_AT', ''),
@@ -707,15 +722,15 @@ function touch_(sh, row) {
 }
 
 /** 画面上部の手動取込ボタン。 */
-function runImportNow() {
-  assertEditor_();
+function runImportNow(auth) {
+  assertEditor_(auth);
   const result = importFromProductionSheet();
   return { message: '取込完了：新規 ' + result.added + ' 件／更新 ' + result.updated + ' 件', result: result };
 }
 
 /** 区分の確定・変更。未定から他へ変わったときに区分確定日を入れる。 */
-function setCategory(orderNo, category) {
-  assertEditor_();
+function setCategory(orderNo, category, auth) {
+  assertEditor_(auth);
   if (CATEGORIES.indexOf(category) < 0) throw new Error('区分の値が不正です：' + category);
   return withLock_(function () {
     const sh = getBoardSheet_();
@@ -739,8 +754,8 @@ function setCategory(orderNo, category) {
 }
 
 /** 「完了 →」ボタン。現在工程の完了日に今日を入れる。取消用トークンを返す。 */
-function completeCurrentStage(orderNo) {
-  assertEditor_();
+function completeCurrentStage(orderNo, auth) {
+  assertEditor_(auth);
   return withLock_(function () {
     const sh = getBoardSheet_();
     const row = findRow_(sh, orderNo);
@@ -767,8 +782,8 @@ function completeCurrentStage(orderNo) {
 }
 
 /** 直前の完了操作の取消（1回だけ）。 */
-function undoComplete(token) {
-  assertEditor_();
+function undoComplete(token, auth) {
+  assertEditor_(auth);
   if (!token || !token.orderNo || !token.column) throw new Error('取消できる操作がありません。');
   const doneCols = STAGES.map(function (s) { return s.done; });
   if (doneCols.indexOf(Number(token.column)) < 0) throw new Error('取消対象が不正です。');
@@ -787,8 +802,8 @@ function undoComplete(token) {
  * patch: { plans:{key:date}, dones:{key:date}, memo, skipOuter, category }
  * 日付は yyyy-MM-dd / yyyy/MM/dd のどちらでも受け付け、yyyy/MM/dd で保存する。
  */
-function saveRow(orderNo, patch) {
-  assertEditor_();
+function saveRow(orderNo, patch, auth) {
+  assertEditor_(auth);
   const p = patch || {};
   return withLock_(function () {
     const sh = getBoardSheet_();

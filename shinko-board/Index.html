@@ -291,6 +291,7 @@
 
   <div class="toolrow">
     <span id="meta">読み込み中…</span>
+    <button class="linkbtn hidden" id="pinBtn" style="font-size:12.5px;padding:2px 8px;">編集モードに入る</button>
     <label id="excludedWrap" class="hidden"><input type="checkbox" id="showExcluded"> 対象外も表示</label>
   </div>
   <div class="notice hidden" id="notice"></div>
@@ -341,6 +342,8 @@
 // ===========================================================================
 const state = {
   data: null,
+  pin: (function () { try { return localStorage.getItem('board-pin') || ''; } catch (e) { return ''; } })(),
+  pinJustEntered: false,
   weekStart: mondayOf(new Date()),
   search: '',
   undecidedOpen: false,
@@ -392,6 +395,7 @@ function esc(s) {
 // ===========================================================================
 // 通信
 // ===========================================================================
+function auth_() { return { pin: state.pin }; }
 function load(silent) {
   if (!silent) setMeta('読み込み中…');
   google.script.run
@@ -403,7 +407,7 @@ function load(silent) {
       showToast('読み込みに失敗しました：' + err.message, true);
       setMeta('読み込み失敗');
     })
-    .getBoardData({ includeExcluded: state.includeExcluded });
+    .getBoardData({ includeExcluded: state.includeExcluded, pin: state.pin });
 }
 
 function call(fnName, args, onOk) {
@@ -433,7 +437,18 @@ function render() {
     notice.classList.add('hidden');
   }
   document.getElementById('excludedWrap').classList.toggle('hidden', !d.canEdit);
-  setMeta((d.canEdit ? '更新可' : '閲覧のみ') + '・' + esc(d.userEmail) +
+  document.getElementById('pinBtn').classList.toggle('hidden', !(d.pinConfigured && !d.canEdit));
+  if (state.pinJustEntered) {
+    state.pinJustEntered = false;
+    if (d.canEdit) {
+      showToast('編集モードに入りました');
+    } else {
+      showToast('合言葉が違います', true);
+      state.pin = '';
+      try { localStorage.removeItem('board-pin'); } catch (e) {}
+    }
+  }
+  setMeta((d.canEdit ? '更新可' : '閲覧のみ') + (d.userEmail ? '・' + esc(d.userEmail) : '') +
     '　最終取込 ' + (d.lastImportAt || '—') + '　表示 ' + d.fetchedAt.split(' ')[1]);
 
   renderUndecided();
@@ -693,7 +708,7 @@ function savePanel() {
   patch.category = document.getElementById('f_category').value;
 
   document.getElementById('panelSave').disabled = true;
-  call('saveRow', [orderNo, patch], function () {
+  call('saveRow', [orderNo, patch, auth_()], function () {
     closePanel();
     showToast('保存しました');
     load(true);
@@ -715,7 +730,7 @@ function showToast(message, isError, undoToken) {
       const token = state.undoToken;
       state.undoToken = null;
       hideToast();
-      call('undoComplete', [token], function () {
+      call('undoComplete', [token, auth_()], function () {
         showToast(token.stageName + ' の完了を取り消しました');
         load(true);
       });
@@ -738,7 +753,7 @@ document.addEventListener('click', function (ev) {
     ev.stopPropagation();
     const orderNo = completeBtn.getAttribute('data-complete');
     completeBtn.disabled = true;
-    call('completeCurrentStage', [orderNo], function (token) {
+    call('completeCurrentStage', [orderNo, auth_()], function (token) {
       showToast(token.stageName + ' を完了にしました（' + orderNo + '）', false, token);
       load(true);
     });
@@ -751,7 +766,7 @@ document.addEventListener('click', function (ev) {
     const orderNo = catBtn.getAttribute('data-order');
     const cat = catBtn.getAttribute('data-cat');
     catBtn.disabled = true;
-    call('setCategory', [orderNo, cat], function () {
+    call('setCategory', [orderNo, cat, auth_()], function () {
       showToast(orderNo + ' を「' + cat + '」にしました');
       load(true);
     });
@@ -809,7 +824,7 @@ document.getElementById('importBtn').addEventListener('click', function () {
   const btn = this;
   btn.disabled = true;
   setMeta('取込中…');
-  call('runImportNow', [], function (res) {
+  call('runImportNow', [auth_()], function (res) {
     btn.disabled = false;
     showToast(res.message);
     load(true);
@@ -824,6 +839,16 @@ document.getElementById('showExcluded').addEventListener('change', function () {
 
 document.addEventListener('keydown', function (ev) {
   if (ev.key === 'Escape' && state.editingOrderNo) closePanel();
+});
+
+// 編集モード（合言葉）。公開設定が「全員」のときは、メールの代わりにこれで工務担当者を判定する
+document.getElementById('pinBtn').addEventListener('click', function () {
+  const pin = window.prompt('合言葉を入力してください');
+  if (pin === null || !pin.trim()) return;
+  state.pin = pin.trim();
+  state.pinJustEntered = true;
+  try { localStorage.setItem('board-pin', state.pin); } catch (e) {}
+  load(true);
 });
 
 // 配色切替（既定はダーク。工場・配送の明るい場所向けにライトも用意）

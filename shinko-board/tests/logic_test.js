@@ -201,6 +201,22 @@ let threw = false;
 try { api.completeCurrentStage('22694-000'); } catch(e) { threw = true; }
 check('閲覧専用は書き込み不可', threw);
 
+console.log('--- 合言葉（EDITOR_PIN）方式 ---');
+_props['EDITOR_EMAILS'] = '';
+_props['EDITOR_PIN'] = 'inkan-2026';
+check('合言葉なしは閲覧のみ', api.getBoardData({}).canEdit === false);
+check('正しい合言葉で更新可', api.getBoardData({pin:'inkan-2026'}).canEdit === true);
+check('間違った合言葉は閲覧のみ', api.getBoardData({pin:'wrong'}).canEdit === false);
+let pinThrew = false;
+try { api.setCategory('22795-000','社内',{pin:'wrong'}); } catch(e) { pinThrew = true; }
+check('間違った合言葉では書き込めない', pinThrew);
+api.setCategory('22795-000','社内',{pin:'inkan-2026'});
+check('正しい合言葉で書き込める',
+  api.getBoardData({pin:'inkan-2026'}).rows.find(r=>r.orderNo==='22795-000').category === '社内');
+api.setCategory('22795-000','未定',{pin:'inkan-2026'});
+delete _props['EDITOR_PIN'];
+_props['EDITOR_EMAILS'] = 'komu@example.co.jp';
+
 console.log('--- 列マッピング ---');
 check('受注番号はM列から読む', boardSheet.cell(2,1) === '22670-000', boardSheet.cell(2,1));
 check('得意先はN列', boardSheet.cell(2,2) === '東洋音楽学会', boardSheet.cell(2,2));
