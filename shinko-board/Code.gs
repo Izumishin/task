@@ -682,7 +682,7 @@ function getBoardData(options) {
     today: todayStr,
     canEdit: editable,
     userEmail: getUserEmail_(),
-    editorListConfigured: editorEmails_().length > 0 || !!editorPin_(),
+    authConfigured: editorEmails_().length > 0 || !!editorPin_(),
     pinConfigured: !!editorPin_(),
     staleDays: staleDays_(),
     completedVisibleDays: CONFIG.COMPLETED_VISIBLE_DAYS,

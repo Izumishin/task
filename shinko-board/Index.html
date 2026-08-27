@@ -435,8 +435,9 @@ function render() {
 
   document.getElementById('editorTools').classList.toggle('hidden', !d.canEdit);
   const notice = document.getElementById('notice');
-  if (d.canEdit && !d.editorListConfigured) {
-    notice.textContent = 'スクリプトプロパティ EDITOR_EMAILS が未設定です。いまはスクリプト所有者のみが更新できます。';
+  if (d.canEdit && !d.authConfigured) {
+    notice.textContent = '更新できる人がまだ設定されていません。スクリプトプロパティ EDITOR_PIN に合言葉を登録してください。'
+      + 'いまはスクリプトの所有者だけが更新できる状態です。';
     notice.classList.remove('hidden');
   } else {
     notice.classList.add('hidden');
