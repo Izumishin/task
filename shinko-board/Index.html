@@ -422,7 +422,12 @@ function call(fnName, args, onOk) {
 // ===========================================================================
 // 描画
 // ===========================================================================
-function setMeta(text) { document.getElementById('meta').textContent = text; }
+function setMeta(text, tooltip) {
+  const el = document.getElementById('meta');
+  el.textContent = text;
+  if (tooltip) el.setAttribute('title', tooltip);
+  else el.removeAttribute('title');
+}
 
 function render() {
   const d = state.data;
@@ -448,8 +453,11 @@ function render() {
       try { localStorage.removeItem('board-pin'); } catch (e) {}
     }
   }
-  setMeta((d.canEdit ? '更新可' : '閲覧のみ') + (d.userEmail ? '・' + esc(d.userEmail) : '') +
-    '　最終取込 ' + (d.lastImportAt || '—') + '　表示 ' + d.fetchedAt.split(' ')[1]);
+  // メールアドレスは画面に出さない（誰の画面かは本人にしか関係しないため）。
+  // 権限まわりの確認用に、マウスを乗せたときだけ表示する。
+  setMeta((d.canEdit ? '更新可' : '閲覧のみ') +
+    '　最終取込 ' + (d.lastImportAt || '—') + '　表示 ' + d.fetchedAt.split(' ')[1],
+    d.userEmail ? 'ログイン中：' + d.userEmail : '');
 
   renderUndecided();
   renderBoard();
