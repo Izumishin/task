@@ -176,14 +176,14 @@ data = api.getBoardData({});
 a2 = data.rows.find(r=>r.orderNo==='22670-000');
 check('予定日超過の警告', a2.warnings.indexOf('予定日超過') >= 0, a2.warnings);
 
-console.log('--- 納品完了と7日ルール ---');
+console.log('--- 全工程完了と7日ルール（基準は刷了日）---');
 api.saveRow('22670-000', {dones:{komu:'2026-09-01', delivery: api.today_()}});
 data = api.getBoardData({});
 a2 = data.rows.find(r=>r.orderNo==='22670-000');
 check('完了扱い', a2 && a2.isCompleted === true);
-api.saveRow('22670-000', {dones:{delivery:'2000/01/01'}});
+api.saveRow('22670-000', {dones:{print:'2000/01/01', delivery:'2000/01/03'}});
 data = api.getBoardData({});
-check('7日超の完了は非表示', !data.rows.find(r=>r.orderNo==='22670-000'), data.rows.map(r=>r.orderNo));
+check('刷了から7日超の完了案件は非表示', !data.rows.find(r=>r.orderNo==='22670-000'), data.rows.map(r=>r.orderNo));
 
 console.log('--- 生産表側の納期変更に追随／工務入力は保護 ---');
 prod.set(5, C('W'), '2026/09/25');      // 22694-000 の納期を変更
@@ -201,6 +201,45 @@ check('canEdit false', api.getBoardData({}).canEdit === false);
 let threw = false;
 try { api.completeCurrentStage('22694-000'); } catch(e) { threw = true; }
 check('閲覧専用は書き込み不可', threw);
+
+console.log('--- 刷了（社内＝印刷完了／社外＝工務完了）---');
+_props['EDITOR_EMAILS'] = 'komu@example.co.jp';
+const t = api.today_();
+// 社内案件：印刷を終えた時点で刷了。ただし工務が残るのでボード本体にも残る
+api.addCase({orderNo:'23100-000', item:'刷了テスト 社内', category:'社内'});
+api.saveRow('23100-000', {dones:{gehan:t}});
+let p1 = api.getBoardData({}).rows.find(r => r.orderNo === '23100-000');
+check('印刷前は刷了でない', p1.isPrinted === false, p1.isPrinted);
+api.saveRow('23100-000', {dones:{print:t}});
+p1 = api.getBoardData({}).rows.find(r => r.orderNo === '23100-000');
+check('印刷完了で刷了になる', p1.isPrinted === true && p1.printedAt === t, {isPrinted:p1.isPrinted, printedAt:p1.printedAt});
+check('刷了でも全工程完了ではない', p1.isCompleted === false);
+check('現在工程は次へ進む', p1.currentStageName === '外注', p1.currentStageName);
+
+// 社外案件：工務を終えた時点で刷了
+api.addCase({orderNo:'23101-000', item:'刷了テスト 社外', category:'社外'});
+let p2 = api.getBoardData({}).rows.find(r => r.orderNo === '23101-000');
+check('社外は工務前だと刷了でない', p2.isPrinted === false);
+api.saveRow('23101-000', {dones:{komu:t}});
+p2 = api.getBoardData({}).rows.find(r => r.orderNo === '23101-000');
+check('社外は工務完了で刷了', p2.isPrinted === true && p2.printedAt === t, p2.printedAt);
+check('社外の残工程は納品', p2.currentStageName === '納品', p2.currentStageName);
+
+// 社内案件で印刷完了しても、社外の判定（工務）には影響しない
+api.saveRow('23100-000', {dones:{outer:t, komu:t, delivery:t}});
+p1 = api.getBoardData({}).rows.find(r => r.orderNo === '23100-000');
+check('全工程完了しても刷了日は印刷完了日のまま', p1.printedAt === t && p1.isCompleted === true);
+
+// 刷了から7日を過ぎた完了案件は画面から外れる
+api.saveRow('23100-000', {dones:{print:'2000/01/05', delivery:'2000/01/10'}});
+check('刷了から7日超の完了案件は出さない',
+  !api.getBoardData({}).rows.find(r => r.orderNo === '23100-000'));
+// まだ工程が残っていれば、刷了が古くてもボードには残る
+api.saveRow('23101-000', {dones:{komu:'2000/01/05'}});
+check('工程が残っていれば刷了が古くても残る',
+  !!api.getBoardData({}).rows.find(r => r.orderNo === '23101-000'));
+api.deleteCase('23100-000');
+api.deleteCase('23101-000');
 
 console.log('--- 画面からの案件追加 ---');
 _props['EDITOR_EMAILS'] = 'komu@example.co.jp';   // 直前の権限テストで別アドレスにしているため戻す

@@ -610,6 +610,11 @@ function buildRecord_(values, rowNumber, todayStr) {
   }
   const delivered = dones.delivery;
   const isCompleted = !!delivered;
+  // 刷了：社内は印刷が終わった時点、社外は工務が終わった時点。
+  // 刷了しても外注・工務・納品が残っていれば、ボード本体には引き続き出す。
+  let printedAt = '';
+  if (category === CATEGORY.INSIDE) printedAt = dones.print;
+  else if (category === CATEGORY.OUTSIDE) printedAt = dones.komu;
   // 納品工程には予定日欄が無いため、配置日は納期を使う。
   const placeDate = currentKey ? (currentKey === 'delivery' ? due : plans[currentKey]) : '';
 
@@ -641,10 +646,12 @@ function buildRecord_(values, rowNumber, todayStr) {
     categoryFixedAt: categoryFixedAt,
     updatedAt: toText_(values[COL.UPDATED_AT - 1]),
     currentStage: currentKey,
-    currentStageName: currentName || (isCompleted ? '納品済' : ''),
+    currentStageName: currentName || (isCompleted ? '刷了' : ''),
     placeDate: placeDate,
     isCompleted: isCompleted,
     deliveredAt: delivered,
+    printedAt: printedAt,
+    isPrinted: !!printedAt,
     warnings: warnings,
     undecidedDays: undecidedDays
   };
@@ -670,8 +677,11 @@ function getBoardData(options) {
     if (!orderNo) return;
     const rec = buildRecord_(v, i + 2, todayStr);
     if (rec.category === CATEGORY.EXCLUDED && !(editable && opts.includeExcluded)) return;
+    // 全工程が終わった案件は、刷了（無ければ納品完了）から一定日数で画面から外す。
+    // まだ工程が残っている案件は、刷了済みでもボード本体に出し続ける。
     if (rec.isCompleted) {
-      const d = diffDays_(todayStr, rec.deliveredAt);
+      const base = rec.printedAt || rec.deliveredAt;
+      const d = diffDays_(todayStr, base);
       if (d === null || d > CONFIG.COMPLETED_VISIBLE_DAYS) return;
     }
     rows.push(rec);
@@ -765,7 +775,7 @@ function completeCurrentStage(orderNo, auth) {
     if (!rec.currentStage) {
       throw new Error(rec.category === CATEGORY.UNDECIDED
         ? 'この案件はまだ区分が未定です。先に 社内／社外 を選んでください。'
-        : 'この案件はすでに納品済です。');
+        : 'この案件はすでに刷了（完了）です。');
     }
     const stage = STAGES.filter(function (s) { return s.key === rec.currentStage; })[0];
     const prev = toText_(values[stage.done - 1]);

@@ -216,6 +216,10 @@
     .card.done .item { color: var(--muted); font-weight: 500; margin-bottom: 4px; }
     .delivered { font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
     .delivered svg { color: var(--ok); }
+    .delivered .rest {
+      margin-left: auto; font-size: 11.5px; color: var(--faint);
+      border: 1px solid var(--line); border-radius: 999px; padding: 0 8px;
+    }
 
     /* ------- 編集パネル ------- */
     .overlay {
@@ -312,7 +316,7 @@
 
 <main class="board" id="board">
   <section id="colDone">
-    <div class="col-head"><span class="name">完了</span><span class="sub" id="countDone"></span></div>
+    <div class="col-head"><span class="name">刷了</span><span class="sub" id="countDone"></span></div>
     <div class="col-body" id="bodyDone"></div>
   </section>
 
@@ -353,6 +357,7 @@ const state = {
   includeExcluded: false,
   editingOrderNo: null,
   openAfterLoad: '',
+  moveNotice: null,
   undoToken: null,
   busy: false
 };
@@ -377,6 +382,11 @@ function mondayOf(d) {
   const w = x.getDay();               // 0=日
   const diff = (w === 0) ? -6 : 1 - w; // 月曜起点
   return addDays(x, diff);
+}
+function daysBetween(a, b) {
+  const da = parseYmd(a), db = parseYmd(b);
+  if (!da || !db) return null;
+  return Math.round((da - db) / 86400000);
 }
 function shortDate(s) {
   const d = parseYmd(s);
@@ -469,6 +479,21 @@ function render() {
   renderBoard();
   applySearch();
 
+  if (state.moveNotice) {
+    const token = state.moveNotice;
+    state.moveNotice = null;
+    const moved = d.rows.filter(function (x) { return x.orderNo === token.orderNo; })[0];
+    let where;
+    if (!moved) where = '完了しました';
+    else if (moved.isCompleted) where = '全工程が終わりました';
+    else if (token.stageKey === 'print' || (token.stageKey === 'komu' && moved.category === '社外'))
+      where = '刷了 → 左の一覧へ。次は' + moved.currentStageName +
+        (moved.placeDate ? '（' + shortDate(moved.placeDate) + '）' : '（日程未定）');
+    else if (!moved.placeDate) where = '次は' + moved.currentStageName + '（日程未定）へ移動';
+    else where = '次は' + moved.currentStageName + '（' + shortDate(moved.placeDate) + '）へ移動';
+    showToast(token.stageName + ' を完了　' + token.orderNo + '　' + where, false, token);
+  }
+
   if (state.openAfterLoad) {
     const target = state.openAfterLoad;
     state.openAfterLoad = '';
@@ -526,20 +551,25 @@ function renderBoard() {
   document.getElementById('weekRange').textContent =
     shortDate(weekStartStr) + ' – ' + shortDate(weekEndStr);
 
-  const active = [], completed = [], excluded = [];
+  // 刷了（社内＝印刷完了／社外＝工務完了）した案件は左の刷了カラムへ。
+  // 刷了しても外注・工務・納品が残っていれば、ボード本体にも引き続き出す。
+  const active = [], printed = [], excluded = [];
   d.rows.forEach(function (r) {
     if (r.category === '未定') return;
     if (r.category === '対象外') { excluded.push(r); return; }
-    if (r.isCompleted) { completed.push(r); return; }
-    active.push(r);
+    if (r.isPrinted) {
+      const days = daysBetween(d.today, r.printedAt);
+      if (days !== null && days <= d.completedVisibleDays) printed.push(r);
+    }
+    if (!r.isCompleted) active.push(r);
   });
 
-  // --- 完了カラム ---
-  completed.sort(function (a, b) { return (b.deliveredAt || '').localeCompare(a.deliveredAt || ''); });
+  // --- 刷了カラム ---
+  printed.sort(function (a, b) { return (b.printedAt || '').localeCompare(a.printedAt || ''); });
   document.getElementById('countDone').textContent = d.completedVisibleDays + '日間で自動非表示';
-  document.getElementById('bodyDone').innerHTML = completed.length
-    ? '<div class="group">' + completed.map(completedCardHtml).join('') + '</div>'
-    : '<div class="empty">直近' + d.completedVisibleDays + '日に納品完了した案件はありません。</div>';
+  document.getElementById('bodyDone').innerHTML = printed.length
+    ? '<div class="group">' + printed.map(printedCardHtml).join('') + '</div>'
+    : '<div class="empty">直近' + d.completedVisibleDays + '日に刷了した案件はありません。</div>';
 
   // --- 今週カラム（遅れ ＋ 月〜金） ---
   const late = active.filter(function (r) { return r.placeDate && r.placeDate < weekStartStr; });
@@ -631,11 +661,12 @@ function cardHtml(r) {
   '</div>';
 }
 
-function completedCardHtml(r) {
+function printedCardHtml(r) {
   return '<div class="card done clickable" data-order="' + esc(r.orderNo) + '">' +
     '<div class="card-top"><span class="order-no">' + esc(r.orderNo) + '</span></div>' +
     '<div class="item">' + esc(r.item) + '</div>' +
-    '<div class="delivered"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>納品済 ' + shortDate(r.deliveredAt) + '</div>' +
+    '<div class="delivered"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>刷了 ' + shortDate(r.printedAt) +
+      (r.isCompleted ? '' : '<span class="rest">この後 ' + esc(r.currentStageName) + '</span>') + '</div>' +
     '</div>';
 }
 
@@ -868,7 +899,7 @@ document.addEventListener('click', function (ev) {
     const orderNo = completeBtn.getAttribute('data-complete');
     completeBtn.disabled = true;
     call('completeCurrentStage', [orderNo, auth_()], function (token) {
-      showToast(token.stageName + ' を完了にしました（' + orderNo + '）', false, token);
+      state.moveNotice = token;       // 移動先は再取得後の状態を見て知らせる
       load(true);
     });
     return;
