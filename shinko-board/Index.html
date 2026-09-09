@@ -192,6 +192,11 @@
     .card-bottom { display: flex; align-items: flex-end; gap: 10px; }
     .card-bottom .info { flex: 1; min-width: 0; }
     .meta { font-size: 12.5px; color: var(--muted); }
+    .fixed-mark {
+      margin-left: 6px; font-size: 11px; color: var(--faint);
+      border: 1px solid var(--line); border-radius: 999px; padding: 0 7px;
+    }
+    .hint-line { flex: 1; font-size: 12.5px; color: var(--muted); display: flex; align-items: center; }
     .memo { font-size: 12.5px; color: var(--memo); display: flex; gap: 5px; align-items: flex-start; margin-top: 4px; }
     .memo svg { margin-top: 3px; }
     .complete {
@@ -649,7 +654,8 @@ function cardHtml(r) {
     '<div class="card-bottom">' +
       '<div class="info">' +
         '<div class="meta">' + esc(r.customer) + ' ／ ' + esc(r.sales) +
-          (r.due ? ' ／ 納期 ' + shortDate(r.due) : '') + '</div>' +
+          (r.due ? ' ／ 納期 ' + shortDate(r.due) : '') +
+          (r.dueImported && r.dueImported !== r.due ? '<span class="fixed-mark">納期を修正</span>' : '') + '</div>' +
         (r.memo
           ? '<div class="memo"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg><span>' + esc(r.memo) + '</span></div>'
           : '') +
@@ -719,6 +725,12 @@ function openPanel(orderNo) {
     '<div class="field"><label for="f_skip">外注スキップ</label>' +
       '<span style="flex:1"><input type="checkbox" id="f_skip"' + (r.skipOuter ? ' checked' : '') +
       (r.category === '社内' ? '' : ' disabled') + '> <small style="color:var(--muted)">社内区分でのみ有効</small></span></div>' +
+    '<div class="field"><label for="f_due">納期</label>' +
+      '<input type="date" id="f_due" value="' + toInputDate(r.due) + '"></div>' +
+    (r.dueImported && r.dueImported !== r.due
+      ? '<div class="field"><label></label><span class="hint-line">生産表の納期は ' + esc(r.dueImported) +
+          '　<button class="btn" id="dueReset" style="padding:3px 10px;font-size:12.5px;">生産表に合わせる</button></span></div>'
+      : '') +
     '<div class="field"><label for="f_memo">メモ</label>' +
       '<input type="text" id="f_memo" maxlength="120" value="' + esc(r.memo) + '" placeholder="例：用紙 9/8入荷予定"></div>' +
     '<div class="divider"></div>' +
@@ -738,6 +750,12 @@ function openPanel(orderNo) {
     skip.disabled = (this.value !== '社内');
     if (skip.disabled) skip.checked = false;
   });
+  const dueReset = document.getElementById('dueReset');
+  if (dueReset) {
+    dueReset.addEventListener('click', function () {
+      document.getElementById('f_due').value = toInputDate(r.dueImported);
+    });
+  }
   document.getElementById('panelCancel').addEventListener('click', closePanel);
   document.getElementById('panelSave').addEventListener('click', savePanel);
 }
@@ -841,13 +859,14 @@ function closePanel() {
 function savePanel() {
   const orderNo = state.editingOrderNo;
   if (!orderNo) return;
-  const patch = { plans: {}, dones: {}, memo: '', skipOuter: false, category: '' };
+  const patch = { plans: {}, dones: {}, due: '', memo: '', skipOuter: false, category: '' };
   state.data.stages.forEach(function (s) {
     const plan = document.getElementById('plan_' + s.key);
     const done = document.getElementById('done_' + s.key);
     if (plan) patch.plans[s.key] = plan.value;
     if (done) patch.dones[s.key] = done.value;
   });
+  patch.due = document.getElementById('f_due').value;
   patch.memo = document.getElementById('f_memo').value;
   patch.skipOuter = document.getElementById('f_skip').checked;
   patch.category = document.getElementById('f_category').value;

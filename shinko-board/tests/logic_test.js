@@ -46,6 +46,7 @@ class FakeSheet {
   getRange(r,c,nr,nc){return new FakeRange(this,r,c,nr===undefined?1:nr,nc===undefined?1:nc);}
   setFrozenRows(){} setFrozenColumns(){} setColumnWidth(){} insertRowsAfter(){}
   deleteRow(r){this.data.splice(r-1,1);}
+  insertColumnsAfter(){}
   getMaxColumns(){let m=0;this.data.forEach(row=>{if(row.length>m)m=row.length;});return Math.max(m,26);}
   getLastColumn(){let m=0;this.data.forEach(row=>{for(let j=row.length-1;j>=0;j--){if(row[j]!==''&&row[j]!==null&&row[j]!==undefined){if(j+1>m)m=j+1;break;}}});return m;}
 }
@@ -177,7 +178,8 @@ a2 = data.rows.find(r=>r.orderNo==='22670-000');
 check('予定日超過の警告', a2.warnings.indexOf('予定日超過') >= 0, a2.warnings);
 
 console.log('--- 全工程完了と7日ルール（基準は刷了日）---');
-api.saveRow('22670-000', {dones:{komu:'2026-09-01', delivery: api.today_()}});
+// 刷了日・納品日とも今日にする（7日ルールは刷了日が基準のため、固定日だと日が経つと落ちる）
+api.saveRow('22670-000', {dones:{print: api.today_(), komu: api.today_(), delivery: api.today_()}});
 data = api.getBoardData({});
 a2 = data.rows.find(r=>r.orderNo==='22670-000');
 check('完了扱い', a2 && a2.isCompleted === true);
@@ -201,6 +203,43 @@ check('canEdit false', api.getBoardData({}).canEdit === false);
 let threw = false;
 try { api.completeCurrentStage('22694-000'); } catch(e) { threw = true; }
 check('閲覧専用は書き込み不可', threw);
+
+console.log('--- 納期の手動修正 ---');
+_props['EDITOR_EMAILS'] = 'komu@example.co.jp';
+// 生産表に 23200-000 を用意して取り込む
+[['A','済'],['D','山田'],['M','23200-000'],['N','納期テスト社'],['O','納期テスト'],['W','2026/10/01']]
+  .forEach(([col,v]) => prod.set(9, C(col), v));
+api.importFromProductionSheet();
+let due1 = api.getBoardData({}).rows.find(r => r.orderNo === '23200-000');
+check('取込時の納期が入る', due1.due === '2026/10/01' && due1.dueImported === '2026/10/01',
+  {due: due1.due, imported: due1.dueImported});
+
+// 画面から納期を直す
+api.saveRow('23200-000', {due:'2026-10-15'});
+due1 = api.getBoardData({}).rows.find(r => r.orderNo === '23200-000');
+check('画面から納期を直せる', due1.due === '2026/10/15', due1.due);
+check('生産表の納期は残る（元に戻せる）', due1.dueImported === '2026/10/01', due1.dueImported);
+
+// 生産表が変わっていなければ、取込で戻らない
+const imp1 = api.importFromProductionSheet();
+due1 = api.getBoardData({}).rows.find(r => r.orderNo === '23200-000');
+check('取込で手動修正が消えない', due1.due === '2026/10/15', due1.due);
+check('その行は更新扱いにならない', imp1.updated === 0, imp1);
+
+// 生産表側が直されたら、そちらが優先される
+prod.set(9, C('W'), '2026/10/20');
+api.importFromProductionSheet();
+due1 = api.getBoardData({}).rows.find(r => r.orderNo === '23200-000');
+check('生産表が直されたら反映される', due1.due === '2026/10/20' && due1.dueImported === '2026/10/20',
+  {due: due1.due, imported: due1.dueImported});
+
+// 品名など納期以外は従来どおり生産表に追随する
+prod.set(9, C('O'), '納期テスト（改訂）');
+api.importFromProductionSheet();
+due1 = api.getBoardData({}).rows.find(r => r.orderNo === '23200-000');
+check('品名は生産表に追随する', due1.item === '納期テスト（改訂）', due1.item);
+prod.data[8] = [];              // 先に生産表から消す（生産表にある案件は削除できないため）
+api.deleteCase('23200-000');
 
 console.log('--- 刷了（社内＝印刷完了／社外＝工務完了）---');
 _props['EDITOR_EMAILS'] = 'komu@example.co.jp';

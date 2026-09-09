@@ -39,15 +39,16 @@ const COL = {
   SKIP_OUTER: 16,       // P 外注スキップ
   CATEGORY: 17,         // Q 区分
   CATEGORY_FIXED_AT: 18,// R 区分確定日
-  UPDATED_AT: 19        // S 最終更新日時
+  UPDATED_AT: 19,       // S 最終更新日時
+  DUE_IMPORTED: 20      // T 取込時の納期（生産表から最後に読んだ値。手動修正の判定に使う）
 };
-const LAST_COL = COL.UPDATED_AT;
+const LAST_COL = COL.DUE_IMPORTED;
 
 const HEADERS = [
   '受注NO', '得意先名', '品名', '営業担当', '納期',
   '下版予定日', '下版完了日', '印刷予定日', '印刷完了日',
   '外注予定日', '外注完了日', '工務予定日', '工務完了日',
-  '納品完了日', 'メモ', '外注スキップ', '区分', '区分確定日', '最終更新日時'
+  '納品完了日', 'メモ', '外注スキップ', '区分', '区分確定日', '最終更新日時', '取込時の納期'
 ];
 
 /**
@@ -277,7 +278,23 @@ function getBoardSheet_() {
   const ss = openProductionSpreadsheet_();
   let sh = ss.getSheetByName(CONFIG.BOARD_SHEET_NAME);
   if (!sh) sh = createBoardSheet_(ss);
+  ensureBoardColumns_(sh);
   return sh;
+}
+
+/** 途中で増えた列（T列など）を、既存のシートにも用意する。 */
+function ensureBoardColumns_(sh) {
+  if (sh.getMaxColumns() < LAST_COL) {
+    sh.insertColumnsAfter(sh.getMaxColumns(), LAST_COL - sh.getMaxColumns());
+  }
+  const header = sh.getRange(1, 1, 1, LAST_COL).getValues()[0];
+  const missing = [];
+  HEADERS.forEach(function (name, i) {
+    if (toText_(header[i]) === '') missing.push([i + 1, name]);
+  });
+  missing.forEach(function (m) {
+    sh.getRange(1, m[0]).setValue(m[1]).setFontWeight('bold').setBackground('#e8eef7');
+  });
 }
 
 function createBoardSheet_(ss) {
@@ -397,6 +414,7 @@ function importFromProductionSheet() {
         row[COL.ITEM - 1] = item;
         row[COL.SALES - 1] = sales;
         row[COL.DUE - 1] = due;
+        row[COL.DUE_IMPORTED - 1] = due;
         // 生産表側に下版の予定が組まれている場合のみ、新規行の下版予定日に写す。
         // （既存行の F列以降は取込では一切書き換えない）
         if (cols.GEHAN_PLAN) row[COL.PLAN_GEHAN - 1] = toDateString_(pick_(r, cols.GEHAN_PLAN));
@@ -410,8 +428,22 @@ function importFromProductionSheet() {
         const curItem = toText_(cur[COL.ITEM - 1]);
         const curSales = toText_(cur[COL.SALES - 1]);
         const curDue = toDateString_(cur[COL.DUE - 1]);
-        if (curCustomer !== customer || curItem !== item || curSales !== sales || curDue !== due) {
-          updates.push({ row: idx + 2, values: [customer, item, sales, due] });
+        const lastImportedDue = toDateString_(cur[COL.DUE_IMPORTED - 1]);
+
+        // 納期は、生産表側が前回の取込から変わったときだけ上書きする。
+        // 変わっていなければ、画面で直した納期をそのまま残す（手動修正の尊重）。
+        // 生産表が直された場合は、そちらが正として手動修正より優先する。
+        const dueChangedInProduction = (lastImportedDue !== due);
+        const nextDue = dueChangedInProduction ? due : curDue;
+
+        if (curCustomer !== customer || curItem !== item || curSales !== sales ||
+            curDue !== nextDue || lastImportedDue !== due) {
+          updates.push({
+            row: idx + 2,
+            values: [customer, item, sales, nextDue],
+            importedDue: due,
+            touched: (curCustomer !== customer || curItem !== item || curSales !== sales || curDue !== nextDue)
+          });
         }
       }
     });
@@ -419,7 +451,8 @@ function importFromProductionSheet() {
     // 差分だけ書く（実行時間対策）。
     updates.forEach(function (u) {
       board.getRange(u.row, COL.CUSTOMER, 1, 4).setValues([u.values]);
-      board.getRange(u.row, COL.UPDATED_AT).setValue(nowStamp_());
+      board.getRange(u.row, COL.DUE_IMPORTED).setValue(u.importedDue);
+      if (u.touched) board.getRange(u.row, COL.UPDATED_AT).setValue(nowStamp_());
     });
     if (appends.length > 0) {
       const start = boardDataLastRow + 1;
@@ -429,7 +462,8 @@ function importFromProductionSheet() {
     }
 
     props_().setProperty('LAST_IMPORT_AT', nowStamp_());
-    const result = { added: appends.length, updated: updates.length, at: nowStamp_() };
+    const changed = updates.filter(function (u) { return u.touched; }).length;
+    const result = { added: appends.length, updated: changed, at: nowStamp_() };
     console.log('取込完了: 新規 %s 件 / 更新 %s 件', result.added, result.updated);
     return result;
   } finally {
@@ -638,6 +672,7 @@ function buildRecord_(values, rowNumber, todayStr) {
     item: toText_(values[COL.ITEM - 1]),
     sales: toText_(values[COL.SALES - 1]),
     due: due,
+    dueImported: toDateString_(values[COL.DUE_IMPORTED - 1]),
     plans: plans,
     dones: dones,
     memo: toText_(values[COL.MEMO - 1]),
@@ -912,6 +947,11 @@ function saveRow(orderNo, patch, auth) {
         sh.getRange(row, s.done).setValue(normalizeInputDate_(p.dones[s.key]));
       }
     });
+    if (p.hasOwnProperty('due')) {
+      // 納期を画面から直す。T列（取込時の納期）は変えないので、
+      // 生産表が直されない限り、この値は取込で上書きされない。
+      sh.getRange(row, COL.DUE).setValue(normalizeInputDate_(p.due));
+    }
     if (p.hasOwnProperty('memo')) {
       sh.getRange(row, COL.MEMO).setValue(String(p.memo || '').replace(/[\r\n]+/g, ' ').trim());
     }
