@@ -163,7 +163,7 @@ timers.forEach(f => f());
 check('閉じると再取得する', calls.length === before + 1);
 
 console.log('--- 表示ユーティリティ ---');
-check('shortStamp は途中の日付も短縮', ui.shortStamp('初校戻り 2026/09/04') === '初校戻り 9/4' && ui.shortStamp('2026/09/11 03:20') === '9/11 03:20');
+check('shortStamp は途中の日付も複数でも短縮', ui.shortStamp('初校戻り 2026/09/04 ／ 再校提出予定 2026/09/20') === '初校戻り 9/4 ／ 再校提出予定 9/20' && ui.shortStamp('2026/09/11 03:20') === '9/11 03:20');
 const sorted = ui.sortRows(ui.state.data.rows).map(r => r.key);
 check('日付順（下版予定日→納期、日付なしは最後）', sorted[0] === '22950-000' && sorted[sorted.length - 1] === '仮:港製作所|暑中見舞', sorted);
 

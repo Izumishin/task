@@ -598,12 +598,22 @@ function autoFromRow_(r, cols, staff, rules, todayStr) {
     recent = '下版 ' + gehan;
     doneDate = gehan;
   } else {
-    let lastIdx = -1;
-    for (let i = 0; i < STAGES.length - 1; i++) { if (dates[STAGES[i].key]) lastIdx = i; }
+    // 生産表には予定日が先に入る（入稿予定・初校提出予定など）。
+    // 今日以前の日付だけを実績として数え、未来の日付は「予定」として直近の動きに添える。
+    let lastIdx = -1, nextIdx = -1;
+    for (let i = 0; i < STAGES.length - 1; i++) {
+      const d = dates[STAGES[i].key];
+      if (!d) continue;
+      if (d <= todayStr) lastIdx = i;
+      else if (nextIdx < 0) nextIdx = i;
+    }
     if (lastIdx < 0) status = STATUS.NOT_YET;
     else if (lastIdx === 0) status = STATUS.WORKING;
     else status = STATUS.PROOF;
-    if (lastIdx >= 0) recent = STAGES[lastIdx].name + ' ' + dates[STAGES[lastIdx].key];
+    const parts = [];
+    if (lastIdx >= 0) parts.push(STAGES[lastIdx].name + ' ' + dates[STAGES[lastIdx].key]);
+    if (nextIdx >= 0) parts.push(STAGES[nextIdx].name + '予定 ' + dates[STAGES[nextIdx].key]);
+    recent = parts.join(' ／ ');
   }
 
   let output = '';

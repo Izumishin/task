@@ -30,11 +30,13 @@ setRow(6, { A: '済', D: '中澤', G: '★', L: 300, M: '22950-000', N: '東洋�
 setRow(7, { A: '', D: '佐藤', H: '★', M: '？？？', N: '港製作所', O: '暑中見舞 冊子', S: 'PDF', W: D(30), AI: '冊子' });
 setRow(8, { A: '済', D: '中澤', E: 50, M: '22999-000', N: '港製作所', O: '名刺', S: 'オンデマンド', W: D(2), Z: D(-1), AI: '端物' });
 setRow(9, { A: '済', D: '中澤', I: '★', J: 90, M: '22940-000', N: '古い学会', O: '古い紀要', S: 'CTP', T: '篠原', Z: D(-30), AG: D(-10), AI: '冊子' });
+setRow(10, { A: '', D: '深澤', E: '★', M: '22985-000', N: '入稿予定の学会', O: '来月号', S: 'CTP', T: '篠原', W: D(40), Z: D(7), AA: D(14), AI: '冊子' });
+setRow(11, { A: '済', D: '深澤', E: '★', M: '22986-000', N: '初校予定の学会', O: '今月号', S: 'CTP', T: '篠原', W: D(30), Z: D(-3), AA: D(4), AI: '冊子' });
 
 console.log('--- 1回目の取込（生産表）---');
 let r1 = api.importFromProductionSheet();
 console.log(r1);
-check('冊子5件が新規、端物1件は対象外', r1.added === 5 && r1.skipped === 1, r1);
+check('冊子7件が新規、端物1件は対象外', r1.added === 7 && r1.skipped === 1, r1);
 const board = ss.getSheetByName('制作進行');
 check('制作進行シートは左端に作られる（印刷進行ボードの取込先を奪わない）', ss.getSheets()[0].getName() === '制作進行');
 check('案件は2行目から入る', board.cell(2, api.COL.KEY) === '22962-000', board.cell(2, 1));
@@ -51,6 +53,10 @@ check('AGが当日以前なら下版済＋完了日', board.cell(4, api.COL.STAT
 check('入稿日が空なら未入稿', board.cell(5, api.COL.STATUS) === '未入稿', board.cell(5, 8));
 check('出力区分：S列 PDF → データ', board.cell(5, api.COL.OUTPUT) === 'データ', board.cell(5, 12));
 check('派遣・磯網は編集', board.cell(6, api.COL.EDIT) === '派遣,磯網', board.cell(6, 7));
+check('Z列が未来日（入稿予定）なら未入稿', board.cell(7, api.COL.STATUS) === '未入稿', board.cell(7, 8));
+check('未入稿の直近の動きは入稿予定', board.cell(7, api.COL.RECENT) === '入稿予定 ' + D(7), board.cell(7, 14));
+check('入稿済でAA列が未来日（初校提出予定）なら作業中', board.cell(8, api.COL.STATUS) === '作業中', board.cell(8, 8));
+check('実績と予定を並べて出す', board.cell(8, api.COL.RECENT) === '入稿 ' + D(-3) + ' ／ 初校提出予定 ' + D(4), board.cell(8, 14));
 
 console.log('--- 2回目の取込（差分なし）---');
 let r2 = api.importFromProductionSheet();
@@ -62,7 +68,7 @@ check('更新権限あり（合言葉）', data.canEdit === true);
 check('合言葉なしは閲覧のみ', api.getBoardData({}).canEdit === false);
 check('直近の月曜より前に下版済の案件は出ない', !data.rows.find(r => r.key === '22940-000'), data.rows.map(r => r.key));
 check('今日下版済の案件は完了として出る', data.rows.find(r => r.key === '22950-000').isDone === true);
-check('4件表示', data.rows.length === 4, data.rows.length);
+check('6件表示（下版済の古い1件は出ない）', data.rows.length === 6, data.rows.length);
 check('担当者の一覧と区分', data.staff.length === 8 && data.staff[0].name === '和泉' && data.staff[0].group === 'DTP' && data.staff[7].group === '編集');
 check('編集者の名前候補は8名', data.editorNames.length === 8 && data.editorNames.indexOf('菅井') >= 0, data.editorNames);
 check('週の範囲は月〜金', api.mondayOf_(today) === data.weekStart && api.addDays_(data.weekStart, 4) === data.weekEnd, [data.weekStart, data.weekEnd]);
@@ -131,10 +137,10 @@ check('メモが引き継がれる', mig.memo === '表紙は特色');
 check('仮キーの行は残らない', !api.getBoardData(PIN).rows.find(r => r.isTemp));
 
 console.log('--- 手動で「同じ案件」と結びつける ---');
-setRow(10, { D: '田邉', E: '★', M: '？？？', N: '新得意先', O: '新しい紀要', S: 'CTP', T: '篠原', W: D(40), AI: '冊子' });
+setRow(12, { D: '田邉', E: '★', M: '？？？', N: '新得意先', O: '新しい紀要', S: 'CTP', T: '篠原', W: D(40), AI: '冊子' });
 api.importFromProductionSheet();
 api.saveCase('仮:新得意先|新しい紀要', { memo: '仮の段階のメモ', output: 'データ', name: '和泉' }, PIN);
-setRow(10, { M: '23020-000', N: '新得意先株式会社', O: '新しい紀要 第1号' });   // 名前が変わったので自動では引き継げない
+setRow(12, { M: '23020-000', N: '新得意先株式会社', O: '新しい紀要 第1号' });   // 名前が変わったので自動では引き継げない
 const r5 = api.importFromProductionSheet();
 check('名前が変わると自動では引き継がず新規になる', r5.added === 1 && r5.migrated === 0, r5);
 const before = api.getBoardData(PIN).rows.length;
