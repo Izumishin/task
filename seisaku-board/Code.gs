@@ -37,6 +37,7 @@ const CONFIG = {
  * 「-」を入れるとその項目は取り込まない（空欄になる）。
  */
 const SRC_DEFAULT = {
+  DONE_FLAG: 'A',   // 電算（「済」が入っていれば完了＝下版済）
   ORDER_NO:  'M',   // 受注番号（主キー。未採番は「？？？」）
   CUSTOMER:  'N',   // 得意先
   ITEM:      'O',   // 品名
@@ -55,6 +56,7 @@ const SRC_DEFAULT = {
   GEHAN:     'AG'   // 下版日
 };
 const SRC_PROP = {
+  DONE_FLAG: 'SRC_COL_DONE_FLAG',
   ORDER_NO:  'SRC_COL_ORDER_NO',
   CUSTOMER:  'SRC_COL_CUSTOMER',
   ITEM:      'SRC_COL_ITEM',
@@ -72,6 +74,9 @@ const SRC_PROP = {
   SANKO_IN:  'SRC_COL_SANKO_IN',
   GEHAN:     'SRC_COL_GEHAN'
 };
+
+/** A列（電算）にこの文字が含まれていれば完了。スクリプトプロパティ DONE_FLAG_VALUE で変更できる。 */
+const DONE_FLAG_VALUE_DEFAULT = '済';
 
 /** 工程日付の並び（左→右）。「日付が入っている一番右の工程」で状態を決める。 */
 const STAGES = [
@@ -194,6 +199,7 @@ function getProp_(key, fallback) {
 
 function productionSpreadsheetId_() { return getProp_('PRODUCTION_SS_ID', CONFIG.DEFAULT_PRODUCTION_SS_ID); }
 function headerRows_() { return Number(getProp_('PRODUCTION_HEADER_ROWS', CONFIG.PRODUCTION_HEADER_ROWS)) || CONFIG.PRODUCTION_HEADER_ROWS; }
+function doneFlagValue_() { return String(getProp_('DONE_FLAG_VALUE', DONE_FLAG_VALUE_DEFAULT)).trim(); }
 function categoryFilter_() {
   const v = String(getProp_('CATEGORY_FILTER', CONFIG.DEFAULT_CATEGORY_FILTER)).trim();
   return (v === '-' || v === 'なし') ? '' : v;
@@ -562,15 +568,20 @@ function effective_(row) {
 
 /**
  * 完了日（S列）を有効値から決め直す。
- * 状態が下版済のとき：自動判定なら生産表の下版日。手動なら 手動の下版予定日 → 生産表の下版日 → 既存の完了日 → 今日 の順。
+ * 状態が下版済のとき：自動判定なら 生産表の下版日 → 既存の完了日 → 今日。手動なら 手動の下版予定日 → 生産表の下版日 → 既存の完了日 → 今日 の順。
  */
 function recomputeDone_(row, todayStr) {
   const e = effective_(row);
   if (e.status !== STATUS.DONE) { row[COL.DONE_DATE - 1] = ''; return; }
+  const existing = toDateString_(row[COL.DONE_DATE - 1]);
   const auto = toDateString_(row[COL.GEHAN - 1]);
-  if (!e.manual.status) { row[COL.DONE_DATE - 1] = auto; return; }
+  if (!e.manual.status) {
+    // 自動判定で下版済：applyAuto_ が入れた下版日 → 既に入っている完了日（済フラグを最初に検知した日）→ 今日
+    row[COL.DONE_DATE - 1] = existing || (auto && auto <= (todayStr || today_()) ? auto : '') || todayStr || today_();
+    return;
+  }
   const man = e.manual.date ? toDateString_(row[COL.GEHAN_MANUAL - 1]) : '';
-  row[COL.DONE_DATE - 1] = man || auto || toDateString_(row[COL.DONE_DATE - 1]) || todayStr || today_();
+  row[COL.DONE_DATE - 1] = man || auto || existing || todayStr || today_();
 }
 
 // ---------------------------------------------------------------------------
@@ -592,26 +603,35 @@ function autoFromRow_(r, cols, staff, rules, todayStr) {
   const dates = {};
   STAGES.forEach(function (s) { dates[s.key] = toDateString_(pick_(r, cols[s.key]), todayStr); });
   const gehan = dates.GEHAN;
+  const flagValue = doneFlagValue_();
+  const doneFlag = !!flagValue && toText_(pick_(r, cols.DONE_FLAG)).indexOf(flagValue) >= 0;
+
+  // 生産表には予定日が先に入る（入稿予定・初校提出予定など）。
+  // 今日以前の日付だけを実績として数え、未来の日付は「予定」として直近の動きに添える。
+  let lastIdx = -1, nextIdx = -1;
+  for (let i = 0; i < STAGES.length - 1; i++) {
+    const d = dates[STAGES[i].key];
+    if (!d) continue;
+    if (d <= todayStr) lastIdx = i;
+    else if (nextIdx < 0) nextIdx = i;
+  }
+  const lastText = lastIdx >= 0 ? STAGES[lastIdx].name + ' ' + dates[STAGES[lastIdx].key] : '';
+
   let status, recent = '', doneDate = '';
   if (gehan && gehan <= todayStr) {
     status = STATUS.DONE;
     recent = '下版 ' + gehan;
     doneDate = gehan;
+  } else if (doneFlag) {
+    // A列（電算）が「済」＝完了。下版日が無ければ完了日は取込側で決める（最初に済を検知した日）
+    status = STATUS.DONE;
+    recent = '電算 ' + flagValue + (lastText ? '（' + lastText + '）' : '');
   } else {
-    // 生産表には予定日が先に入る（入稿予定・初校提出予定など）。
-    // 今日以前の日付だけを実績として数え、未来の日付は「予定」として直近の動きに添える。
-    let lastIdx = -1, nextIdx = -1;
-    for (let i = 0; i < STAGES.length - 1; i++) {
-      const d = dates[STAGES[i].key];
-      if (!d) continue;
-      if (d <= todayStr) lastIdx = i;
-      else if (nextIdx < 0) nextIdx = i;
-    }
     if (lastIdx < 0) status = STATUS.NOT_YET;
     else if (lastIdx === 0) status = STATUS.WORKING;
     else status = STATUS.PROOF;
     const parts = [];
-    if (lastIdx >= 0) parts.push(STAGES[lastIdx].name + ' ' + dates[STAGES[lastIdx].key]);
+    if (lastText) parts.push(lastText);
     if (nextIdx >= 0) parts.push(STAGES[nextIdx].name + '予定 ' + dates[STAGES[nextIdx].key]);
     recent = parts.join(' ／ ');
   }
@@ -628,7 +648,7 @@ function autoFromRow_(r, cols, staff, rules, todayStr) {
     customer: customer, item: item,
     sales: toText_(pick_(r, cols.SALES)),
     dtp: dtp, edit: edit,
-    status: status, gehan: gehan, output: output, recent: recent, doneDate: doneDate,
+    status: status, gehan: gehan, output: output, recent: recent, doneDate: doneDate, doneFlag: doneFlag,
     due: toDateString_(pick_(r, cols.DUE), todayStr),
     category: toText_(pick_(r, cols.CATEGORY))
   };
@@ -748,6 +768,8 @@ function applyAuto_(row, key, auto) {
   row[COL.OUTPUT - 1] = auto.output;
   row[COL.RECENT - 1] = auto.recent;
   row[COL.DUE - 1] = auto.due;
+  // 完了日：生産表に下版日があればそれ。無い（済フラグだけ）ときは既存の値を残し、無ければ recomputeDone_ が今日を入れる
+  if (auto.status === STATUS.DONE && auto.doneDate) row[COL.DONE_DATE - 1] = auto.doneDate;
 }
 
 function sameRow_(a, b) {
@@ -931,7 +953,8 @@ function diagnoseImport() {
   const src = latestProductionSheet_(ss);
   lines.push('取込対象に選ばれたシート：' + src.getName());
   lines.push('そのシートの最終行：' + src.getLastRow() + '　／　見出し行数の設定：' + headerRows + '　／　大分類の絞り込み：' + (categoryFilter_() || '（なし）'));
-  lines.push('読んでいる列：' + Object.keys(cols).map(function (k) { return k + '=' + indexToCol_(cols[k]); }).join('  '));
+  lines.push('読んでいる列：' + Object.keys(cols).map(function (k) { return k + '=' + indexToCol_(cols[k]); }).join('  ') +
+    '　／　完了の印：' + indexToCol_(cols.DONE_FLAG) + '列に「' + doneFlagValue_() + '」');
   lines.push('担当者の列：' + staff.map(function (s) { return indexToCol_(s.col) + '=' + s.name + '(' + s.group + ')'; }).join('  '));
   lines.push('出力区分の判定：' + rules.map(function (r) { return indexToCol_(r.col) + ' が /' + r.re.source + '/ → ' + r.label; }).join('  ／  '));
 
@@ -952,7 +975,7 @@ function diagnoseImport() {
     rows.forEach(function (r, i) {
       const a = autoFromRow_(r, cols, staff, rules, todayStr);
       lines.push('  ' + (headerRows + 1 + i) + '行目：キー=「' + keyFor_(a) + '」 得意先=「' + a.customer + '」 品名=「' + a.item +
-        '」 大分類=「' + a.category + '」 状態=' + a.status + (a.recent ? '（' + a.recent + '）' : '') +
+        '」 大分類=「' + a.category + '」 済=' + (a.doneFlag ? '○' : '−') + ' 状態=' + a.status + (a.recent ? '（' + a.recent + '）' : '') +
         ' 下版=' + (a.gehan || '—') + ' 納期=' + (a.due || '—') + ' 出力=' + (a.output || '—') +
         ' DTP=[' + a.dtp.join(',') + '] 編集=[' + a.edit.join(',') + '] 営業=' + a.sales);
     });

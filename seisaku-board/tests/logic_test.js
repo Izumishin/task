@@ -24,19 +24,20 @@ prod.set(2, C('Z'), '入稿日'); prod.set(2, C('AA'), '初校提出'); prod.set
   .forEach(([col, name]) => prod.set(3, C(col), name));
 
 function setRow(row, cells) { Object.keys(cells).forEach(col => prod.set(row, C(col), cells[col])); }
-setRow(4, { A: '済', D: '深澤', E: '★', K: 2275, M: '22962-000', N: '学校法人 明治大学', O: '文芸研究 第158号', S: 'CTP', T: '篠原', W: '2026/09/30', Z: '2026/08/20', AA: '2026/08/28', AB: '2026/09/04', AI: '冊子' });
-setRow(5, { A: '済', D: '田邉', F: 120, M: '22970-000', N: '台東区', O: '各会計歳入歳出決算書', S: 'オンデマンド', W: D(10), Z: D(-5), AG: D(3), AI: '冊子' });
+setRow(4, { A: '', D: '深澤', E: '★', K: 2275, M: '22962-000', N: '学校法人 明治大学', O: '文芸研究 第158号', S: 'CTP', T: '篠原', W: '2026/09/30', Z: '2026/08/20', AA: '2026/08/28', AB: '2026/09/04', AI: '冊子' });
+setRow(5, { A: '', D: '田邉', F: 120, M: '22970-000', N: '台東区', O: '各会計歳入歳出決算書', S: 'オンデマンド', W: D(10), Z: D(-5), AG: D(3), AI: '冊子' });
 setRow(6, { A: '済', D: '中澤', G: '★', L: 300, M: '22950-000', N: '東洋音楽学会', O: '東洋音楽研究 第91号', S: 'CTP', T: '小森', Z: D(-20), AA: D(-12), AB: D(-8), AG: today, AI: '冊子' });
 setRow(7, { A: '', D: '佐藤', H: '★', M: '？？？', N: '港製作所', O: '暑中見舞 冊子', S: 'PDF', W: D(30), AI: '冊子' });
-setRow(8, { A: '済', D: '中澤', E: 50, M: '22999-000', N: '港製作所', O: '名刺', S: 'オンデマンド', W: D(2), Z: D(-1), AI: '端物' });
+setRow(8, { A: '', D: '中澤', E: 50, M: '22999-000', N: '港製作所', O: '名刺', S: 'オンデマンド', W: D(2), Z: D(-1), AI: '端物' });
 setRow(9, { A: '済', D: '中澤', I: '★', J: 90, M: '22940-000', N: '古い学会', O: '古い紀要', S: 'CTP', T: '篠原', Z: D(-30), AG: D(-10), AI: '冊子' });
 setRow(10, { A: '', D: '深澤', E: '★', M: '22985-000', N: '入稿予定の学会', O: '来月号', S: 'CTP', T: '篠原', W: D(40), Z: D(7), AA: D(14), AI: '冊子' });
-setRow(11, { A: '済', D: '深澤', E: '★', M: '22986-000', N: '初校予定の学会', O: '今月号', S: 'CTP', T: '篠原', W: D(30), Z: D(-3), AA: D(4), AI: '冊子' });
+setRow(11, { A: '', D: '深澤', E: '★', M: '22986-000', N: '初校予定の学会', O: '今月号', S: 'CTP', T: '篠原', W: D(30), Z: D(-3), AA: D(4), AI: '冊子' });
+setRow(13, { A: '済', D: '中澤', F: 400, M: '22930-000', N: '済の学会', O: '済の紀要', S: 'CTP', T: '篠原', W: D(5), Z: D(-15), AA: D(-9), AB: D(-4), AI: '冊子' });
 
 console.log('--- 1回目の取込（生産表）---');
 let r1 = api.importFromProductionSheet();
 console.log(r1);
-check('冊子7件が新規、端物1件は対象外', r1.added === 7 && r1.skipped === 1, r1);
+check('冊子8件が新規、端物1件は対象外', r1.added === 8 && r1.skipped === 1, r1);
 const board = ss.getSheetByName('制作進行');
 check('制作進行シートは左端に作られる（印刷進行ボードの取込先を奪わない）', ss.getSheets()[0].getName() === '制作進行');
 check('案件は2行目から入る', board.cell(2, api.COL.KEY) === '22962-000', board.cell(2, 1));
@@ -57,6 +58,19 @@ check('Z列が未来日（入稿予定）なら未入稿', board.cell(7, api.COL
 check('未入稿の直近の動きは入稿予定', board.cell(7, api.COL.RECENT) === '入稿予定 ' + D(7), board.cell(7, 14));
 check('入稿済でAA列が未来日（初校提出予定）なら作業中', board.cell(8, api.COL.STATUS) === '作業中', board.cell(8, 8));
 check('実績と予定を並べて出す', board.cell(8, api.COL.RECENT) === '入稿 ' + D(-3) + ' ／ 初校提出予定 ' + D(4), board.cell(8, 14));
+check('A列が「済」なら下版日が無くても下版済', board.cell(9, api.COL.STATUS) === '下版済', board.cell(9, 8));
+check('済の完了日は最初に検知した日（今日）', board.cell(9, api.COL.DONE_DATE) === today, board.cell(9, 19));
+check('済の直近の動き', board.cell(9, api.COL.RECENT) === '電算 済（初校戻り ' + D(-4) + '）', board.cell(9, 14));
+board.set(9, api.COL.DONE_DATE, D(-20));          // 前に検知した完了日が残っている想定
+api.importFromProductionSheet();
+check('済の完了日は取込で上書きしない', board.cell(9, api.COL.DONE_DATE) === D(-20), board.cell(9, 19));
+check('古い完了日の済案件は画面に出ない', !api.getBoardData({}).rows.find(r => r.key === '22930-000'));
+setRow(13, { A: '' });
+api.importFromProductionSheet();
+check('済が消えたら通常の判定に戻る', board.cell(9, api.COL.STATUS) === '校正中' && board.cell(9, api.COL.DONE_DATE) === '', [board.cell(9, 8), board.cell(9, 19)]);
+setRow(13, { A: '済' });
+api.importFromProductionSheet();
+check('済に戻すと完了日は今日から数え直す', board.cell(9, api.COL.STATUS) === '下版済' && board.cell(9, api.COL.DONE_DATE) === today);
 
 console.log('--- 2回目の取込（差分なし）---');
 let r2 = api.importFromProductionSheet();
@@ -68,7 +82,7 @@ check('更新権限あり（合言葉）', data.canEdit === true);
 check('合言葉なしは閲覧のみ', api.getBoardData({}).canEdit === false);
 check('直近の月曜より前に下版済の案件は出ない', !data.rows.find(r => r.key === '22940-000'), data.rows.map(r => r.key));
 check('今日下版済の案件は完了として出る', data.rows.find(r => r.key === '22950-000').isDone === true);
-check('6件表示（下版済の古い1件は出ない）', data.rows.length === 6, data.rows.length);
+check('7件表示（下版済の古い1件は出ない）', data.rows.length === 7, data.rows.length);
 check('担当者の一覧と区分', data.staff.length === 8 && data.staff[0].name === '和泉' && data.staff[0].group === 'DTP' && data.staff[7].group === '編集');
 check('編集者の名前候補は8名', data.editorNames.length === 8 && data.editorNames.indexOf('菅井') >= 0, data.editorNames);
 check('週の範囲は月〜金', api.mondayOf_(today) === data.weekStart && api.addDays_(data.weekStart, 4) === data.weekEnd, [data.weekStart, data.weekEnd]);
