@@ -217,7 +217,16 @@ check('組上がり済みの本数を累計で数える（初校以降に進ん�
   bun.paperTypeset === 5 && bun.papers.length === 6, { typeset: bun.paperTypeset, total: bun.papers.length });
 check('組上がり前の論文は数えない', bun.papers.find(p => p.title === '投稿規定').typeset === false);
 check('組上がりの列に日付が入れば済みになる', bun.papers.find(p => p.title === '表紙').typeset === true);
-check('組版完了の工程名を画面に返す', data.typesetLabel === '組上がり', data.typesetLabel);
+check('入稿済みの本数（未入稿＝本数−これ）', bun.paperArrived === 6, bun.paperArrived);
+check('入稿の列が空でも校了・責了なら入稿済み扱い', bun.papers.find(p => p.title === '表紙').arrived === true);
+check('提出済みの本数（初校提出まで進んだ分）', bun.paperSubmitted === 5, bun.paperSubmitted);
+check('組み上がったが未提出＝編集の確認中', bun.paperTypeset - bun.paperSubmitted === 0, [bun.paperTypeset, bun.paperSubmitted]);
+check('校了・責了は手前の工程もすべて済み扱い',
+  bun.papers.find(p => p.title === '表紙').submitted === true &&
+  bun.papers.find(p => p.title === '【タテ】武蔵国防人歌再読').submitted === true);
+check('工程名を画面に返す',
+  data.typesetLabel === '組上がり' && data.arrivedLabel === '入稿' && data.submitLabel === '初校提出',
+  [data.arrivedLabel, data.typesetLabel, data.submitLabel]);
 check('内訳の並び順が返る', data.paperStatusOrder[0] === '未提出' && data.paperStatusOrder.indexOf('校了') > data.paperStatusOrder.indexOf('念校戻り'), data.paperStatusOrder);
 const k2 = api.importFromKiyoSheet();
 check('変更が無ければ書き換えない', k2.changed === false, k2);
@@ -252,6 +261,15 @@ kiyo.set(1, C('T'), '備考'); kiyo.set(1, C('U'), '');
 kRow(29, { T: '' }); kRow(31, { T: '', U: '' });
 api.importFromKiyoSheet();
 check('戻せる', hikari().status === '再校提出', hikari());
+
+console.log('--- 組み上がったが未提出の論文を確認中として数える ---');
+kRow(32, { A: '確認待ちの論文', B: '著者X', F: 801, K: 810 });   // 組上がりまで。初校提出はまだ
+api.importFromKiyoSheet();
+const bun2 = api.getBoardData(PIN).rows.find(r => r.key === '22962-000');
+check('組上がり済みに数える', bun2.paperTypeset === 6 && bun2.papers.length === 8, [bun2.paperTypeset, bun2.papers.length]);
+check('提出済みには数えない（＝確認中1本）', bun2.paperSubmitted === 5 && bun2.paperTypeset - bun2.paperSubmitted === 1, bun2.paperSubmitted);
+kRow(32, { A: '', B: '', F: '', K: '' });
+api.importFromKiyoSheet();
 
 console.log('--- 組版完了の工程は設定で変えられる ---');
 _props['KIYO_TYPESET_STAGE'] = '初校提出';
