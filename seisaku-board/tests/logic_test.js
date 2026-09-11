@@ -187,7 +187,7 @@ kRow(28, { A: '【タテ】武蔵国防人歌再読', B: '山崎健司', C: 100,
 kRow(29, { A: '【タテ】本が、紙として', B: '中江桂子', F: 807, K: 817, L: 817, M: 820, N: 821, O: 827, P: 828, Q: 831, R: 831, S: 902 });
 kRow(30, { A: 'The Nucleus and Its Placement in Welsh English', B: '新城真里奈', C: 20, F: 817, I: 817, K: 818, L: 818, M: 901, N: 902, O: 908, P: 908, Q: 909, R: '校了' });
 kRow(31, { A: '光はそこに', B: '新本史斉', F: 731, I: 731, K: 806, L: 810, M: 818, N: 820 });
-kRow(35, { A: '投稿規定', F: '0731' });
+kRow(35, { A: '投稿規定', F: '0731' });                     // 入稿だけ＝まだ組み上がっていない
 kRow(36, { A: '執筆者紹介' });                              // B列以降が空 → 数えない
 kHead(40, { A: '教養論集588', B: '10本・ヨコ組み', G: '野沢' });   // 受注番号なし（色だけで区切る）
 kRow(41, { A: '表紙', I: 731, K: 803, L: 804, N: 821, O: '校了' });
@@ -213,6 +213,11 @@ const yr = Number(byTitle['光はそこに'].date.slice(0, 4)), thisYear = Numbe
 check('補った年は今日に近い方', Math.abs(yr - thisYear) <= 1, yr);
 check('文字列の 0731 も読める', byTitle['投稿規定'].status === '入稿' && /\/07\/31$/.test(byTitle['投稿規定'].date), byTitle['投稿規定']);
 check('内訳の件数', bun.paperCounts['責了'] === 1 && bun.paperCounts['校了'] === 2 && bun.paperCounts['念校戻り'] === 1 && bun.paperCounts['再校提出'] === 1, bun.paperCounts);
+check('組上がり済みの本数を累計で数える（初校以降に進んだ分も含む）',
+  bun.paperTypeset === 5 && bun.papers.length === 6, { typeset: bun.paperTypeset, total: bun.papers.length });
+check('組上がり前の論文は数えない', bun.papers.find(p => p.title === '投稿規定').typeset === false);
+check('組上がりの列に日付が入れば済みになる', bun.papers.find(p => p.title === '表紙').typeset === true);
+check('組版完了の工程名を画面に返す', data.typesetLabel === '組上がり', data.typesetLabel);
 check('内訳の並び順が返る', data.paperStatusOrder[0] === '未提出' && data.paperStatusOrder.indexOf('校了') > data.paperStatusOrder.indexOf('念校戻り'), data.paperStatusOrder);
 const k2 = api.importFromKiyoSheet();
 check('変更が無ければ書き換えない', k2.changed === false, k2);
@@ -247,6 +252,15 @@ kiyo.set(1, C('T'), '備考'); kiyo.set(1, C('U'), '');
 kRow(29, { T: '' }); kRow(31, { T: '', U: '' });
 api.importFromKiyoSheet();
 check('戻せる', hikari().status === '再校提出', hikari());
+
+console.log('--- 組版完了の工程は設定で変えられる ---');
+_props['KIYO_TYPESET_STAGE'] = '初校提出';
+api.importFromKiyoSheet();
+check('指定した工程まで進んだ本数を数える',
+  api.getBoardData(PIN).rows.find(r => r.key === '22962-000').paperTypeset === 5,
+  api.getBoardData(PIN).rows.find(r => r.key === '22962-000').paperTypeset);
+delete _props['KIYO_TYPESET_STAGE'];
+api.importFromKiyoSheet();
 
 console.log('--- 紀要が読めなくても生産表の取込は止めない ---');
 _props['KIYO_SS_ID'] = 'no-such-id';

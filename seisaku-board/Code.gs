@@ -123,6 +123,9 @@ const KIYO_DEFAULT = {
   // 校正が長引いて念校（S列）より先の列まで使われる場合は、ここを右に伸ばすと続きも追える。
   // 増やした列の名前は「進行中」シートの1行目（見出し）から補う。備考の列に当たったらそこで止める。
   STAGE_END: 'S',
+  // 組版（DTP）が終わったとみなす工程。この工程まで進んだ本数を「組上がり 8/10」として出す。
+  // KIYO_STAGE_COLS で付けた名前のどれかを指定する。
+  TYPESET_STAGE: '組上がり',
   DONE_WORDS: '校了,責了',   // これが入っている論文は完了扱い
   // 【受注番号】が無い見出し行（例「教養論集588」）を拾うための正規表現。論文名の1行目に対して、
   // 著者も各校の日付も無い行にだけ適用する。空にすると【受注番号】だけで見出しを判定する。
@@ -132,7 +135,7 @@ const KIYO_DEFAULT = {
 const ORDER_IN_BRACKETS_RE = /【\s*(\d{4,}(?:-\d+)?)\s*】/;
 const KIYO_PROP = {
   TITLE: 'KIYO_COL_TITLE', AUTHOR: 'KIYO_COL_AUTHOR', STATUS: 'KIYO_COL_STATUS',
-  STAGES: 'KIYO_STAGE_COLS', STAGE_END: 'KIYO_STAGE_END',
+  STAGES: 'KIYO_STAGE_COLS', STAGE_END: 'KIYO_STAGE_END', TYPESET_STAGE: 'KIYO_TYPESET_STAGE',
   DONE_WORDS: 'KIYO_DONE_WORDS', HEADING_PATTERN: 'KIYO_HEADING_PATTERN'
 };
 const KIYO_EMPTY_LABEL = '未提出';
@@ -177,9 +180,9 @@ const HEADERS = [
 ];
 
 /** `論文明細` シートの列。 */
-const PCOL = { ORDER_NO: 1, TITLE: 2, AUTHOR: 3, STATUS: 4, DATE: 5, IMPORTED_AT: 6 };
-const PAPER_LAST_COL = PCOL.IMPORTED_AT;
-const PAPER_HEADERS = ['受注番号', '論文名', '著者名', '状態', '直近の日付', '取込日時'];
+const PCOL = { ORDER_NO: 1, TITLE: 2, AUTHOR: 3, STATUS: 4, DATE: 5, IMPORTED_AT: 6, TYPESET: 7 };
+const PAPER_LAST_COL = PCOL.TYPESET;
+const PAPER_HEADERS = ['受注番号', '論文名', '著者名', '状態', '直近の日付', '取込日時', '組上がり'];
 
 /** `担当者メモ` シートの列。 */
 const NCOL = { NAME: 1, NOTE: 2 };
@@ -810,6 +813,7 @@ function kiyoConfig_() {
     status: colToIndex_(getProp_(KIYO_PROP.STATUS, KIYO_DEFAULT.STATUS)),
     stages: stages,
     stageEnd: colToIndex_(getProp_(KIYO_PROP.STAGE_END, KIYO_DEFAULT.STAGE_END)),
+    typesetStage: toText_(getProp_(KIYO_PROP.TYPESET_STAGE, KIYO_DEFAULT.TYPESET_STAGE)),
     doneWords: splitList_(getProp_(KIYO_PROP.DONE_WORDS, KIYO_DEFAULT.DONE_WORDS)),
     headingRe: pattern ? new RegExp(pattern) : null
   };
@@ -898,18 +902,23 @@ function parseKiyoRows_(values, cfg, todayStr, bgs) {
     current.papers++;
 
     // 各校の列を左から見て、一番右の日付がその論文の状態。校了・責了があればそこで終了。
-    let doneLabel = '', last = null;
-    const check = function (v, stageName) {
+    // 組版（DTP）は「組上がり」以降まで進んでいれば済みとみなす（累計）。
+    let doneLabel = '', last = null, typeset = false;
+    let typesetIdx = -1;
+    cfg.stages.forEach(function (s, k) { if (s.name === cfg.typesetStage) typesetIdx = k; });
+    const check = function (v, stageName, idx) {
       const t = toText_(v);
       if (!t) return;
       for (let k = 0; k < cfg.doneWords.length; k++) {
-        if (t.indexOf(cfg.doneWords[k]) >= 0) { doneLabel = cfg.doneWords[k]; return; }
+        if (t.indexOf(cfg.doneWords[k]) >= 0) { doneLabel = cfg.doneWords[k]; typeset = true; return; }
       }
       const d = parseKiyoDate_(v, todayStr);
-      if (d && stageName) last = { name: stageName, date: d };
+      if (!d) return;
+      if (stageName) last = { name: stageName, date: d };
+      if (typesetIdx >= 0 && idx >= typesetIdx) typeset = true;
     };
-    cfg.stages.forEach(function (s) { check(pick_(row, s.col), s.name); });
-    if (cfg.status) check(pick_(row, cfg.status), '');
+    cfg.stages.forEach(function (s, k) { check(pick_(row, s.col), s.name, k); });
+    if (cfg.status) check(pick_(row, cfg.status), '', -1);
 
     if (!current.orderNo) return;
     papers.push({
@@ -917,7 +926,8 @@ function parseKiyoRows_(values, cfg, todayStr, bgs) {
       title: title,
       author: toText_(pick_(row, cfg.author)),
       status: doneLabel || (last ? last.name : KIYO_EMPTY_LABEL),
-      date: last ? last.date : ''
+      date: last ? last.date : '',
+      typeset: typeset
     });
   });
   return { groups: groups, papers: papers, skipped: skipped };
@@ -956,11 +966,14 @@ function importFromKiyoSheet() {
     const sh = getPaperSheet_();
     const last = lastDataRow_(sh, PCOL.ORDER_NO);
     const cur = last > 1 ? sh.getRange(2, 1, last - 1, PAPER_LAST_COL).getValues() : [];
-    const next = parsed.papers.map(function (p) { return [p.orderNo, p.title, p.author, p.status, p.date, stamp]; });
+    const next = parsed.papers.map(function (p) {
+      return [p.orderNo, p.title, p.author, p.status, p.date, stamp, p.typeset ? '○' : ''];
+    });
 
     let same = cur.length === next.length;
     for (let i = 0; same && i < next.length; i++) {
-      for (let j = 0; j < PAPER_LAST_COL - 1; j++) {   // 取込日時は比べない
+      for (let j = 0; j < PAPER_LAST_COL; j++) {
+        if (j === PCOL.IMPORTED_AT - 1) continue;       // 取込日時は比べない
         if (toText_(cur[i][j]) !== toText_(next[i][j])) { same = false; break; }
       }
     }
@@ -1086,7 +1099,7 @@ function diagnoseKiyo() {
   lines.push('紀要スプレッドシートID：' + cfg.ssId + '　シート：' + cfg.sheetName);
   lines.push('列の設定：論文名=' + indexToCol_(cfg.title) + ' 著者=' + indexToCol_(cfg.author) +
     ' 状態列=' + indexToCol_(cfg.status) + ' 各校=' + cfg.stages.map(function (s) { return indexToCol_(s.col) + '=' + s.name; }).join(',') +
-    ' 完了語=' + cfg.doneWords.join(',') + ' 見る列の右端=' + indexToCol_(cfg.stageEnd) +
+    ' 完了語=' + cfg.doneWords.join(',') + ' 組版完了の工程=' + cfg.typesetStage + ' 見る列の右端=' + indexToCol_(cfg.stageEnd) +
     ' 番号なし見出しの保険=' + (cfg.headingRe ? '/' + cfg.headingRe.source + '/' : '（なし）'));
   let kss;
   try { kss = SpreadsheetApp.openById(cfg.ssId); }
@@ -1113,7 +1126,8 @@ function diagnoseKiyo() {
   });
   lines.push('紐づいた論文：' + parsed.papers.length + ' 本　／　論文名だけで中身が無く除外した行：' + parsed.skipped + ' 行');
   parsed.papers.slice(0, 5).forEach(function (p) {
-    lines.push('  ' + p.orderNo + '　' + p.title + '／' + p.author + '　' + p.status + ' ' + p.date);
+    lines.push('  ' + p.orderNo + '　' + p.title + '／' + p.author + '　' + p.status + ' ' + p.date +
+      (p.typeset ? '　組上がり済' : ''));
   });
   const msg = lines.join('\n');
   console.log(msg);
@@ -1140,7 +1154,11 @@ function buildRecord_(values, rowNumber, papers) {
   const manualFields = MANUAL_FIELD_KEYS.filter(function (k) { return !!e.manual[k]; });
   const list = papers || [];
   const counts = {};
-  list.forEach(function (p) { counts[p.status] = (counts[p.status] || 0) + 1; });
+  let typeset = 0;
+  list.forEach(function (p) {
+    counts[p.status] = (counts[p.status] || 0) + 1;
+    if (p.typeset) typeset++;
+  });
   return {
     row: rowNumber,
     key: toText_(values[COL.KEY - 1]),
@@ -1165,7 +1183,8 @@ function buildRecord_(values, rowNumber, papers) {
     doneDate: doneDate,
     isDone: e.status === STATUS.DONE,
     papers: list,
-    paperCounts: counts
+    paperCounts: counts,
+    paperTypeset: typeset
   };
 }
 
@@ -1179,7 +1198,8 @@ function readPapers_(ss) {
     if (!no) return;
     (byNo[no] = byNo[no] || []).push({
       title: toText_(r[PCOL.TITLE - 1]), author: toText_(r[PCOL.AUTHOR - 1]),
-      status: toText_(r[PCOL.STATUS - 1]), date: toDateString_(r[PCOL.DATE - 1])
+      status: toText_(r[PCOL.STATUS - 1]), date: toDateString_(r[PCOL.DATE - 1]),
+      typeset: toText_(r[PCOL.TYPESET - 1]) !== ''
     });
   });
   return byNo;
@@ -1238,6 +1258,7 @@ function getBoardData(options) {
     statuses: STATUSES,
     outputs: outputLabels_(),
     paperStatusOrder: paperStatusOrder_(cfg),
+    typesetLabel: cfg.typesetStage,
     lastImportAt: getProp_('LAST_IMPORT_AT', ''),
     lastKiyoImportAt: getProp_('LAST_KIYO_IMPORT_AT', ''),
     kiyoError: getProp_('LAST_KIYO_ERROR', ''),

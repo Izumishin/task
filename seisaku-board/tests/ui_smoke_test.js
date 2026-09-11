@@ -110,6 +110,7 @@ check('予定も実績も無い未入稿は納期を大きく出す', staffHtml.
 check('下版済は完了日と「下版済」', staffHtml.indexOf('<span class="evt">下版済</span>') >= 0);
 check('オフは濃い色', staffHtml.indexOf('out-badge strong">オフ') >= 0);
 check('論文の内訳', staffHtml.indexOf('責了 <b>1</b>') >= 0 && staffHtml.indexOf('初校戻り <b>1</b>') >= 0);
+check('組上がりの本数とバー', staffHtml.indexOf('組上がり <span class="num">2/2</span>') >= 0 && staffHtml.indexOf('全本そろい') >= 0, staffHtml.match(/typeset[^>]*>.*?<\/div>/g));
 check('営業担当', staffHtml.indexOf('【深澤】') >= 0);
 check('未採番の印', staffHtml.indexOf('未採番') >= 0);
 check('担当者未設定のまとまり', staffHtml.indexOf('＊担当者未設定') >= 0 && staffHtml.indexOf('暑中見舞') >= 0);
@@ -129,6 +130,7 @@ console.log('--- 閲覧者の詳細パネル ---');
 ui.openPanel('22962-000');
 let panel = el('panel').innerHTML;
 check('論文一覧が出る', panel.indexOf('ptable') >= 0 && panel.indexOf('論文A') >= 0);
+check('一覧に本数と組上がり列', panel.indexOf('論文の内訳（2本') >= 0 && panel.indexOf('<th>組上がり</th>') >= 0);
 check('閲覧者には保存ボタンが無い', panel.indexOf('id="panelSave"') < 0);
 ui.closePanel();
 

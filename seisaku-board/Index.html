@@ -158,6 +158,12 @@
     .item { font-weight: 700; font-size: 15.5px; line-height: 1.45; }
     .papers { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
     .papers b { color: var(--text); font-weight: 700; }
+    .typeset { font-size: 12.5px; color: var(--muted); margin-top: 3px; display: flex; align-items: center; gap: 7px; }
+    .typeset .num { font-weight: 700; color: var(--text); }
+    .typeset.full .num { color: var(--ok); }
+    .bar { flex: 1; max-width: 96px; height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
+    .bar span { display: block; height: 100%; background: var(--accent); }
+    .typeset.full .bar span { background: var(--ok); }
     .memo { font-size: 12.5px; color: var(--memo); display: flex; gap: 5px; align-items: flex-start; margin-top: 3px; }
     .memo svg { margin-top: 3px; }
     .card-foot { display: flex; align-items: baseline; gap: 8px; margin-top: 4px; }
@@ -313,6 +319,20 @@ function splitEvent(text) {
   const m = String(text || '').match(/^(.*?)\s*(\d{4}\/\d{2}\/\d{2})\s*$/);
   return m ? { name: m[1], ymd: m[2] } : { name: String(text || ''), ymd: '' };
 }
+/** 「組上がり 8/10」＋バー。全部そろっていれば緑。 */
+function typesetHtml(r) {
+  const d = state.data;
+  const total = r.papers.length;
+  if (!total) return '';
+  const done = r.paperTypeset || 0;
+  const pct = Math.round(done / total * 100);
+  return '<div class="typeset' + (done === total ? ' full' : '') + '" title="' + esc(d.typesetLabel) + 'まで進んだ論文の本数">' +
+    esc(d.typesetLabel) + ' <span class="num">' + done + '/' + total + '</span>' +
+    '<span class="bar"><span style="width:' + pct + '%"></span></span>' +
+    (done === total ? '<span>全本そろい</span>' : '') +
+  '</div>';
+}
+
 function papersSummary(r) {
   const d = state.data;
   const counts = r.paperCounts || {};
@@ -477,6 +497,7 @@ function cardHtml(r) {
     '<div class="order-no">' + esc(r.orderNo) + (r.isTemp ? '<span class="temp-mark">未採番</span>' : '') + '</div>' +
     '<div class="customer">' + esc(r.customer) + '</div>' +
     '<div class="item">' + esc(r.item) + '</div>' +
+    typesetHtml(r) +
     (r.papers.length ? '<div class="papers">' + papersSummary(r) + '</div>' : '') +
     (r.memo ? '<div class="memo"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg><span>' + esc(r.memo) + '</span></div>' : '') +
     '<div class="card-foot">' +
@@ -514,10 +535,12 @@ function openPanel(key) {
   state.editingKey = key;
 
   const papersHtml = r.papers.length
-    ? '<div class="section-title">論文の内訳（紀要「進行中」シートから自動取込）　' + papersSummary(r) + '</div>' +
-      '<table class="ptable"><tr><th>論文名</th><th>著者</th><th>状態</th><th>日付</th></tr>' +
+    ? '<div class="section-title">論文の内訳（' + r.papers.length + '本／紀要「進行中」シートから自動取込）　' + papersSummary(r) + '</div>' +
+      typesetHtml(r) +
+      '<table class="ptable"><tr><th>論文名</th><th>著者</th><th>' + esc(d.typesetLabel) + '</th><th>状態</th><th>日付</th></tr>' +
       r.papers.map(function (p) {
-        return '<tr><td>' + esc(p.title) + '</td><td>' + esc(p.author) + '</td><td>' + esc(p.status) + '</td><td>' + (p.date ? shortDate(p.date) : '') + '</td></tr>';
+        return '<tr><td>' + esc(p.title) + '</td><td>' + esc(p.author) + '</td>' +
+          '<td>' + (p.typeset ? '○' : '') + '</td><td>' + esc(p.status) + '</td><td>' + (p.date ? shortDate(p.date) : '') + '</td></tr>';
       }).join('') + '</table>'
     : '';
 
