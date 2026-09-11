@@ -55,9 +55,11 @@ check('入稿日が空なら未入稿', board.cell(5, api.COL.STATUS) === '未�
 check('出力区分：S列 PDF → データ', board.cell(5, api.COL.OUTPUT) === 'データ', board.cell(5, 12));
 check('派遣・磯網は編集', board.cell(6, api.COL.EDIT) === '派遣,磯網', board.cell(6, 7));
 check('Z列が未来日（入稿予定）なら未入稿', board.cell(7, api.COL.STATUS) === '未入稿', board.cell(7, 8));
-check('未入稿の直近の動きは入稿予定', board.cell(7, api.COL.RECENT) === '入稿予定 ' + D(7), board.cell(7, 14));
+check('未入稿の次の予定は入稿予定', board.cell(7, api.COL.RECENT) === '' && board.cell(7, api.COL.NEXT) === '入稿予定 ' + D(7), [board.cell(7, 14), board.cell(7, 24)]);
 check('入稿済でAA列が未来日（初校提出予定）なら作業中', board.cell(8, api.COL.STATUS) === '作業中', board.cell(8, 8));
-check('実績と予定を並べて出す', board.cell(8, api.COL.RECENT) === '入稿 ' + D(-3) + ' ／ 初校提出予定 ' + D(4), board.cell(8, 14));
+check('直近の実績と次の予定を分けて持つ', board.cell(8, api.COL.RECENT) === '入稿 ' + D(-3) && board.cell(8, api.COL.NEXT) === '初校提出予定 ' + D(4), [board.cell(8, 14), board.cell(8, 24)]);
+check('下版予定も次の予定になる', board.cell(3, api.COL.NEXT) === '下版予定 ' + D(3), board.cell(3, 24));
+check('下版済に次の予定は無い', board.cell(4, api.COL.NEXT) === '', board.cell(4, 24));
 check('A列が「済」なら下版日が無くても下版済', board.cell(9, api.COL.STATUS) === '下版済', board.cell(9, 8));
 check('済の完了日は最初に検知した日（今日）', board.cell(9, api.COL.DONE_DATE) === today, board.cell(9, 19));
 check('済の直近の動き', board.cell(9, api.COL.RECENT) === '電算 済（初校戻り ' + D(-4) + '）', board.cell(9, 14));

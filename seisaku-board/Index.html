@@ -140,15 +140,17 @@
     .status-badge.working { background: var(--working-bg); color: var(--working-fg); }
     .status-badge.proof { background: var(--proof-bg); color: var(--proof-fg); }
     .status-badge.done { background: var(--done-bg); color: var(--done-fg); }
-    .recent { font-size: 12px; color: var(--muted); }
+    .when { font-size: 12.5px; color: var(--muted); }
+    .when b { color: var(--text); font-weight: 700; }
     .card-top .badges { margin-left: auto; display: flex; gap: 6px; }
     .out-badge { font-size: 11.5px; font-weight: 700; border-radius: 6px; padding: 1px 8px; white-space: nowrap; background: var(--out-light-bg); color: var(--out-light-fg); }
     .out-badge.strong { background: var(--out-strong-bg); color: var(--out-strong-fg); }
     .manual-badge { font-size: 11px; font-weight: 700; border-radius: 6px; padding: 1px 7px; color: var(--manual); border: 1px solid var(--manual); white-space: nowrap; }
-    .dateline { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-top: 2px; }
+    .dateline { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
     .dateline .date { font-size: 18px; font-weight: 700; letter-spacing: .01em; }
-    .dateline .due { font-size: 14px; color: var(--muted); }
-    .dateline .due b { color: var(--text); }
+    .dateline .evt { font-size: 13.5px; font-weight: 700; }
+    .dateline.past .date, .dateline.past .evt { color: var(--muted); font-weight: 500; }
+    .dateline .none { font-size: 13px; color: var(--faint); }
     .conflict { font-size: 11.5px; color: var(--manual); }
     .order-no { font-family: "SFMono-Regular", Consolas, "Courier New", monospace; font-size: 12.5px; color: var(--faint); letter-spacing: .02em; }
     .temp-mark { margin-left: 6px; font-size: 11px; color: var(--faint); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; font-family: inherit; }
@@ -286,6 +288,11 @@ function isThisWeek(r) {
   const d = state.data;
   return !!r.gehan && r.gehan >= d.weekStart && r.gehan <= d.weekEnd;
 }
+/** 「入稿予定 2026/09/20」→ { name:'入稿予定', date:'9/20' } */
+function splitEvent(text) {
+  const m = String(text || '').match(/^(.*?)\s*(\d{4}\/\d{2}\/\d{2})\s*$/);
+  return m ? { name: m[1], date: shortDate(m[2]) } : { name: String(text || ''), date: '' };
+}
 function papersSummary(r) {
   const d = state.data;
   const counts = r.paperCounts || {};
@@ -416,10 +423,25 @@ function renderStatusView() {
 function cardHtml(r) {
   const cls = STATUS_CLASS[r.status] || 'notyet';
   const manual = r.manualFields.length > 0;
-  let dateHtml;
-  if (r.gehan) dateHtml = '<span class="date" title="下版予定日">' + shortDate(r.gehan) + '</span>';
-  else if (r.due) dateHtml = '<span class="due">納期 <b>' + shortDate(r.due) + '</b></span>';
-  else dateHtml = '<span class="due">日付なし</span>';
+  // 状態の横：下版予定日があればそれ、無ければ納期
+  let whenHtml = '';
+  if (r.gehan) whenHtml = '<span class="when" title="下版予定日">下版 <b>' + shortDate(r.gehan) + '</b></span>';
+  else if (r.due) whenHtml = '<span class="when" title="納期">納期 <b>' + shortDate(r.due) + '</b></span>';
+
+  // 大きい日付：生産表の予定で次に来る出来事。無ければ直近の実績
+  let dateHtml, dateCls = '';
+  if (r.isDone) {
+    dateHtml = '<span class="date">' + (r.doneDate ? shortDate(r.doneDate) : '') + '</span><span class="evt">下版済</span>';
+  } else if (r.next) {
+    const ev = splitEvent(r.next);
+    dateHtml = '<span class="date">' + esc(ev.date) + '</span><span class="evt">' + esc(ev.name) + '</span>';
+  } else if (r.recent) {
+    const ev = splitEvent(r.recent);
+    dateCls = ' past';
+    dateHtml = '<span class="date">' + esc(ev.date) + '</span><span class="evt">' + esc(ev.name) + '（実績・次の予定なし）</span>';
+  } else {
+    dateHtml = '<span class="none">生産表に予定なし</span>';
+  }
 
   const conflicts = [];
   if (r.manualFields.indexOf('status') >= 0 && r.statusAuto !== r.status) conflicts.push('状態 生産表 ' + esc(r.statusAuto || '—') + ' ／ ボード ' + esc(r.status || '—'));
@@ -429,13 +451,14 @@ function cardHtml(r) {
   return '<div class="card clickable' + (r.isDone ? ' done' : '') + '" data-key="' + esc(r.key) + '" data-search="' + esc((r.orderNo + ' ' + r.customer + ' ' + r.item).toLowerCase()) + '">' +
     '<div class="card-top">' +
       '<span class="status-badge ' + cls + '">' + esc(r.status) + '</span>' +
-      (r.recent ? '<span class="recent">' + esc(shortStamp(r.recent)) + '</span>' : '') +
+      whenHtml +
       '<span class="badges">' +
         (manual ? '<span class="manual-badge" title="手で直した項目：' + esc(r.manualFields.map(function (f) { return FIELD_LABEL[f]; }).join('・')) + '">手動</span>' : '') +
         (r.output ? '<span class="out-badge' + (r.output === 'オフ' ? ' strong' : '') + '">' + esc(r.output) + '</span>' : '') +
       '</span>' +
     '</div>' +
-    '<div class="dateline">' + dateHtml + (conflicts.length ? '<span class="conflict">' + conflicts.join('　') + '</span>' : '') + '</div>' +
+    '<div class="dateline' + dateCls + '">' + dateHtml + '</div>' +
+    (conflicts.length ? '<div class="conflict">' + conflicts.join('　') + '</div>' : '') +
     '<div class="order-no">' + esc(r.orderNo) + (r.isTemp ? '<span class="temp-mark">未採番</span>' : '') + '</div>' +
     '<div class="customer">' + esc(r.customer) + '</div>' +
     '<div class="item">' + esc(r.item) + '</div>' +
@@ -495,6 +518,7 @@ function openPanel(key) {
       '<dt>DTP担当</dt><dd>' + esc(r.dtp.join('、') || '—') + autoNote('staff', r.dtpAuto.join('、')) + '</dd>' +
       '<dt>編集担当</dt><dd>' + esc(r.edit.join('、') || '—') + autoNote('staff', r.editAuto.join('、')) + '</dd>' +
       '<dt>直近の動き</dt><dd>' + esc(r.recent || '—') + '</dd>' +
+      '<dt>次の予定</dt><dd>' + esc(r.next || '—') + '</dd>' +
       (r.memo ? '<dt>メモ</dt><dd>' + esc(r.memo) + '</dd>' : '') +
       (r.manualFields.length ? '<dt>手動更新</dt><dd>' + esc(r.manualBy) + '　' + esc(r.manualAt) + '</dd>' : '') +
       '<dt>取込</dt><dd>' + esc(r.importedAt || '—') + '</dd>' +

@@ -161,14 +161,15 @@ const COL = {
   DUE: 20,            // T 納期（生産表W列）
   DTP_MANUAL: 21,     // U DTP担当（手動）
   EDIT_MANUAL: 22,    // V 編集担当（手動）
-  MANUAL_FIELDS: 23   // W 手動更新の項目（status,date,output,staff のうち手で直したもの）
+  MANUAL_FIELDS: 23,  // W 手動更新の項目（status,date,output,staff のうち手で直したもの）
+  NEXT: 24            // X 次の予定（生産表の工程日付のうち、一番近い未来のもの。工程名＋日付）
 };
-const LAST_COL = COL.MANUAL_FIELDS;
+const LAST_COL = COL.NEXT;
 const HEADERS = [
   'キー', '受注番号', '得意先', '品名', '営業担当', 'DTP担当', '編集担当',
   '状態', '状態（手動）', '下版予定日', '下版予定日（手動）', '出力区分', '出力区分（手動）',
   '直近の動き', 'メモ', '手動更新者', '手動更新日時', '取込日時', '完了日',
-  '納期', 'DTP担当（手動）', '編集担当（手動）', '手動更新の項目'
+  '納期', 'DTP担当（手動）', '編集担当（手動）', '手動更新の項目', '次の予定'
 ];
 
 /** `論文明細` シートの列。 */
@@ -607,15 +608,19 @@ function autoFromRow_(r, cols, staff, rules, todayStr) {
   const doneFlag = !!flagValue && toText_(pick_(r, cols.DONE_FLAG)).indexOf(flagValue) >= 0;
 
   // 生産表には予定日が先に入る（入稿予定・初校提出予定など）。
-  // 今日以前の日付だけを実績として数え、未来の日付は「予定」として直近の動きに添える。
-  let lastIdx = -1, nextIdx = -1;
+  // 今日以前の日付だけを実績として数え、未来の日付は「次の予定」として別に持つ。
+  let lastIdx = -1;
   for (let i = 0; i < STAGES.length - 1; i++) {
     const d = dates[STAGES[i].key];
-    if (!d) continue;
-    if (d <= todayStr) lastIdx = i;
-    else if (nextIdx < 0) nextIdx = i;
+    if (d && d <= todayStr) lastIdx = i;
   }
   const lastText = lastIdx >= 0 ? STAGES[lastIdx].name + ' ' + dates[STAGES[lastIdx].key] : '';
+  // 次の予定：Z〜AG列の未来の日付のうち一番近いもの（下版予定も含む）
+  let next = '';
+  STAGES.forEach(function (st) {
+    const d = dates[st.key];
+    if (d && d > todayStr && (!next || d < next.split(' ').pop())) next = st.name + '予定 ' + d;
+  });
 
   let status, recent = '', doneDate = '';
   if (gehan && gehan <= todayStr) {
@@ -630,11 +635,9 @@ function autoFromRow_(r, cols, staff, rules, todayStr) {
     if (lastIdx < 0) status = STATUS.NOT_YET;
     else if (lastIdx === 0) status = STATUS.WORKING;
     else status = STATUS.PROOF;
-    const parts = [];
-    if (lastText) parts.push(lastText);
-    if (nextIdx >= 0) parts.push(STAGES[nextIdx].name + '予定 ' + dates[STAGES[nextIdx].key]);
-    recent = parts.join(' ／ ');
+    recent = lastText;
   }
+  if (status === STATUS.DONE) next = '';
 
   let output = '';
   for (let i = 0; i < rules.length; i++) {
@@ -648,7 +651,7 @@ function autoFromRow_(r, cols, staff, rules, todayStr) {
     customer: customer, item: item,
     sales: toText_(pick_(r, cols.SALES)),
     dtp: dtp, edit: edit,
-    status: status, gehan: gehan, output: output, recent: recent, doneDate: doneDate, doneFlag: doneFlag,
+    status: status, gehan: gehan, output: output, recent: recent, next: next, doneDate: doneDate, doneFlag: doneFlag,
     due: toDateString_(pick_(r, cols.DUE), todayStr),
     category: toText_(pick_(r, cols.CATEGORY))
   };
@@ -767,6 +770,7 @@ function applyAuto_(row, key, auto) {
   row[COL.GEHAN - 1] = auto.gehan;
   row[COL.OUTPUT - 1] = auto.output;
   row[COL.RECENT - 1] = auto.recent;
+  row[COL.NEXT - 1] = auto.next;
   row[COL.DUE - 1] = auto.due;
   // 完了日：生産表に下版日があればそれ。無い（済フラグだけ）ときは既存の値を残し、無ければ recomputeDone_ が今日を入れる
   if (auto.status === STATUS.DONE && auto.doneDate) row[COL.DONE_DATE - 1] = auto.doneDate;
@@ -975,7 +979,7 @@ function diagnoseImport() {
     rows.forEach(function (r, i) {
       const a = autoFromRow_(r, cols, staff, rules, todayStr);
       lines.push('  ' + (headerRows + 1 + i) + '行目：キー=「' + keyFor_(a) + '」 得意先=「' + a.customer + '」 品名=「' + a.item +
-        '」 大分類=「' + a.category + '」 済=' + (a.doneFlag ? '○' : '−') + ' 状態=' + a.status + (a.recent ? '（' + a.recent + '）' : '') +
+        '」 大分類=「' + a.category + '」 済=' + (a.doneFlag ? '○' : '−') + ' 状態=' + a.status + (a.recent ? '（' + a.recent + '）' : '') + (a.next ? ' 次=' + a.next : '') +
         ' 下版=' + (a.gehan || '—') + ' 納期=' + (a.due || '—') + ' 出力=' + (a.output || '—') +
         ' DTP=[' + a.dtp.join(',') + '] 編集=[' + a.edit.join(',') + '] 営業=' + a.sales);
     });
@@ -1073,6 +1077,7 @@ function buildRecord_(values, rowNumber, papers) {
     edit: e.edit, editAuto: splitList_(values[COL.EDIT - 1]),
     due: due,
     recent: toText_(values[COL.RECENT - 1]),
+    next: toText_(values[COL.NEXT - 1]),
     memo: toText_(values[COL.MEMO - 1]),
     manualFields: manualFields,
     manualBy: toText_(values[COL.MANUAL_BY - 1]),

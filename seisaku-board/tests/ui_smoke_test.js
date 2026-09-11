@@ -101,9 +101,12 @@ check('担当者見出しと負荷', /【和泉】.*抱え <b>1<\/b>件 ／ 今�
 // 下版予定日は今日＋2日。それが今週（月〜金）に入るかどうかは曜日次第なので期待値を計算する
 const gehanInWeek = (D(2) >= ui.state.data.weekStart && D(2) <= ui.state.data.weekEnd) ? 1 : 0;
 check('高橋は今週下版' + gehanInWeek + '件', new RegExp('【高橋】.*抱え <b>1</b>件 ／ 今週下版 <b>' + gehanInWeek + '</b>件').test(staffHtml), staffHtml.match(/【高橋】.*?<\/span>/));
-check('カードに状態・直近の動き（日付は短縮）', staffHtml.indexOf('初校戻り 9/4') >= 0, staffHtml.match(/recent">[^<]*/g));
+check('予定が無い案件は直近の実績を大きく出す', staffHtml.indexOf('<span class="date">9/4</span><span class="evt">初校戻り（実績・次の予定なし）</span>') >= 0, staffHtml.match(/dateline[^>]*>.*?<\/div>/g));
+check('次の予定を大きく出す（下版予定）', staffHtml.indexOf('<span class="evt">下版予定</span>') >= 0);
+check('状態の横に下版予定日', staffHtml.indexOf('下版 <b>' + ui.state.data.rows.find(r => r.key === '22970-000').gehan.replace(/^\d{4}\/0?(\d+)\/0?(\d+)$/, '$1/$2') + '</b>') >= 0);
+check('下版済は完了日と「下版済」', staffHtml.indexOf('<span class="evt">下版済</span>') >= 0);
 check('オフは濃い色', staffHtml.indexOf('out-badge strong">オフ') >= 0);
-check('納期の表示', staffHtml.indexOf('納期 <b>9/30</b>') >= 0);
+check('下版予定が無い案件は状態の横に納期', staffHtml.indexOf('納期 <b>9/30</b>') >= 0);
 check('論文の内訳', staffHtml.indexOf('責了 <b>1</b>') >= 0 && staffHtml.indexOf('初校戻り <b>1</b>') >= 0);
 check('営業担当', staffHtml.indexOf('【深澤】') >= 0);
 check('未採番の印', staffHtml.indexOf('未採番') >= 0);
@@ -150,7 +153,7 @@ check('出力は生産表と同じなので手動にならない', saved.manualF
 const cardAfter = el('viewStaff').innerHTML;
 check('カードに手動の印と直した人', cardAfter.indexOf('manual-badge') >= 0 && cardAfter.indexOf('手動 和泉') >= 0);
 check('生産表とボードを並べて表示', cardAfter.indexOf('状態 生産表 校正中 ／ ボード 作業中') >= 0, cardAfter.match(/conflict">[^<]*/g));
-check('下版予定日が表示日付になる', cardAfter.indexOf('title="下版予定日">9/20') >= 0);
+check('手動の下版予定日が状態の横に出る', cardAfter.indexOf('下版 <b>9/20</b>') >= 0);
 check('高橋の抱えが増える', new RegExp('【高橋】.*抱え <b>2</b>件 ／ 今週下版 <b>' + gehanInWeek + '</b>件').test(cardAfter), cardAfter.match(/【高橋】.*?<\/span>/));
 
 console.log('--- 自動更新はパネルを開いている間止まる ---');
