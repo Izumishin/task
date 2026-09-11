@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <style>
+    /* 印刷進行ボード（shinko-board/Index.html）の配色を踏襲。ダーク既定、ライト切替あり */
+    :root {
+      --bg: #0d0d0f;
+      --panel: #141416;
+      --card: #1c1c20;
+      --card-hover: #232329;
+      --line: #2a2a31;
+      --line-soft: #202027;
+      --text: #f2f2f4;
+      --muted: #9a9aa4;
+      --faint: #6d6d77;
+      --btn-line: #3a3a43;
+      --notyet-bg: #2a2a31; --notyet-fg: #b9b9c2;
+      --working-bg: #dbe8ff; --working-fg: #1d4fa8;
+      --proof-bg: #fff1c2; --proof-fg: #7a5200;
+      --done-bg: #d7f2e2; --done-fg: #196443;
+      --out-strong-bg: #f2f2f4; --out-strong-fg: #111114;
+      --out-light-bg: #26262d; --out-light-fg: #b9b9c2;
+      --warn-bg: #3b1b1f; --warn-fg: #ff909a;
+      --manual: #e8b04b;
+      --memo: #e8b04b;
+      --ok: #4fc98a;
+      --accent: #8b7bf3;
+      --accent-fg: #12111c;
+      --shadow: 0 1px 2px rgba(0,0,0,.4);
+    }
+    :root[data-theme="light"] {
+      --bg: #eef0f3;
+      --panel: #ffffff;
+      --card: #ffffff;
+      --card-hover: #f6f8fb;
+      --line: #dfe3e9;
+      --line-soft: #eceff3;
+      --text: #1b1d21;
+      --muted: #626973;
+      --faint: #8a919c;
+      --btn-line: #cfd5de;
+      --notyet-bg: #e6e8ec; --notyet-fg: #5a6069;
+      --working-bg: #dfe9ff; --working-fg: #1d4fa8;
+      --proof-bg: #fff0bf; --proof-fg: #6f4a00;
+      --done-bg: #ddf3e6; --done-fg: #166139;
+      --out-strong-bg: #1b1d21; --out-strong-fg: #ffffff;
+      --out-light-bg: #eceff3; --out-light-fg: #5a6069;
+      --warn-bg: #fdecec; --warn-fg: #b3261e;
+      --manual: #a06b12;
+      --memo: #a06b12;
+      --ok: #1f7a4d;
+      --accent: #4b3fd4;
+      --accent-fg: #ffffff;
+      --shadow: 0 1px 2px rgba(16,24,40,.06);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font-family: "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, system-ui, sans-serif;
+      font-size: 15px; line-height: 1.6; -webkit-font-smoothing: antialiased;
+    }
+    button { font-family: inherit; font-size: 14px; cursor: pointer; color: inherit; }
+    input, select, textarea { font-family: inherit; font-size: 14px; color: inherit; }
+    svg { flex: none; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .hidden { display: none !important; }
+
+    /* ------- 上部バー ------- */
+    .topbar {
+      position: sticky; top: 0; z-index: 30; background: var(--bg);
+      padding: 14px 20px 10px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    }
+    .search {
+      flex: 1 1 260px; min-width: 200px; display: flex; align-items: center; gap: 10px;
+      background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 0 14px; height: 44px;
+    }
+    .search svg { color: var(--faint); }
+    .search input { flex: 1; background: none; border: none; outline: none; font-size: 15px; height: 100%; }
+    .search input::placeholder { color: var(--faint); }
+    .tabs { display: inline-flex; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 3px; }
+    .tabs button { background: none; border: none; border-radius: 9px; padding: 7px 16px; color: var(--muted); font-weight: 700; }
+    .tabs button.on { background: var(--accent); color: var(--accent-fg); }
+    .btn { background: var(--panel); border: 1px solid var(--btn-line); border-radius: 10px; padding: 8px 14px; }
+    .btn:hover { background: var(--card-hover); }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 700; }
+    .btn.primary:hover { filter: brightness(1.08); }
+    .btn:disabled { opacity: .45; cursor: default; }
+    .btn.small { padding: 3px 10px; font-size: 12.5px; border-radius: 8px; }
+    .btn.danger { color: var(--warn-fg); }
+    .btn.danger:hover { background: var(--warn-bg); border-color: var(--warn-fg); }
+    .linkbtn { background: none; border: none; color: var(--muted); padding: 6px 8px; border-radius: 8px; }
+    .linkbtn:hover { color: var(--text); background: var(--panel); }
+    .iconbtn {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 10px; width: 40px; height: 40px;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .iconbtn:hover { background: var(--card-hover); }
+    .toolrow { width: 100%; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 12.5px; color: var(--faint); }
+    .notice { width: 100%; font-size: 13px; color: var(--warn-fg); background: var(--warn-bg); border-radius: 10px; padding: 8px 12px; }
+    .notice.soft { color: var(--muted); background: var(--panel); border: 1px solid var(--line); }
+
+    /* ------- 担当者ビュー ------- */
+    .staffview { padding: 8px 20px 48px; }
+    .group-head { font-size: 17px; font-weight: 700; color: var(--muted); margin: 18px 0 6px; letter-spacing: .04em; }
+    .staff-block { background: var(--panel); border-radius: 16px; padding: 12px 14px 14px; margin-bottom: 12px; }
+    .staff-head { display: flex; align-items: baseline; gap: 10px 14px; flex-wrap: wrap; padding: 0 2px 8px; }
+    .staff-head .name { font-size: 16px; font-weight: 700; }
+    .staff-head .load { font-size: 13px; color: var(--muted); }
+    .staff-head .load b { color: var(--text); font-weight: 700; }
+    .staff-head .note { font-size: 13px; color: var(--memo); }
+    .staff-head .note-btn { margin-left: auto; background: none; border: 1px solid var(--line); border-radius: 8px; padding: 2px 8px; font-size: 12px; color: var(--muted); }
+    .staff-head .note-btn:hover { color: var(--text); background: var(--card-hover); }
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; }
+    .sub-title { font-size: 12.5px; color: var(--faint); margin: 10px 2px 4px; }
+    .empty { color: var(--faint); font-size: 13px; padding: 2px 2px 6px; }
+
+    /* ------- ステータスビュー ------- */
+    .board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; padding: 8px 20px 48px; align-items: start; }
+    .col-head { display: flex; align-items: baseline; gap: 10px; padding: 4px 4px 8px; }
+    .col-head .name { font-size: 15px; font-weight: 700; color: var(--muted); }
+    .col-head .sub { font-size: 12.5px; color: var(--faint); }
+    .col-body { background: var(--panel); border-radius: 16px; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 90px; }
+
+    /* ------- カード ------- */
+    .card {
+      background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 11px 13px 10px;
+      box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 2px; min-width: 0;
+    }
+    .card.clickable { cursor: pointer; }
+    .card.clickable:hover { background: var(--card-hover); }
+    .card.hit { outline: 2px solid var(--memo); outline-offset: 1px; }
+    .card.dim { opacity: .3; }
+    .card.done { opacity: .6; }
+    .card.done:hover { opacity: 1; }
+    .card-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .status-badge { font-size: 12px; font-weight: 700; border-radius: 999px; padding: 2px 11px; white-space: nowrap; background: var(--notyet-bg); color: var(--notyet-fg); }
+    .status-badge.working { background: var(--working-bg); color: var(--working-fg); }
+    .status-badge.proof { background: var(--proof-bg); color: var(--proof-fg); }
+    .status-badge.done { background: var(--done-bg); color: var(--done-fg); }
+    .recent { font-size: 12px; color: var(--muted); }
+    .card-top .badges { margin-left: auto; display: flex; gap: 6px; }
+    .out-badge { font-size: 11.5px; font-weight: 700; border-radius: 6px; padding: 1px 8px; white-space: nowrap; background: var(--out-light-bg); color: var(--out-light-fg); }
+    .out-badge.strong { background: var(--out-strong-bg); color: var(--out-strong-fg); }
+    .manual-badge { font-size: 11px; font-weight: 700; border-radius: 6px; padding: 1px 7px; color: var(--manual); border: 1px solid var(--manual); white-space: nowrap; }
+    .dateline { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-top: 2px; }
+    .dateline .date { font-size: 18px; font-weight: 700; letter-spacing: .01em; }
+    .dateline .due { font-size: 14px; color: var(--muted); }
+    .dateline .due b { color: var(--text); }
+    .conflict { font-size: 11.5px; color: var(--manual); }
+    .order-no { font-family: "SFMono-Regular", Consolas, "Courier New", monospace; font-size: 12.5px; color: var(--faint); letter-spacing: .02em; }
+    .temp-mark { margin-left: 6px; font-size: 11px; color: var(--faint); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; font-family: inherit; }
+    .customer { font-size: 13px; color: var(--muted); }
+    .item { font-weight: 700; font-size: 15.5px; line-height: 1.45; }
+    .papers { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+    .papers b { color: var(--text); font-weight: 700; }
+    .memo { font-size: 12.5px; color: var(--memo); display: flex; gap: 5px; align-items: flex-start; margin-top: 3px; }
+    .memo svg { margin-top: 3px; }
+    .card-foot { display: flex; align-items: baseline; gap: 8px; margin-top: 4px; }
+    .card-foot .manual-info { font-size: 11.5px; color: var(--faint); }
+    .card-foot .sales { margin-left: auto; font-size: 13px; color: var(--muted); }
+
+    /* ------- パネル ------- */
+    .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px; z-index: 60; overflow-y: auto; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; width: 100%; max-width: 640px; padding: 20px 22px; }
+    .panel h2 { margin: 0 0 2px; font-size: 17px; }
+    .panel .panel-sub { font-size: 12.5px; color: var(--muted); margin-bottom: 14px; }
+    .info { display: grid; grid-template-columns: 96px 1fr; gap: 6px 12px; font-size: 13.5px; margin-bottom: 6px; }
+    .info dt { color: var(--muted); }
+    .info dd { margin: 0; }
+    .info .auto { color: var(--faint); font-size: 12px; margin-left: 8px; }
+    .ptable { width: 100%; border-collapse: collapse; font-size: 13px; margin: 6px 0 4px; }
+    .ptable th, .ptable td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+    .ptable th { color: var(--muted); font-weight: 500; font-size: 12px; }
+    .field { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+    .field > label { width: 96px; font-size: 13px; color: var(--muted); flex: none; }
+    .field input[type="date"], .field input[type="text"], .field select { flex: 1; min-width: 160px; background: var(--card); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; }
+    .field .hint { flex-basis: 100%; padding-left: 106px; font-size: 12px; color: var(--faint); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .field .hint.on { color: var(--manual); }
+    .checks { flex: 1; display: flex; flex-wrap: wrap; gap: 6px 14px; }
+    .checks label { display: inline-flex; align-items: center; gap: 4px; font-size: 13.5px; cursor: pointer; }
+    .panel-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; flex-wrap: wrap; }
+    .divider { border-top: 1px solid var(--line); margin: 14px 0; }
+    .section-title { font-size: 13px; font-weight: 700; color: var(--muted); margin: 0 0 8px; }
+
+    /* ------- トースト ------- */
+    .toast {
+      position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+      background: var(--card); border: 1px solid var(--line); color: var(--text);
+      border-radius: 12px; padding: 12px 16px; display: flex; align-items: center; gap: 14px; z-index: 80;
+      box-shadow: 0 8px 24px rgba(0,0,0,.45); font-size: 14px; max-width: 90vw;
+    }
+    .toast.err { border-color: var(--warn-fg); color: var(--warn-fg); }
+
+    @media (max-width: 1100px) { .board { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 700px) {
+      .board { grid-template-columns: 1fr; padding: 8px 12px 40px; }
+      .staffview { padding: 8px 12px 40px; }
+      .topbar { position: static; padding: 12px; }
+      .search { flex-basis: 100%; }
+      .field > label { width: 76px; }
+      .field .hint { padding-left: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+  </style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="search">
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+    <input id="q" type="search" placeholder="受注番号・得意先・品名で検索" autocomplete="off" aria-label="検索">
+  </div>
+  <div class="tabs" role="tablist">
+    <button id="tabStaff" role="tab">担当者ビュー</button>
+    <button id="tabStatus" role="tab">ステータスビュー</button>
+  </div>
+  <span id="editorTools" style="display:inline-flex;gap:8px;align-items:center;">
+    <button class="btn" id="importBtn">いま取込む</button>
+  </span>
+  <button class="iconbtn" id="themeBtn" title="配色を切り替え" aria-label="配色を切り替え">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  </button>
+  <div class="toolrow">
+    <span id="meta">読み込み中…</span>
+    <button class="linkbtn hidden" id="pinBtn" style="font-size:12.5px;padding:2px 8px;">編集モードに入る</button>
+    <button class="linkbtn hidden" id="pinOffBtn" style="font-size:12.5px;padding:2px 8px;">編集モードを抜ける</button>
+  </div>
+  <div class="notice hidden" id="notice"></div>
+  <div class="notice soft hidden" id="kiyoNotice"></div>
+</header>
+
+<main class="staffview" id="viewStaff"></main>
+<main class="board hidden" id="viewStatus"></main>
+
+<div class="overlay hidden" id="overlay"><div class="panel" id="panel"></div></div>
+<div class="toast hidden" id="toast"></div>
+
+<script>
+// ===========================================================================
+// 状態
+// ===========================================================================
+function lsGet(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
+function lsSet(k, v) { try { if (v) localStorage.setItem(k, v); else localStorage.removeItem(k); } catch (e) {} }
+
+const state = {
+  data: null,
+  pin: lsGet('seisaku-pin'),
+  name: lsGet('seisaku-editor'),
+  pinJustEntered: false,
+  view: lsGet('seisaku-view') === 'status' ? 'status' : 'staff',
+  search: '',
+  editingKey: null,
+  busy: false
+};
+const REFRESH_MS = 30000;
+const STATUS_CLASS = { '未入稿': 'notyet', '作業中': 'working', '校正中': 'proof', '下版済': 'done' };
+const FIELD_LABEL = { status: '状態', date: '下版予定日', output: '出力区分', staff: '担当者' };
+
+// ===========================================================================
+// ユーティリティ
+// ===========================================================================
+function pad2(n) { return n < 10 ? '0' + n : String(n); }
+function parseYmd(s) {
+  if (!s) return null;
+  const m = String(s).match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+}
+function shortDate(s) { const d = parseYmd(s); return d ? (d.getMonth() + 1) + '/' + d.getDate() : (s || ''); }
+function shortStamp(s) { return String(s || '').replace(/\d{4}\/(\d{2})\/(\d{2})/, function (m, mo, d) { return Number(mo) + '/' + Number(d); }); }
+function toInputDate(s) { const d = parseYmd(s); return d ? d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) : ''; }
+function esc(s) {
+  return String(s === null || s === undefined ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function sortRows(rows) {
+  return rows.slice().sort(function (a, b) {
+    const da = a.gehan || a.due || '9999/99/99', db = b.gehan || b.due || '9999/99/99';
+    if (da !== db) return da < db ? -1 : 1;
+    return String(a.orderNo).localeCompare(String(b.orderNo));
+  });
+}
+function isThisWeek(r) {
+  const d = state.data;
+  return !!r.gehan && r.gehan >= d.weekStart && r.gehan <= d.weekEnd;
+}
+function papersSummary(r) {
+  const d = state.data;
+  const counts = r.paperCounts || {};
+  const keys = d.paperStatusOrder.filter(function (k) { return counts[k]; });
+  Object.keys(counts).forEach(function (k) { if (keys.indexOf(k) < 0) keys.push(k); });
+  return keys.map(function (k) { return esc(k) + ' <b>' + counts[k] + '</b>'; }).join(' ／ ');
+}
+
+// ===========================================================================
+// 通信
+// ===========================================================================
+function auth_() { return { pin: state.pin, name: state.name }; }
+function load(silent) {
+  if (!silent) setMeta('読み込み中…');
+  google.script.run
+    .withSuccessHandler(function (data) { state.data = data; render(); })
+    .withFailureHandler(function (err) { showToast('読み込みに失敗しました：' + err.message, true); setMeta('読み込み失敗'); })
+    .getBoardData({ pin: state.pin });
+}
+function call(fnName, args, onOk) {
+  if (state.busy) return;
+  state.busy = true;
+  const runner = google.script.run
+    .withSuccessHandler(function (res) { state.busy = false; if (onOk) onOk(res); })
+    .withFailureHandler(function (err) { state.busy = false; showToast(err.message, true); load(true); });
+  runner[fnName].apply(runner, args);
+}
+
+// ===========================================================================
+// 描画
+// ===========================================================================
+function setMeta(text) { document.getElementById('meta').textContent = text; }
+
+function render() {
+  const d = state.data;
+  if (!d) return;
+
+  document.getElementById('editorTools').classList.toggle('hidden', !d.canEdit);
+  document.getElementById('pinBtn').classList.toggle('hidden', !(d.pinConfigured && !d.canEdit));
+  document.getElementById('pinOffBtn').classList.toggle('hidden', !(d.pinConfigured && d.canEdit && state.pin));
+  const notice = document.getElementById('notice');
+  if (d.canEdit && !d.authConfigured) {
+    notice.textContent = '更新できる人がまだ設定されていません。スクリプトプロパティ EDITOR_PIN に合言葉を登録してください。いまはスクリプトの所有者だけが更新できる状態です。';
+    notice.classList.remove('hidden');
+  } else {
+    notice.classList.add('hidden');
+  }
+  const kn = document.getElementById('kiyoNotice');
+  const kparts = [];
+  if (d.kiyoError) kparts.push('紀要「進行中」シートの取込に失敗しています：' + d.kiyoError);
+  if (d.kiyoUnlinked) kparts.push('紀要の見出しに受注番号が無く、論文の内訳を出せない号：' + d.kiyoUnlinked + '（見出しに【受注番号】を書き足してください）');
+  kn.textContent = kparts.join('　／　');
+  kn.classList.toggle('hidden', kparts.length === 0);
+
+  if (state.pinJustEntered) {
+    state.pinJustEntered = false;
+    if (d.canEdit) showToast('編集モードに入りました');
+    else { showToast('合言葉が違います', true); state.pin = ''; lsSet('seisaku-pin', ''); }
+  }
+  setMeta((d.canEdit ? '更新可' : '閲覧のみ') +
+    '　生産表の取込 ' + (d.lastImportAt ? shortStamp(d.lastImportAt) : '—') +
+    '　紀要 ' + (d.lastKiyoImportAt ? shortStamp(d.lastKiyoImportAt) : '—') +
+    '　表示 ' + d.fetchedAt.split(' ')[1]);
+
+  document.getElementById('tabStaff').classList.toggle('on', state.view === 'staff');
+  document.getElementById('tabStatus').classList.toggle('on', state.view === 'status');
+  document.getElementById('viewStaff').classList.toggle('hidden', state.view !== 'staff');
+  document.getElementById('viewStatus').classList.toggle('hidden', state.view !== 'status');
+  if (state.view === 'staff') renderStaffView(); else renderStatusView();
+  applySearch();
+}
+
+/** (A) 担当者ビュー：ChatWork投稿と同じ並び。DTP → 編集、担当者ごとの見出しの下にカード。 */
+function renderStaffView() {
+  const d = state.data;
+  const active = d.rows.filter(function (r) { return !r.isDone; });
+  const done = d.rows.filter(function (r) { return r.isDone; });
+  let html = '';
+  ['DTP', '編集'].forEach(function (group) {
+    const field = group === 'DTP' ? 'dtp' : 'edit';
+    html += '<div class="group-head">＊' + group + '</div>';
+    d.staff.filter(function (s) { return s.group === group; }).forEach(function (s) {
+      const mine = sortRows(active.filter(function (r) { return r[field].indexOf(s.name) >= 0; }));
+      const mineDone = sortRows(done.filter(function (r) { return r[field].indexOf(s.name) >= 0; }));
+      const week = mine.filter(isThisWeek).length;
+      const note = d.notes[s.name] || '';
+      html += '<section class="staff-block" data-staff="' + esc(s.name) + '">' +
+        '<div class="staff-head">' +
+          '<span class="name">【' + esc(s.name) + '】</span>' +
+          '<span class="load">抱え <b>' + mine.length + '</b>件 ／ 今週下版 <b>' + week + '</b>件</span>' +
+          (note ? '<span class="note">' + esc(note) + '</span>' : '') +
+          (d.canEdit ? '<button class="note-btn" data-note="' + esc(s.name) + '" title="担当者の注記を編集">✎ 注記</button>' : '') +
+        '</div>' +
+        (mine.length ? '<div class="cards">' + mine.map(cardHtml).join('') + '</div>' : '<div class="empty">進行中の案件はありません</div>') +
+        (mineDone.length
+          ? '<div class="sub-title">完了（下版済）</div><div class="cards">' + mineDone.map(cardHtml).join('') + '</div>'
+          : '') +
+      '</section>';
+    });
+  });
+  const none = sortRows(active.filter(function (r) { return r.dtp.length === 0 && r.edit.length === 0; }));
+  if (none.length > 0) {
+    html += '<div class="group-head">＊担当者未設定</div>' +
+      '<section class="staff-block"><div class="staff-head"><span class="load">生産表の担当者欄（E〜L列）が空の案件 <b>' + none.length + '</b>件</span></div>' +
+      '<div class="cards">' + none.map(cardHtml).join('') + '</div></section>';
+  }
+  if (d.rows.length === 0) html = '<div class="empty" style="padding:20px;">案件がありません。「いま取込む」で生産表から取り込んでください。</div>';
+  document.getElementById('viewStaff').innerHTML = html;
+}
+
+/** (B) ステータスビュー：未入稿｜作業中｜校正中｜完了（下版済）。 */
+function renderStatusView() {
+  const d = state.data;
+  const cols = [
+    { name: '未入稿', rows: d.rows.filter(function (r) { return r.status === '未入稿'; }) },
+    { name: '作業中', rows: d.rows.filter(function (r) { return r.status === '作業中'; }) },
+    { name: '校正中', rows: d.rows.filter(function (r) { return r.status === '校正中'; }) },
+    { name: '完了（下版済）', sub: shortDate(d.weekStart) + ' 以降', rows: d.rows.filter(function (r) { return r.isDone; }) }
+  ];
+  document.getElementById('viewStatus').innerHTML = cols.map(function (c) {
+    const rows = sortRows(c.rows);
+    return '<section><div class="col-head"><span class="name">' + esc(c.name) + '</span><span class="sub">' + rows.length + '件' +
+      (c.sub ? '　' + esc(c.sub) : '') + '</span></div>' +
+      '<div class="col-body">' + (rows.length ? rows.map(cardHtml).join('') : '<div class="empty">該当なし</div>') + '</div></section>';
+  }).join('');
+}
+
+function cardHtml(r) {
+  const cls = STATUS_CLASS[r.status] || 'notyet';
+  const manual = r.manualFields.length > 0;
+  let dateHtml;
+  if (r.gehan) dateHtml = '<span class="date" title="下版予定日">' + shortDate(r.gehan) + '</span>';
+  else if (r.due) dateHtml = '<span class="due">納期 <b>' + shortDate(r.due) + '</b></span>';
+  else dateHtml = '<span class="due">日付なし</span>';
+
+  const conflicts = [];
+  if (r.manualFields.indexOf('status') >= 0 && r.statusAuto !== r.status) conflicts.push('状態 生産表 ' + esc(r.statusAuto || '—') + ' ／ ボード ' + esc(r.status || '—'));
+  if (r.manualFields.indexOf('date') >= 0 && r.gehanAuto !== r.gehan) conflicts.push('下版 生産表 ' + (r.gehanAuto ? shortDate(r.gehanAuto) : '—') + ' ／ ボード ' + (r.gehan ? shortDate(r.gehan) : '—'));
+  if (r.manualFields.indexOf('output') >= 0 && r.outputAuto !== r.output) conflicts.push('出力 生産表 ' + esc(r.outputAuto || '—') + ' ／ ボード ' + esc(r.output || '—'));
+
+  return '<div class="card clickable' + (r.isDone ? ' done' : '') + '" data-key="' + esc(r.key) + '" data-search="' + esc((r.orderNo + ' ' + r.customer + ' ' + r.item).toLowerCase()) + '">' +
+    '<div class="card-top">' +
+      '<span class="status-badge ' + cls + '">' + esc(r.status) + '</span>' +
+      (r.recent ? '<span class="recent">' + esc(shortStamp(r.recent)) + '</span>' : '') +
+      '<span class="badges">' +
+        (manual ? '<span class="manual-badge" title="手で直した項目：' + esc(r.manualFields.map(function (f) { return FIELD_LABEL[f]; }).join('・')) + '">手動</span>' : '') +
+        (r.output ? '<span class="out-badge' + (r.output === 'オフ' ? ' strong' : '') + '">' + esc(r.output) + '</span>' : '') +
+      '</span>' +
+    '</div>' +
+    '<div class="dateline">' + dateHtml + (conflicts.length ? '<span class="conflict">' + conflicts.join('　') + '</span>' : '') + '</div>' +
+    '<div class="order-no">' + esc(r.orderNo) + (r.isTemp ? '<span class="temp-mark">未採番</span>' : '') + '</div>' +
+    '<div class="customer">' + esc(r.customer) + '</div>' +
+    '<div class="item">' + esc(r.item) + '</div>' +
+    (r.papers.length ? '<div class="papers">' + papersSummary(r) + '</div>' : '') +
+    (r.memo ? '<div class="memo"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg><span>' + esc(r.memo) + '</span></div>' : '') +
+    '<div class="card-foot">' +
+      (manual ? '<span class="manual-info">手動 ' + esc(r.manualBy) + ' ' + esc(shortStamp(r.manualAt)) + '</span>' : '') +
+      (r.sales ? '<span class="sales">【' + esc(r.sales) + '】</span>' : '') +
+    '</div>' +
+  '</div>';
+}
+
+// ===========================================================================
+// 検索（該当カードを強調、それ以外を薄く）
+// ===========================================================================
+function applySearch() {
+  const q = state.search.trim().toLowerCase();
+  const cards = document.querySelectorAll('.card');
+  let first = null;
+  cards.forEach(function (el) {
+    const hit = q && String(el.getAttribute('data-search') || '').indexOf(q) >= 0;
+    el.classList.toggle('hit', !!hit);
+    el.classList.toggle('dim', !!q && !hit);
+    if (hit && !first) first = el;
+  });
+  if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+// ===========================================================================
+// 詳細／編集パネル
+// ===========================================================================
+function findRow(key) { return state.data.rows.filter(function (x) { return x.key === key; })[0]; }
+
+function openPanel(key) {
+  const d = state.data;
+  const r = findRow(key);
+  if (!r) return;
+  state.editingKey = key;
+
+  const papersHtml = r.papers.length
+    ? '<div class="section-title">論文の内訳（紀要「進行中」シートから自動取込）　' + papersSummary(r) + '</div>' +
+      '<table class="ptable"><tr><th>論文名</th><th>著者</th><th>状態</th><th>日付</th></tr>' +
+      r.papers.map(function (p) {
+        return '<tr><td>' + esc(p.title) + '</td><td>' + esc(p.author) + '</td><td>' + esc(p.status) + '</td><td>' + (p.date ? shortDate(p.date) : '') + '</td></tr>';
+      }).join('') + '</table>'
+    : '';
+
+  const autoNote = function (field, autoText) {
+    return r.manualFields.indexOf(field) >= 0 ? '<span class="auto">手動（生産表は ' + esc(autoText || '—') + '）</span>' : '';
+  };
+  const infoHtml =
+    '<dl class="info">' +
+      '<dt>状態</dt><dd>' + esc(r.status) + autoNote('status', r.statusAuto) + '</dd>' +
+      '<dt>下版予定日</dt><dd>' + esc(r.gehan || '—') + autoNote('date', r.gehanAuto) + '</dd>' +
+      '<dt>納期</dt><dd>' + esc(r.due || '—') + '</dd>' +
+      '<dt>出力区分</dt><dd>' + esc(r.output || '—') + autoNote('output', r.outputAuto) + '</dd>' +
+      '<dt>DTP担当</dt><dd>' + esc(r.dtp.join('、') || '—') + autoNote('staff', r.dtpAuto.join('、')) + '</dd>' +
+      '<dt>編集担当</dt><dd>' + esc(r.edit.join('、') || '—') + autoNote('staff', r.editAuto.join('、')) + '</dd>' +
+      '<dt>直近の動き</dt><dd>' + esc(r.recent || '—') + '</dd>' +
+      (r.memo ? '<dt>メモ</dt><dd>' + esc(r.memo) + '</dd>' : '') +
+      (r.manualFields.length ? '<dt>手動更新</dt><dd>' + esc(r.manualBy) + '　' + esc(r.manualAt) + '</dd>' : '') +
+      '<dt>取込</dt><dd>' + esc(r.importedAt || '—') + '</dd>' +
+    '</dl>';
+
+  let editHtml = '';
+  if (d.canEdit) {
+    const staffChecks = function (group, selected) {
+      return d.staff.filter(function (s) { return s.group === group; }).map(function (s) {
+        return '<label><input type="checkbox" class="chk-' + group + '" value="' + esc(s.name) + '"' + (selected.indexOf(s.name) >= 0 ? ' checked' : '') + '> ' + esc(s.name) + '</label>';
+      }).join('');
+    };
+    const others = sortRows(d.rows.filter(function (x) { return x.key !== r.key; }));
+    editHtml =
+      '<div class="divider"></div>' +
+      '<div class="section-title">手で直す（生産表と違う値にした項目だけ「手動」になり、取込で上書きされなくなります）</div>' +
+      '<div class="field"><label for="f_name">直す人</label><select id="f_name">' +
+        '<option value="">（名前を選ぶ）</option>' +
+        d.editorNames.map(function (n) { return '<option value="' + esc(n) + '"' + (n === state.name ? ' selected' : '') + '>' + esc(n) + '</option>'; }).join('') +
+      '</select></div>' +
+      '<div class="field"><label for="f_status">状態</label><select id="f_status">' +
+        d.statuses.map(function (s) { return '<option value="' + esc(s) + '"' + (s === r.status ? ' selected' : '') + '>' + esc(s) + (s === r.statusAuto ? '（生産表）' : '') + '</option>'; }).join('') +
+      '</select>' + resetHint('status', r, r.statusAuto || '—') + '</div>' +
+      '<div class="field"><label for="f_gehan">下版予定日</label><input type="date" id="f_gehan" value="' + toInputDate(r.gehan) + '">' +
+        resetHint('date', r, r.gehanAuto || '—') + '</div>' +
+      '<div class="field"><label for="f_output">出力区分</label><select id="f_output">' +
+        '<option value=""' + (!r.output ? ' selected' : '') + '>（なし）' + (!r.outputAuto ? '（生産表）' : '') + '</option>' +
+        d.outputs.map(function (o) { return '<option value="' + esc(o) + '"' + (o === r.output ? ' selected' : '') + '>' + esc(o) + (o === r.outputAuto ? '（生産表）' : '') + '</option>'; }).join('') +
+      '</select>' + resetHint('output', r, r.outputAuto || '—') + '</div>' +
+      '<div class="field"><label>DTP担当</label><span class="checks">' + staffChecks('DTP', r.dtp) + '</span></div>' +
+      '<div class="field"><label>編集担当</label><span class="checks">' + staffChecks('編集', r.edit) + '</span>' +
+        resetHint('staff', r, (r.dtpAuto.join('、') || '—') + ' ／ ' + (r.editAuto.join('、') || '—')) + '</div>' +
+      '<div class="field"><label for="f_memo">メモ</label><input type="text" id="f_memo" maxlength="120" value="' + esc(r.memo) + '" placeholder="例：著者校待ち"></div>' +
+      '<div class="divider"></div>' +
+      '<div class="section-title">この案件を別の案件と統合する</div>' +
+      '<div class="field"><label for="mergeTarget">統合先</label><select id="mergeTarget"><option value="">（選ぶ）</option>' +
+        others.map(function (x) { return '<option value="' + esc(x.key) + '">' + esc(x.orderNo + '　' + x.customer + '　' + x.item) + '</option>'; }).join('') +
+      '</select><button class="btn small danger" id="mergeBtn">メモ・手動修正を引き継いでこの案件を消す</button>' +
+      '<span class="hint">未採番のときに作られたカードと、番号が付いてから作られたカードが別々に出てしまったときに使います。</span></div>' +
+      '<div class="panel-actions">' +
+        (r.manualFields.length ? '<button class="btn" id="resetAll" style="margin-right:auto;">すべて生産表に戻す</button>' : '') +
+        '<button class="btn" id="panelCancel">閉じる</button>' +
+        '<button class="btn primary" id="panelSave">保存</button>' +
+      '</div>';
+  } else {
+    editHtml = '<div class="panel-actions"><button class="btn" id="panelCancel">閉じる</button></div>';
+  }
+
+  document.getElementById('panel').innerHTML =
+    '<h2>' + esc(r.item) + '</h2>' +
+    '<div class="panel-sub"><span class="order-no">' + esc(r.orderNo) + '</span>' + (r.isTemp ? '（未採番）' : '') + ' ／ ' + esc(r.customer) +
+      (r.sales ? ' ／ 【' + esc(r.sales) + '】' : '') + '</div>' +
+    infoHtml + papersHtml + editHtml;
+  document.getElementById('overlay').classList.remove('hidden');
+
+  document.getElementById('panelCancel').addEventListener('click', closePanel);
+  if (d.canEdit) {
+    document.getElementById('panelSave').addEventListener('click', savePanel);
+    document.getElementById('f_name').addEventListener('change', function () { state.name = this.value; lsSet('seisaku-editor', state.name); });
+    const resetAll = document.getElementById('resetAll');
+    if (resetAll) resetAll.addEventListener('click', function () {
+      if (!ensureName()) return;
+      if (!window.confirm('手で直した項目（' + r.manualFields.map(function (f) { return FIELD_LABEL[f]; }).join('・') + '）をすべて生産表の値に戻します。メモは残ります。よろしいですか？')) return;
+      call('resetToProduction', [r.key, 'all', auth_()], function () { closePanel(); showToast('生産表の値に戻しました'); load(true); });
+    });
+    document.querySelectorAll('[data-reset]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        const f = this.getAttribute('data-reset');
+        if (f === 'status') document.getElementById('f_status').value = r.statusAuto;
+        if (f === 'date') document.getElementById('f_gehan').value = toInputDate(r.gehanAuto);
+        if (f === 'output') document.getElementById('f_output').value = r.outputAuto;
+        if (f === 'staff') {
+          document.querySelectorAll('.chk-DTP').forEach(function (c) { c.checked = r.dtpAuto.indexOf(c.value) >= 0; });
+          document.querySelectorAll('.chk-編集').forEach(function (c) { c.checked = r.editAuto.indexOf(c.value) >= 0; });
+        }
+      });
+    });
+    document.getElementById('mergeBtn').addEventListener('click', function () {
+      const to = document.getElementById('mergeTarget').value;
+      if (!to) { showToast('統合先の案件を選んでください', true); return; }
+      if (!ensureName()) return;
+      const target = findRow(to);
+      if (!window.confirm('「' + r.orderNo + ' ' + r.item + '」のメモ・手動修正を\n「' + target.orderNo + ' ' + target.item + '」に引き継ぎ、この案件を消します。\n元に戻せません。よろしいですか？')) return;
+      call('mergeCases', [r.key, to, auth_()], function () { closePanel(); showToast('統合しました'); load(true); });
+    });
+  }
+}
+
+function resetHint(field, r, autoText) {
+  const on = r.manualFields.indexOf(field) >= 0;
+  return '<span class="hint' + (on ? ' on' : '') + '">' + (on ? '手動で直した項目です。' : '') + '生産表の値：' + esc(autoText) +
+    '　<button class="btn small" data-reset="' + field + '">生産表の値にする</button></span>';
+}
+
+function ensureName() {
+  const sel = document.getElementById('f_name');
+  if (sel) { state.name = sel.value; lsSet('seisaku-editor', state.name); }
+  if (!state.name) { showToast('だれが直したか分かるよう、名前を選んでください', true); return false; }
+  return true;
+}
+
+function closePanel() {
+  state.editingKey = null;
+  document.getElementById('overlay').classList.add('hidden');
+  document.getElementById('panel').innerHTML = '';
+}
+
+function savePanel() {
+  const key = state.editingKey;
+  if (!key || !ensureName()) return;
+  const dtp = [], edit = [];
+  document.querySelectorAll('.chk-DTP').forEach(function (c) { if (c.checked) dtp.push(c.value); });
+  document.querySelectorAll('.chk-編集').forEach(function (c) { if (c.checked) edit.push(c.value); });
+  const patch = {
+    name: state.name,
+    status: document.getElementById('f_status').value,
+    gehanDate: document.getElementById('f_gehan').value,
+    output: document.getElementById('f_output').value,
+    dtp: dtp, edit: edit,
+    memo: document.getElementById('f_memo').value
+  };
+  document.getElementById('panelSave').disabled = true;
+  call('saveCase', [key, patch, auth_()], function (rec) {
+    closePanel();
+    showToast(rec.manualFields.length ? '保存しました（手動：' + rec.manualFields.map(function (f) { return FIELD_LABEL[f]; }).join('・') + '）' : '保存しました');
+    load(true);
+  });
+}
+
+// ===========================================================================
+// トースト
+// ===========================================================================
+let toastTimer = null;
+function showToast(message, isError) {
+  const el = document.getElementById('toast');
+  el.className = 'toast' + (isError ? ' err' : '');
+  el.innerHTML = '<span>' + esc(message) + '</span>';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, isError ? 8000 : 6000);
+}
+function hideToast() { document.getElementById('toast').classList.add('hidden'); }
+
+// ===========================================================================
+// イベント
+// ===========================================================================
+document.addEventListener('click', function (ev) {
+  const noteBtn = ev.target.closest('[data-note]');
+  if (noteBtn) {
+    ev.stopPropagation();
+    const name = noteBtn.getAttribute('data-note');
+    const cur = state.data.notes[name] || '';
+    const next = window.prompt('【' + name + '】の見出しに出す注記（空にすると消えます）', cur);
+    if (next === null) return;
+    call('setStaffNote', [name, next, auth_()], function () { showToast('注記を保存しました'); load(true); });
+    return;
+  }
+  const card = ev.target.closest('.card');
+  if (card && state.data) { openPanel(card.getAttribute('data-key')); return; }
+  if (ev.target.id === 'overlay') closePanel();
+});
+
+document.getElementById('q').addEventListener('input', function () { state.search = this.value; applySearch(); });
+document.getElementById('tabStaff').addEventListener('click', function () { state.view = 'staff'; lsSet('seisaku-view', 'staff'); render(); });
+document.getElementById('tabStatus').addEventListener('click', function () { state.view = 'status'; lsSet('seisaku-view', 'status'); render(); });
+
+document.getElementById('importBtn').addEventListener('click', function () {
+  const btn = this;
+  btn.disabled = true;
+  setMeta('取込中…');
+  call('runImportNow', [auth_()], function (res) { btn.disabled = false; showToast(res.message); load(true); });
+  setTimeout(function () { btn.disabled = false; }, 60000);
+});
+
+document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape' && state.editingKey) closePanel(); });
+
+// 編集モード（合言葉）。公開設定が「全員」のときは、メールの代わりにこれで編集者を判定する
+document.getElementById('pinBtn').addEventListener('click', function () {
+  const pin = window.prompt('合言葉を入力してください');
+  if (pin === null || !pin.trim()) return;
+  state.pin = pin.trim();
+  state.pinJustEntered = true;
+  lsSet('seisaku-pin', state.pin);
+  load(true);
+});
+document.getElementById('pinOffBtn').addEventListener('click', function () {
+  state.pin = ''; lsSet('seisaku-pin', '');
+  showToast('閲覧のみに戻りました');
+  load(true);
+});
+
+// 配色切替（既定はダーク）
+(function () {
+  if (lsGet('seisaku-theme') === 'light') document.documentElement.setAttribute('data-theme', 'light');
+  document.getElementById('themeBtn').addEventListener('click', function () {
+    const light = document.documentElement.getAttribute('data-theme') === 'light';
+    if (light) document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', 'light');
+    lsSet('seisaku-theme', light ? '' : 'light');
+  });
+})();
+
+// 30秒ごとの自動更新。パネルを開いている間は止める。
+setInterval(function () {
+  if (state.editingKey || state.busy) return;
+  load(true);
+}, REFRESH_MS);
+
+load(false);
+</script>
+</body>
+</html>
