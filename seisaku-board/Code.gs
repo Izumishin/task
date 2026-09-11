@@ -120,6 +120,9 @@ const KIYO_DEFAULT = {
   AUTHOR: 'B',     // 著者名
   STATUS: '-',     // 校了／責了 が入る専用列があればその列。無ければ「-」（各校の列に書かれている前提）
   STAGES: 'F=入稿,K=組上がり,L=初校提出,M=初校戻り,N=再校提出,O=再校戻り,P=三校提出,Q=三校戻り,R=念校提出,S=念校戻り',
+  // 校正が長引いて念校（S列）より先の列まで使われる場合は、ここを右に伸ばすと続きも追える。
+  // 増やした列の名前は「進行中」シートの1行目（見出し）から補う。備考の列に当たったらそこで止める。
+  STAGE_END: 'S',
   DONE_WORDS: '校了,責了',   // これが入っている論文は完了扱い
   // 【受注番号】が無い見出し行（例「教養論集588」）を拾うための正規表現。論文名の1行目に対して、
   // 著者も各校の日付も無い行にだけ適用する。空にすると【受注番号】だけで見出しを判定する。
@@ -129,7 +132,8 @@ const KIYO_DEFAULT = {
 const ORDER_IN_BRACKETS_RE = /【\s*(\d{4,}(?:-\d+)?)\s*】/;
 const KIYO_PROP = {
   TITLE: 'KIYO_COL_TITLE', AUTHOR: 'KIYO_COL_AUTHOR', STATUS: 'KIYO_COL_STATUS',
-  STAGES: 'KIYO_STAGE_COLS', DONE_WORDS: 'KIYO_DONE_WORDS', HEADING_PATTERN: 'KIYO_HEADING_PATTERN'
+  STAGES: 'KIYO_STAGE_COLS', STAGE_END: 'KIYO_STAGE_END',
+  DONE_WORDS: 'KIYO_DONE_WORDS', HEADING_PATTERN: 'KIYO_HEADING_PATTERN'
 };
 const KIYO_EMPTY_LABEL = '未提出';
 
@@ -805,9 +809,43 @@ function kiyoConfig_() {
     author: colToIndex_(getProp_(KIYO_PROP.AUTHOR, KIYO_DEFAULT.AUTHOR)),
     status: colToIndex_(getProp_(KIYO_PROP.STATUS, KIYO_DEFAULT.STATUS)),
     stages: stages,
+    stageEnd: colToIndex_(getProp_(KIYO_PROP.STAGE_END, KIYO_DEFAULT.STAGE_END)),
     doneWords: splitList_(getProp_(KIYO_PROP.DONE_WORDS, KIYO_DEFAULT.DONE_WORDS)),
     headingRe: pattern ? new RegExp(pattern) : null
   };
+}
+
+/**
+ * 実際に見る工程列の一覧。設定した列に加え、STAGE_END までの間にある列も見る
+ * （校正が長引いて念校より先まで使われた場合に取りこぼさないため）。
+ * 名前が無い列は見出し行（1行目）の文字を左から引き継いで付ける。
+ */
+function kiyoStages_(cfg, headerRow) {
+  const byCol = {};
+  const used = {};
+  let last = 0;
+  cfg.stages.forEach(function (s) { byCol[s.col] = s.name; used[s.name] = true; if (s.col > last) last = s.col; });
+  // 設定した一番右の工程列より先だけを足す（間にある担当者・アプリなどの列は見ない）
+  let carried = '';
+  for (let c = last + 1; c <= cfg.stageEnd; c++) {
+    const label = toText_((headerRow || [])[c - 1]);
+    if (label) carried = label;
+    if (carried.indexOf('備考') >= 0) break;   // 備考より右は日付ではない
+    let name = carried || '校正';
+    if (used[name]) name = name + '戻り';
+    if (used[name]) name = name + '（' + indexToCol_(c) + '列）';
+    used[name] = true;
+    byCol[c] = name;
+  }
+  return Object.keys(byCol).map(Number).sort(function (a, b) { return a - b; })
+    .map(function (c) { return { col: c, name: byCol[c] }; });
+}
+
+/** セルの背景色が「なし（白）」以外か。紀要シートは案件の見出し行のA列に色が付いている。 */
+function isColoredCell_(bg) {
+  const v = String(bg === null || bg === undefined ? '' : bg).trim().toLowerCase();
+  if (!v) return false;
+  return ['#ffffff', '#fff', 'white', 'none'].indexOf(v) < 0;
 }
 
 /** 論文の状態の並び順（内訳の表示順）。 */
@@ -820,9 +858,10 @@ function paperStatusOrder_(cfg) {
  * - 【受注番号】を含む行を案件の見出しとみなす。番号が無い見出しの論文は紐づけない（件数だけ報告する）
  * - 各校の列で一番右に日付が入っている工程が状態。校了／責了 が入っていれば完了
  */
-function parseKiyoRows_(values, cfg, todayStr) {
+function parseKiyoRows_(values, cfg, todayStr, bgs) {
   const groups = [];
   const papers = [];
+  let skipped = 0;
   let current = null;
   values.forEach(function (row, i) {
     const joined = toHalfWidth_(row.map(toText_).join(' '));
@@ -830,11 +869,22 @@ function parseKiyoRows_(values, cfg, todayStr) {
     const title = toText_(pick_(row, cfg.title));
     const author = toText_(pick_(row, cfg.author));
     const anyStage = cfg.stages.some(function (s) { return toText_(pick_(row, s.col)) !== ''; });
-    // 見出し行のB列には「7本」「10本・ヨコ組み」のように本数が書かれることがある（著者名ではない）
-    const authorLike = author && !/\d+\s*本/.test(toHalfWidth_(author));
+    // 論文名の列より右に何か書かれているか。案件の見出し行や空行を論文と数えないための判定。
+    const hasRest = row.some(function (v, j) { return j + 1 > cfg.title && toText_(v) !== ''; });
+
+    // 見出し行の判定：
+    //  1. 【受注番号】がある行（確実）
+    //  2. A列に色が付いていて、その行に工程日付が無い行（受注番号を書き足す前の号）
+    //  3. 色が取れない場合の保険：論文名だけの行が KIYO_HEADING_PATTERN に当たる
     let isHeading = !!m;
-    if (!isHeading && cfg.headingRe && title && !authorLike && !anyStage) {
-      isHeading = cfg.headingRe.test(toHalfWidth_(title.split(/\r?\n/)[0].trim()));
+    if (!isHeading && title && !anyStage) {
+      if (isColoredCell_((bgs || [])[i])) {
+        isHeading = true;
+      } else if (cfg.headingRe) {
+        // 見出し行のB列には「7本」「10本・ヨコ組み」のように本数が書かれることがある（著者名ではない）
+        const authorLike = author && !/\d+\s*本/.test(toHalfWidth_(author));
+        if (!authorLike) isHeading = cfg.headingRe.test(toHalfWidth_(title.split(/\r?\n/)[0].trim()));
+      }
     }
     if (isHeading) {
       const heading = (title || joined).replace(/\s+/g, ' ').trim();
@@ -843,9 +893,11 @@ function parseKiyoRows_(values, cfg, todayStr) {
       return;
     }
     if (!title) return;
+    if (!hasRest) { skipped++; return; }   // 論文名だけで他に何も無い行は論文として数えない
     if (!current) return;   // 見出しより前の行は無視
     current.papers++;
 
+    // 各校の列を左から見て、一番右の日付がその論文の状態。校了・責了があればそこで終了。
     let doneLabel = '', last = null;
     const check = function (v, stageName) {
       const t = toText_(v);
@@ -868,7 +920,26 @@ function parseKiyoRows_(values, cfg, todayStr) {
       date: last ? last.date : ''
     });
   });
-  return { groups: groups, papers: papers };
+  return { groups: groups, papers: papers, skipped: skipped };
+}
+
+/** 見出し行（1行目）から工程列を補ったうえでの設定。 */
+function kiyoRuntimeCfg_(sh, cfg, values) {
+  const out = {};
+  Object.keys(cfg).forEach(function (k) { out[k] = cfg[k]; });
+  out.stages = kiyoStages_(cfg, values[0] || []);
+  return out;
+}
+
+/** 論文名の列（A列）の背景色。見出し行の判定に使う。読めない場合は空配列。 */
+function kiyoTitleBackgrounds_(sh, cfg, values) {
+  if (!cfg.title || values.length === 0) return [];
+  try {
+    return sh.getRange(1, cfg.title, values.length, 1).getBackgrounds().map(function (r) { return r[0]; });
+  } catch (e) {
+    console.log('背景色が読めませんでした：%s', e.message);
+    return [];
+  }
 }
 
 function importFromKiyoSheet() {
@@ -880,7 +951,7 @@ function importFromKiyoSheet() {
     const src = kss.getSheetByName(cfg.sheetName);
     if (!src) throw new Error('紀要のシート「' + cfg.sheetName + '」が見つかりません。');
     const values = src.getDataRange().getValues();
-    const parsed = parseKiyoRows_(values, cfg, todayStr);
+    const parsed = parseKiyoRows_(values, kiyoRuntimeCfg_(src, cfg, values), todayStr, kiyoTitleBackgrounds_(src, cfg, values));
 
     const sh = getPaperSheet_();
     const last = lastDataRow_(sh, PCOL.ORDER_NO);
@@ -906,8 +977,10 @@ function importFromKiyoSheet() {
     props_().setProperty('LAST_KIYO_IMPORT_AT', stamp);
     props_().setProperty('LAST_KIYO_ERROR', '');
     props_().setProperty('LAST_KIYO_UNLINKED', unlinked.join(' ／ '));
-    const result = { papers: next.length, issues: parsed.groups.length - unlinked.length, unlinked: unlinked, changed: !same, at: stamp };
-    console.log('紀要の取込: 論文 %s 本 / 案件 %s 件 / 番号なし見出し %s 件', result.papers, result.issues, unlinked.length);
+    const result = { papers: next.length, issues: parsed.groups.length - unlinked.length, unlinked: unlinked,
+      skipped: parsed.skipped, changed: !same, at: stamp };
+    console.log('紀要の取込: 論文 %s 本 / 案件 %s 件 / 番号なし見出し %s 件 / 中身が無く除外 %s 行',
+      result.papers, result.issues, unlinked.length, parsed.skipped);
     return result;
   });
 }
@@ -1013,13 +1086,18 @@ function diagnoseKiyo() {
   lines.push('紀要スプレッドシートID：' + cfg.ssId + '　シート：' + cfg.sheetName);
   lines.push('列の設定：論文名=' + indexToCol_(cfg.title) + ' 著者=' + indexToCol_(cfg.author) +
     ' 状態列=' + indexToCol_(cfg.status) + ' 各校=' + cfg.stages.map(function (s) { return indexToCol_(s.col) + '=' + s.name; }).join(',') +
-    ' 完了語=' + cfg.doneWords.join(',') + ' 番号なし見出しの判定=' + (cfg.headingRe ? '/' + cfg.headingRe.source + '/' : '（なし）'));
+    ' 完了語=' + cfg.doneWords.join(',') + ' 見る列の右端=' + indexToCol_(cfg.stageEnd) +
+    ' 番号なし見出しの保険=' + (cfg.headingRe ? '/' + cfg.headingRe.source + '/' : '（なし）'));
   let kss;
   try { kss = SpreadsheetApp.openById(cfg.ssId); }
   catch (e) { lines.push('→ 開けません：' + e.message + '（閲覧権限を付与してもらってください）'); const m = lines.join('\n'); console.log(m); return m; }
   const sh = kss.getSheetByName(cfg.sheetName);
   if (!sh) { lines.push('→ シート「' + cfg.sheetName + '」がありません。シート一覧：' + kss.getSheets().map(function (s) { return s.getName(); }).join(' / ')); const m = lines.join('\n'); console.log(m); return m; }
   const values = sh.getDataRange().getValues();
+  const runtime = kiyoRuntimeCfg_(sh, cfg, values);
+  const bgs = kiyoTitleBackgrounds_(sh, cfg, values);
+  lines.push('実際に見る工程列：' + runtime.stages.map(function (s) { return indexToCol_(s.col) + '=' + s.name; }).join(' '));
+  lines.push('見出しの色が読めた行数：' + bgs.filter(isColoredCell_).length + ' 行（色が0行なら、色での区切り判定は効きません）');
   lines.push('行数：' + values.length);
   lines.push('先頭20行（列名=値）：');
   values.slice(0, 20).forEach(function (row, i) {
@@ -1027,12 +1105,13 @@ function diagnoseKiyo() {
     row.forEach(function (v, j) { const t = toText_(v).replace(/\r?\n/g, '⏎'); if (t) cells.push(indexToCol_(j + 1) + '=' + t); });
     if (cells.length > 0) lines.push('  ' + (i + 1) + '行目：' + cells.join('  '));
   });
-  const parsed = parseKiyoRows_(values, cfg, today_());
+  const parsed = parseKiyoRows_(values, runtime, today_(), bgs);
   lines.push('見出しとして検出した行：');
   parsed.groups.forEach(function (g) {
-    lines.push('  ' + g.row + '行目：' + g.heading + ' → ' + (g.orderNo ? '受注番号 ' + g.orderNo : '番号なし（紐づけない）') + '　論文 ' + g.papers + ' 本');
+    lines.push('  ' + g.row + '行目：' + (isColoredCell_(bgs[g.row - 1]) ? '[色あり] ' : '') + g.heading +
+      ' → ' + (g.orderNo ? '受注番号 ' + g.orderNo : '番号なし（紐づけない）') + '　論文 ' + g.papers + ' 本');
   });
-  lines.push('紐づいた論文：' + parsed.papers.length + ' 本');
+  lines.push('紐づいた論文：' + parsed.papers.length + ' 本　／　論文名だけで中身が無く除外した行：' + parsed.skipped + ' 行');
   parsed.papers.slice(0, 5).forEach(function (p) {
     lines.push('  ' + p.orderNo + '　' + p.title + '／' + p.author + '　' + p.status + ' ' + p.date);
   });

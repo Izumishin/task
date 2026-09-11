@@ -26,6 +26,7 @@ class FakeRange {
   constructor(sheet, r, c, nr, nc) { this.sheet = sheet; this.r = r; this.c = c; this.nr = nr; this.nc = nc; }
   getValues() { const out = []; for (let i = 0; i < this.nr; i++) { const row = []; for (let j = 0; j < this.nc; j++) row.push(this.sheet.cell(this.r + i, this.c + j)); out.push(row); } return out; }
   getValue() { return this.sheet.cell(this.r, this.c); }
+  getBackgrounds() { const out = []; for (let i = 0; i < this.nr; i++) { const row = []; for (let j = 0; j < this.nc; j++) row.push(this.sheet.bg(this.r + i, this.c + j)); out.push(row); } return out; }
   setValues(v) { for (let i = 0; i < v.length; i++) for (let j = 0; j < v[i].length; j++) this.sheet.set(this.r + i, this.c + j, v[i][j]); return this; }
   setValue(v) { this.sheet.set(this.r, this.c, v); return this; }
   setFontWeight() { return this; } setBackground() { return this; } setNumberFormat() { return this; }
@@ -35,7 +36,9 @@ class FakeRange {
   insertCheckboxes() { for (let i = 0; i < this.nr; i++) for (let j = 0; j < this.nc; j++) this.sheet.set(this.r + i, this.c + j, false); return this; }
 }
 class FakeSheet {
-  constructor(name) { this.name = name; this.data = []; }
+  constructor(name) { this.name = name; this.data = []; this.bgs = {}; }
+  bg(r, c) { return this.bgs[r + ',' + c] || '#ffffff'; }
+  setBg(r, c, v) { this.bgs[r + ',' + c] = v; }
   cell(r, c) { const row = this.data[r - 1]; return row && row[c - 1] !== undefined ? row[c - 1] : ''; }
   set(r, c, v) { while (this.data.length < r) this.data.push([]); const row = this.data[r - 1]; while (row.length < c) row.push(''); row[c - 1] = v; }
   getName() { return this.name; }

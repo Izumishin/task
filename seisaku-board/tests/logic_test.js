@@ -172,48 +172,81 @@ try { api.mergeCases('23020-000', '23020-000', PIN); } catch (e) { threw = e.mes
 check('同じ案件どうしは統合できない', !!threw);
 
 console.log('--- 紀要「進行中」シートの取込 ---');
-// 実物の列（2026年9月）：A=論文名 B=著者 F=入稿日 K=組上がり L/M=初校 N/O=再校 P/Q=三校 R/S=念校
+// 実物の列（2026年9月）：A=論文名 B=著者 F=入稿日 K=組上がり L/M=初校 N/O=再校 P/Q=三校 R/S=念校 T=備考
+// 案件の見出し行はA列に色が付いている（オレンジ・オリーブなど）
 const kiyo = kss.insertSheet('進行中');
 function kRow(row, cells) { Object.keys(cells).forEach(col => kiyo.set(row, C(col), cells[col])); }
+function kHead(row, cells, color) { kRow(row, cells); kiyo.setBg(row, 1, color || '#e69138'); }
 kRow(1, { B: '著者名', F: '入稿日', G: '担当者', K: '組上がり', L: '初校', N: '再校', P: '三校', R: '念校', T: '備考' });
-kRow(6, { A: '芸術学研究 第36号\n【22776-000】', G: '野沢' });
-kRow(7, { A: '表1・4（和英目次）' });
+kHead(6, { A: '芸術学研究 第36号\n【22776-000】', G: '野沢' }, '#bf9000');
+kRow(7, { A: '表1・4（和英目次）' });                       // B列以降が空 → 論文として数えない
 kRow(9, { A: '戦時下上海で活躍したユダヤ難民の映画人たち（5）', B: 'ドメーニグ・ローランド', F: 710, I: 710, K: 713, L: 722, M: 902, N: 907 });
-kRow(26, { A: '文芸研究158号\n【22962-000】', B: '7本' });
+kHead(26, { A: '文芸研究158号\n【22962-000】', B: '7本' });
 kRow(27, { A: '表紙', I: 815, K: 818, L: 818, N: 828, O: '責了' });
 kRow(28, { A: '【タテ】武蔵国防人歌再読', B: '山崎健司', C: 100, F: 731, I: 731, K: 806, L: 810, M: 819, N: 818, O: 820, P: 821, Q: '校了' });
+kRow(29, { A: '【タテ】本が、紙として', B: '中江桂子', F: 807, K: 817, L: 817, M: 820, N: 821, O: 827, P: 828, Q: 831, R: 831, S: 902 });
 kRow(30, { A: 'The Nucleus and Its Placement in Welsh English', B: '新城真里奈', C: 20, F: 817, I: 817, K: 818, L: 818, M: 901, N: 902, O: 908, P: 908, Q: 909, R: '校了' });
 kRow(31, { A: '光はそこに', B: '新本史斉', F: 731, I: 731, K: 806, L: 810, M: 818, N: 820 });
 kRow(35, { A: '投稿規定', F: '0731' });
-kRow(36, { A: '執筆者紹介' });
-kRow(40, { A: '教養論集588', B: '10本・ヨコ組み', G: '野沢' });
+kRow(36, { A: '執筆者紹介' });                              // B列以降が空 → 数えない
+kHead(40, { A: '教養論集588', B: '10本・ヨコ組み', G: '野沢' });   // 受注番号なし（色だけで区切る）
 kRow(41, { A: '表紙', I: 731, K: 803, L: 804, N: 821, O: '校了' });
 
 const k1 = api.importFromKiyoSheet();
 console.log(k1);
-check('番号のある見出しの論文だけ取り込む（22776:2本 + 22962:6本）', k1.papers === 8 && k1.issues === 2, k1);
-check('番号なしの見出しを報告する', k1.unlinked.length === 1 && k1.unlinked[0].indexOf('教養論集588') === 0, k1.unlinked);
-const paper = kss.getSheetByName('論文明細') || ss.getSheetByName('論文明細');
+check('中身が無い行（表1・4／執筆者紹介）を論文にしない', k1.papers === 7 && k1.skipped === 2, k1);
+check('色で区切るので教養論集は文芸研究に混ざらない', k1.issues === 2 && k1.unlinked.length === 1 && k1.unlinked[0].indexOf('教養論集588') >= 0, k1.unlinked);
 check('論文明細は生産表側のスプレッドシートに作られる', !!ss.getSheetByName('論文明細') && !kss.getSheetByName('論文明細'));
 data = api.getBoardData(PIN);
 const bun = data.rows.find(r => r.key === '22962-000');
-check('カードに論文が紐づく', bun.papers.length === 6, bun.papers.length);
+check('カードに論文が紐づく（教養論集の分は入らない）', bun.papers.length === 6, bun.papers.map(p => p.title));
 const byTitle = {}; bun.papers.forEach(p => { byTitle[p.title] = p; });
 check('責了は完了扱い', byTitle['表紙'].status === '責了');
-check('校了は完了扱い（校了が念校の列にあっても）', byTitle['The Nucleus and Its Placement in Welsh English'].status === '校了');
+check('校了が三校の列にあっても完了扱い', byTitle['【タテ】武蔵国防人歌再読'].status === '校了');
+check('校了が念校の列にあっても完了扱い', byTitle['The Nucleus and Its Placement in Welsh English'].status === '校了');
+check('念校まで進んだ論文を追える（R・S列）',
+  byTitle['【タテ】本が、紙として'].status === '念校戻り' && /\/09\/02$/.test(byTitle['【タテ】本が、紙として'].date),
+  byTitle['【タテ】本が、紙として']);
 check('一番右の日付の工程が状態', byTitle['光はそこに'].status === '再校提出', byTitle['光はそこに']);
 check('年なしの日付に年を補う（820 → 8/20）', /^\d{4}\/08\/20$/.test(byTitle['光はそこに'].date), byTitle['光はそこに'].date);
 const yr = Number(byTitle['光はそこに'].date.slice(0, 4)), thisYear = Number(today.slice(0, 4));
 check('補った年は今日に近い方', Math.abs(yr - thisYear) <= 1, yr);
 check('文字列の 0731 も読める', byTitle['投稿規定'].status === '入稿' && /\/07\/31$/.test(byTitle['投稿規定'].date), byTitle['投稿規定']);
-check('日付が無い行は未提出', byTitle['執筆者紹介'].status === '未提出');
-check('内訳の件数', bun.paperCounts['責了'] === 1 && bun.paperCounts['校了'] === 2 && bun.paperCounts['再校提出'] === 1 && bun.paperCounts['未提出'] === 1, bun.paperCounts);
+check('内訳の件数', bun.paperCounts['責了'] === 1 && bun.paperCounts['校了'] === 2 && bun.paperCounts['念校戻り'] === 1 && bun.paperCounts['再校提出'] === 1, bun.paperCounts);
 check('内訳の並び順が返る', data.paperStatusOrder[0] === '未提出' && data.paperStatusOrder.indexOf('校了') > data.paperStatusOrder.indexOf('念校戻り'), data.paperStatusOrder);
 const k2 = api.importFromKiyoSheet();
 check('変更が無ければ書き換えない', k2.changed === false, k2);
 kRow(36, { F: 905 });
 const k3 = api.importFromKiyoSheet();
-check('変更があれば書き換える', k3.changed === true && api.getBoardData(PIN).rows.find(r => r.key === '22962-000').paperCounts['入稿'] === 2, api.getBoardData(PIN).rows.find(r => r.key === '22962-000').paperCounts);
+check('中身が入れば論文として数える',
+  k3.changed === true && k3.papers === 8 && api.getBoardData(PIN).rows.find(r => r.key === '22962-000').paperCounts['入稿'] === 2, k3);
+
+console.log('--- 見出しの色が読めないシートでも区切れる（保険） ---');
+[6, 26, 40].forEach(r => kiyo.setBg(r, 1, '#ffffff'));
+const k4 = api.importFromKiyoSheet();
+check('KIYO_HEADING_PATTERN で見出しを拾う', k4.issues === 2 && k4.unlinked.length === 1, k4);
+[[6, '#bf9000'], [26, '#e69138'], [40, '#e69138']].forEach(x => kiyo.setBg(x[0], 1, x[1]));
+api.importFromKiyoSheet();
+
+console.log('--- 工程列は設定で増やせる ---');
+const hikari = () => api.getBoardData(PIN).rows.find(r => r.key === '22962-000').papers.find(p => p.title === '光はそこに');
+kiyo.set(1, C('T'), '四校'); kiyo.set(1, C('U'), '備考');   // 校正が延びて四校の列が増えた想定
+kRow(31, { T: 915 });
+_props['KIYO_STAGE_END'] = 'V';
+api.importFromKiyoSheet();
+check('設定した右端までの列を見る', hikari().status === '四校' && /\/09\/15$/.test(hikari().date), hikari());
+kRow(29, { T: '校了' });
+api.importFromKiyoSheet();
+check('増やした列の校了も完了扱い',
+  api.getBoardData(PIN).rows.find(r => r.key === '22962-000').papers.find(p => p.title === '【タテ】本が、紙として').status === '校了');
+kRow(31, { U: '至急' });   // 備考の列は日付として見ない
+api.importFromKiyoSheet();
+check('備考の列は見ない', hikari().status === '四校', hikari());
+delete _props['KIYO_STAGE_END'];
+kiyo.set(1, C('T'), '備考'); kiyo.set(1, C('U'), '');
+kRow(29, { T: '' }); kRow(31, { T: '', U: '' });
+api.importFromKiyoSheet();
+check('戻せる', hikari().status === '再校提出', hikari());
 
 console.log('--- 紀要が読めなくても生産表の取込は止めない ---');
 _props['KIYO_SS_ID'] = 'no-such-id';
