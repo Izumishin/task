@@ -591,10 +591,14 @@ function effective_(row) {
   };
 }
 
-/** 紀要シートから読んだ掲載予定本数（自動）。数字があれば確定、無ければ未確定。 */
+/**
+ * 紀要シートから読んだ掲載予定本数（自動）。Y列に数字があればその本数で確定、
+ * 「確定」とだけ書かれていれば本数なしで確定（紀要シートにある本文の行数が分母）、空なら未確定。
+ */
 function issueAuto_(row) {
-  const n = toCount_(row[COL.ISSUE_PLANNED - 1]);
-  return { fixed: n !== '', planned: n };
+  const raw = toText_(row[COL.ISSUE_PLANNED - 1]);
+  const n = toCount_(raw);
+  return { fixed: n !== '' || raw.indexOf(ISSUE_FIXED.FIXED) >= 0, planned: n };
 }
 
 /** 本数のセル → 整数 or ''。 */
@@ -605,14 +609,16 @@ function toCount_(v) {
 }
 
 /**
- * 紀要シートの見出し行B列（「7本」「10本・ヨコ組み」「未定」…）→ 掲載予定本数。
- * 数字＋本 があれば確定、「未定」「未確定」「？」を含むか空なら未確定。
+ * 紀要シートの見出し行B列（「7本」「10本・ヨコ組み」「確定」「未入稿」…）→ 掲載予定本数。
+ * 数字＋本 があればその本数で確定。「確定」と書かれていれば本数なしで確定（行数が分母）。
+ * 「未定」「未確定」「？」を含むか、それ以外の文字だけなら未確定（備考としてそのまま出す）。
  */
 function parseIssueCount_(text) {
   const t = toHalfWidth_(toText_(text));
   if (!t || /未定|未確定|\?/.test(t)) return { fixed: false, planned: '' };
   const m = t.match(/(\d+)\s*本/);
   if (m) return { fixed: true, planned: Number(m[1]) };
+  if (t.indexOf(ISSUE_FIXED.FIXED) >= 0) return { fixed: true, planned: '' };
   return { fixed: false, planned: '' };
 }
 
@@ -1007,7 +1013,8 @@ function parseKiyoRows_(values, cfg, todayStr, bgs) {
 function writeIssueCounts_(groups) {
   const byNo = {};
   groups.forEach(function (g) {
-    if (g.orderNo) byNo[g.orderNo] = { planned: g.planned === '' ? '' : String(g.planned), note: g.note || '' };
+    // Y列：本数があれば数字、本数なしの「確定」なら「確定」、それ以外は空
+    if (g.orderNo) byNo[g.orderNo] = { planned: g.planned !== '' ? String(g.planned) : (g.fixed ? ISSUE_FIXED.FIXED : ''), note: g.note || '' };
   });
   if (Object.keys(byNo).length === 0) return 0;
   const sh = getBoardSheet_();

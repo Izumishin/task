@@ -229,6 +229,13 @@ check('制作進行シートのY列・AB列に自動で入る', board.cell(2, ap
 const seikei = data.rows.find(r => r.key === '22990-000');
 check('B列に本数が無い号は分母なし', seikei.issueFixed === false && seikei.issuePlanned === '' && seikei.bodyTotal === 2 && seikei.frontTotal === 1, [seikei.issueFixed, seikei.bodyTotal, seikei.frontTotal]);
 check('自由記入の備考がそのまま入る', seikei.issueNote === '未入稿あり・この先生だけ遅れ', seikei.issueNote);
+kHead(50, { A: '済の紀要 第1号\n【22930-000】', B: '確定' });      // 本数なしで「確定」
+kRow(51, { A: '論文Z', B: '著者Z', F: 901, K: 905, L: 908 });
+kRow(52, { A: '論文W', B: '著者W', F: 902, K: 906 });
+api.importFromKiyoSheet();
+const sumi = api.getBoardData(PIN).rows.find(r => r.key === '22930-000');
+check('B列「確定」→ 本数なしで確定（行数が分母）', sumi.issueFixed === true && sumi.issuePlanned === '' && sumi.bodyTotal === 2, [sumi.issueFixed, sumi.issuePlanned, sumi.bodyTotal]);
+check('Y列に「確定」が入る', board.cell(9, api.COL.ISSUE_PLANNED) === '確定', board.cell(9, 25));
 check('組上がり前の論文は数えない', bun.papers.find(p => p.title === '投稿規定').typeset === false);
 check('組上がりの列に日付が入れば済みになる', bun.papers.find(p => p.title === '表紙').typeset === true);
 check('入稿済みの本数（本文）', bun.paperArrived === 4, bun.paperArrived);
@@ -247,12 +254,12 @@ check('変更が無ければ書き換えない', k2.changed === false, k2);
 kRow(36, { F: 905 });
 const k3 = api.importFromKiyoSheet();
 check('中身が入れば論文として数える',
-  k3.changed === true && k3.papers === 11 && api.getBoardData(PIN).rows.find(r => r.key === '22962-000').frontTotal === 3, k3);
+  k3.changed === true && k3.papers === 13 && api.getBoardData(PIN).rows.find(r => r.key === '22962-000').frontTotal === 3, k3);
 
 console.log('--- 見出しの色が読めないシートでも区切れる（保険） ---');
 [6, 26, 40, 45].forEach(r => kiyo.setBg(r, 1, '#ffffff'));
 const k4 = api.importFromKiyoSheet();
-check('KIYO_HEADING_PATTERN で見出しを拾う', k4.issues === 3 && k4.unlinked.length === 1, k4);
+check('KIYO_HEADING_PATTERN で見出しを拾う', k4.issues === 4 && k4.unlinked.length === 1, k4);
 [[6, '#bf9000'], [26, '#e69138'], [40, '#e69138'], [45, '#e69138']].forEach(x => kiyo.setBg(x[0], 1, x[1]));
 api.importFromKiyoSheet();
 

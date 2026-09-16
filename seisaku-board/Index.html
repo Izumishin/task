@@ -622,8 +622,8 @@ function openPanel(key) {
       '<dt>次の予定</dt><dd>' + esc(r.next || '—') + '</dd>' +
       (r.papers.length
         ? '<dt>紀要メモ</dt><dd>' + esc(r.issueNote || '—') + '<span class="auto">（紀要シート見出し行のB列）</span></dd>' +
-          '<dt>掲載本数</dt><dd>' + (r.issueFixed ? esc(r.issuePlanned !== '' ? r.issuePlanned : r.bodyTotal) + '本' : '本数の記入なし') +
-          autoNote('count', r.issueFixedAuto ? r.issuePlannedAuto + '本' : '記入なし') + '</dd>'
+          '<dt>掲載本数</dt><dd>' + (r.issueFixed ? esc(r.issuePlanned !== '' ? r.issuePlanned : r.bodyTotal) + '本（確定）' : '本数の記入なし') +
+          autoNote('count', r.issueFixedAuto ? (r.issuePlannedAuto !== '' ? r.issuePlannedAuto + '本' : '確定') : '記入なし') + '</dd>'
         : '') +
       (r.memo ? '<dt>メモ</dt><dd>' + esc(r.memo) + '</dd>' : '') +
       (r.manualFields.length ? '<dt>手動更新</dt><dd>' + esc(r.manualBy) + '　' + esc(r.manualAt) + '</dd>' : '') +
@@ -660,7 +660,7 @@ function openPanel(key) {
       (r.papers.length
         ? '<div class="field"><label for="f_issueFixed">掲載本数</label>' +
           '<select id="f_issueFixed">' +
-            '<option value=""' + (r.manualFields.indexOf('count') < 0 ? ' selected' : '') + '>自動（紀要シート：' + (r.issueFixedAuto ? esc(r.issuePlannedAuto) + '本' : '本数の記入なし') + '）</option>' +
+            '<option value=""' + (r.manualFields.indexOf('count') < 0 ? ' selected' : '') + '>自動（紀要シート：' + (r.issueFixedAuto ? (r.issuePlannedAuto !== '' ? esc(r.issuePlannedAuto) + '本' : '確定（行数が分母）') : '本数の記入なし') + '）</option>' +
             '<option value="確定"' + (r.manualFields.indexOf('count') >= 0 && r.issueFixed ? ' selected' : '') + '>確定</option>' +
             '<option value="未確定"' + (r.manualFields.indexOf('count') >= 0 && !r.issueFixed ? ' selected' : '') + '>未確定</option>' +
           '</select>' +

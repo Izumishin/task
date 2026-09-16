@@ -34,6 +34,8 @@ kiyo.set(6, 1, '教養論集588'); kiyo.set(6, 2, '10本'); kiyo.setBg(6, 1, '#e
 kiyo.set(7, 1, '表紙'); kiyo.set(7, C('L'), 804);
 kiyo.set(9, 1, '決算書 別冊【22970-000】'); kiyo.set(9, 2, '未入稿 この先生だけ遅れ'); kiyo.setBg(9, 1, '#e69138');   // B列は自由記入（本数なし）
 kiyo.set(10, 1, '論文C'); kiyo.set(10, 2, '著者C'); kiyo.set(10, C('F'), 901); kiyo.set(10, C('K'), 905);
+kiyo.set(12, 1, '東洋音楽研究【22950-000】'); kiyo.set(12, 2, '確定'); kiyo.setBg(12, 1, '#e69138');   // 本数なしで「確定」→ 行数が分母
+kiyo.set(13, 1, '論文D'); kiyo.set(13, 2, '著者D'); kiyo.set(13, C('F'), 901); kiyo.set(13, C('K'), 905); kiyo.set(13, C('L'), 908);
 api.importAll();
 
 // ---- DOM モック ----
@@ -125,6 +127,8 @@ check('「掲載本数 未確定」の自動表記は出ない', staffHtml.index
 const kessan = staffHtml.slice(staffHtml.indexOf('決算書'), staffHtml.indexOf('決算書') + 1500);
 check('本数の無い号は本数だけで分母無し、B列の文字をそのまま転記', kessan.indexOf('<span class="kind">本文</span>組上がり <span class="num">1本</span>') >= 0 && kessan.indexOf('<span class="kind">紀要</span>未入稿 この先生だけ遅れ') >= 0, kessan.match(/(prog|issue)[^>]*>[\s\S]*?<\/div>/g));
 check('未確定の号にはバーも組待ちも無い', kessan.indexOf('class="bar"') < 0 && kessan.indexOf('組待ち') < 0);
+const toyo = staffHtml.slice(staffHtml.indexOf('東洋音楽研究'), staffHtml.indexOf('東洋音楽研究') + 1500);
+check('B列「確定」の号は行数を分母にしてバーを出す', toyo.indexOf('組上がり <span class="num">1/1</span>') >= 0 && toyo.indexOf('class="bar"') >= 0 && toyo.indexOf('全本そろい') >= 0, toyo.match(/(prog|issue)[^>]*>[\s\S]*?<\/div>/g));
 check('DTPの下に編集の表記は出ない',
   staffHtml.slice(staffHtml.indexOf('＊DTP'), staffHtml.indexOf('＊編集')).indexOf('確認中') < 0);
 check('営業担当', staffHtml.indexOf('【深澤】') >= 0);
