@@ -33,11 +33,12 @@ setRow(9, { A: '済', D: '中澤', I: '★', J: 90, M: '22940-000', N: '古い�
 setRow(10, { A: '', D: '深澤', E: '★', M: '22985-000', N: '入稿予定の学会', O: '来月号', S: 'CTP', T: '篠原', W: D(40), Z: D(7), AA: D(14), AI: '冊子' });
 setRow(11, { A: '', D: '深澤', E: '★', M: '22986-000', N: '初校予定の学会', O: '今月号', S: 'CTP', T: '篠原', W: D(30), Z: D(-3), AA: D(4), AI: '冊子' });
 setRow(13, { A: '済', D: '中澤', F: 400, M: '22930-000', N: '済の学会', O: '済の紀要', S: 'CTP', T: '篠原', W: D(5), Z: D(-15), AA: D(-9), AB: D(-4), AI: '冊子' });
+setRow(14, { A: '', D: '深澤', E: '★', K: '★', M: '22990-000', N: '政経学会', O: '政経論叢 第95号', S: 'CTP', T: '篠原', W: D(45), Z: D(-2), AI: '冊子' });
 
 console.log('--- 1回目の取込（生産表）---');
 let r1 = api.importFromProductionSheet();
 console.log(r1);
-check('冊子8件が新規、端物1件は対象外', r1.added === 8 && r1.skipped === 1, r1);
+check('冊子9件が新規、端物1件は対象外', r1.added === 9 && r1.skipped === 1, r1);
 const board = ss.getSheetByName('制作進行');
 check('制作進行シートは左端に作られる（印刷進行ボードの取込先を奪わない）', ss.getSheets()[0].getName() === '制作進行');
 check('案件は2行目から入る', board.cell(2, api.COL.KEY) === '22962-000', board.cell(2, 1));
@@ -84,7 +85,7 @@ check('更新権限あり（合言葉）', data.canEdit === true);
 check('合言葉なしは閲覧のみ', api.getBoardData({}).canEdit === false);
 check('直近の月曜より前に下版済の案件は出ない', !data.rows.find(r => r.key === '22940-000'), data.rows.map(r => r.key));
 check('今日下版済の案件は完了として出る', data.rows.find(r => r.key === '22950-000').isDone === true);
-check('7件表示（下版済の古い1件は出ない）', data.rows.length === 7, data.rows.length);
+check('8件表示（下版済の古い1件は出ない）', data.rows.length === 8, data.rows.length);
 check('担当者の一覧と区分', data.staff.length === 8 && data.staff[0].name === '和泉' && data.staff[0].group === 'DTP' && data.staff[7].group === '編集');
 check('編集者の名前候補は8名', data.editorNames.length === 8 && data.editorNames.indexOf('菅井') >= 0, data.editorNames);
 check('週の範囲は月〜金', api.mondayOf_(today) === data.weekStart && api.addDays_(data.weekStart, 4) === data.weekEnd, [data.weekStart, data.weekEnd]);
@@ -191,11 +192,15 @@ kRow(35, { A: '投稿規定', F: '0731' });                     // 入稿だけ�
 kRow(36, { A: '執筆者紹介' });                              // B列以降が空 → 数えない
 kHead(40, { A: '教養論集588', B: '10本・ヨコ組み', G: '野沢' });   // 受注番号なし（色だけで区切る）
 kRow(41, { A: '表紙', I: 731, K: 803, L: 804, N: 821, O: '校了' });
+kHead(45, { A: '政経論叢 第95号\n【22990-000】' });                 // B列が空＝掲載本数は未確定
+kRow(46, { A: '論文X', B: '著者X', F: 901, K: 905, L: 908 });
+kRow(47, { A: '論文Y', B: '著者Y', F: 903, K: 909 });
+kRow(48, { A: '奥付', K: 910 });
 
 const k1 = api.importFromKiyoSheet();
 console.log(k1);
-check('中身が無い行（表1・4／執筆者紹介）を論文にしない', k1.papers === 7 && k1.skipped === 2, k1);
-check('色で区切るので教養論集は文芸研究に混ざらない', k1.issues === 2 && k1.unlinked.length === 1 && k1.unlinked[0].indexOf('教養論集588') >= 0, k1.unlinked);
+check('中身が無い行（表1・4／執筆者紹介）を論文にしない', k1.papers === 10 && k1.skipped === 2, k1);
+check('色で区切るので教養論集は文芸研究に混ざらない', k1.issues === 3 && k1.unlinked.length === 1 && k1.unlinked[0].indexOf('教養論集588') >= 0, k1.unlinked);
 check('論文明細は生産表側のスプレッドシートに作られる', !!ss.getSheetByName('論文明細') && !kss.getSheetByName('論文明細'));
 data = api.getBoardData(PIN);
 const bun = data.rows.find(r => r.key === '22962-000');
@@ -212,14 +217,21 @@ check('年なしの日付に年を補う（820 → 8/20）', /^\d{4}\/08\/20$/.t
 const yr = Number(byTitle['光はそこに'].date.slice(0, 4)), thisYear = Number(today.slice(0, 4));
 check('補った年は今日に近い方', Math.abs(yr - thisYear) <= 1, yr);
 check('文字列の 0731 も読める', byTitle['投稿規定'].status === '入稿' && /\/07\/31$/.test(byTitle['投稿規定'].date), byTitle['投稿規定']);
-check('内訳の件数', bun.paperCounts['責了'] === 1 && bun.paperCounts['校了'] === 2 && bun.paperCounts['念校戻り'] === 1 && bun.paperCounts['再校提出'] === 1, bun.paperCounts);
+check('内訳の件数は本文だけ（表紙の責了は入らない）', !bun.paperCounts['責了'] && bun.paperCounts['校了'] === 2 && bun.paperCounts['念校戻り'] === 1 && bun.paperCounts['再校提出'] === 1, bun.paperCounts);
 check('組上がり済みの本数を累計で数える（初校以降に進んだ分も含む）',
-  bun.paperTypeset === 5 && bun.papers.length === 6, { typeset: bun.paperTypeset, total: bun.papers.length });
+  bun.paperTypeset === 4 && bun.bodyTotal === 4 && bun.papers.length === 6, { typeset: bun.paperTypeset, body: bun.bodyTotal, total: bun.papers.length });
+check('表回り（表紙・投稿規定）は本文に数えない', bun.frontTotal === 2 && bun.frontTypeset === 1 && bun.frontSubmitted === 1, [bun.frontTotal, bun.frontTypeset, bun.frontSubmitted]);
+check('区分が付く', bun.papers.find(p => p.title === '表紙').kind === '表回り' && bun.papers.find(p => p.title === '投稿規定').kind === '表回り' && bun.papers.find(p => p.title === '光はそこに').kind === '本文');
+check('著者名があれば表回りの語を含んでも本文', bun.papers.find(p => p.title === '【タテ】本が、紙として').kind === '本文');
+check('見出し行B列の「7本」→ 掲載本数 確定 7本', bun.issueFixed === true && bun.issuePlanned === 7 && bun.issueFixedAuto === true && bun.issuePlannedAuto === 7, [bun.issueFixed, bun.issuePlanned]);
+check('制作進行シートのY列に自動で入る', board.cell(2, api.COL.ISSUE_PLANNED) === '7', board.cell(2, 25));
+const seikei = data.rows.find(r => r.key === '22990-000');
+check('B列が空の号は掲載本数 未確定', seikei.issueFixed === false && seikei.issuePlanned === '' && seikei.bodyTotal === 2 && seikei.frontTotal === 1, [seikei.issueFixed, seikei.bodyTotal, seikei.frontTotal]);
 check('組上がり前の論文は数えない', bun.papers.find(p => p.title === '投稿規定').typeset === false);
 check('組上がりの列に日付が入れば済みになる', bun.papers.find(p => p.title === '表紙').typeset === true);
-check('入稿済みの本数（未入稿＝本数−これ）', bun.paperArrived === 6, bun.paperArrived);
+check('入稿済みの本数（本文）', bun.paperArrived === 4, bun.paperArrived);
 check('入稿の列が空でも校了・責了なら入稿済み扱い', bun.papers.find(p => p.title === '表紙').arrived === true);
-check('提出済みの本数（初校提出まで進んだ分）', bun.paperSubmitted === 5, bun.paperSubmitted);
+check('提出済みの本数（本文）', bun.paperSubmitted === 4, bun.paperSubmitted);
 check('組み上がったが未提出＝編集の確認中', bun.paperTypeset - bun.paperSubmitted === 0, [bun.paperTypeset, bun.paperSubmitted]);
 check('校了・責了は手前の工程もすべて済み扱い',
   bun.papers.find(p => p.title === '表紙').submitted === true &&
@@ -233,13 +245,13 @@ check('変更が無ければ書き換えない', k2.changed === false, k2);
 kRow(36, { F: 905 });
 const k3 = api.importFromKiyoSheet();
 check('中身が入れば論文として数える',
-  k3.changed === true && k3.papers === 8 && api.getBoardData(PIN).rows.find(r => r.key === '22962-000').paperCounts['入稿'] === 2, k3);
+  k3.changed === true && k3.papers === 11 && api.getBoardData(PIN).rows.find(r => r.key === '22962-000').frontTotal === 3, k3);
 
 console.log('--- 見出しの色が読めないシートでも区切れる（保険） ---');
-[6, 26, 40].forEach(r => kiyo.setBg(r, 1, '#ffffff'));
+[6, 26, 40, 45].forEach(r => kiyo.setBg(r, 1, '#ffffff'));
 const k4 = api.importFromKiyoSheet();
-check('KIYO_HEADING_PATTERN で見出しを拾う', k4.issues === 2 && k4.unlinked.length === 1, k4);
-[[6, '#bf9000'], [26, '#e69138'], [40, '#e69138']].forEach(x => kiyo.setBg(x[0], 1, x[1]));
+check('KIYO_HEADING_PATTERN で見出しを拾う', k4.issues === 3 && k4.unlinked.length === 1, k4);
+[[6, '#bf9000'], [26, '#e69138'], [40, '#e69138'], [45, '#e69138']].forEach(x => kiyo.setBg(x[0], 1, x[1]));
 api.importFromKiyoSheet();
 
 console.log('--- 工程列は設定で増やせる ---');
@@ -266,8 +278,8 @@ console.log('--- 組み上がったが未提出の論文を確認中として数
 kRow(32, { A: '確認待ちの論文', B: '著者X', F: 801, K: 810 });   // 組上がりまで。初校提出はまだ
 api.importFromKiyoSheet();
 const bun2 = api.getBoardData(PIN).rows.find(r => r.key === '22962-000');
-check('組上がり済みに数える', bun2.paperTypeset === 6 && bun2.papers.length === 8, [bun2.paperTypeset, bun2.papers.length]);
-check('提出済みには数えない（＝確認中1本）', bun2.paperSubmitted === 5 && bun2.paperTypeset - bun2.paperSubmitted === 1, bun2.paperSubmitted);
+check('組上がり済みに数える', bun2.paperTypeset === 5 && bun2.bodyTotal === 5 && bun2.papers.length === 8, [bun2.paperTypeset, bun2.bodyTotal, bun2.papers.length]);
+check('提出済みには数えない（＝確認中1本）', bun2.paperSubmitted === 4 && bun2.paperTypeset - bun2.paperSubmitted === 1, bun2.paperSubmitted);
 kRow(32, { A: '', B: '', F: '', K: '' });
 api.importFromKiyoSheet();
 
@@ -275,10 +287,30 @@ console.log('--- 組版完了の工程は設定で変えられる ---');
 _props['KIYO_TYPESET_STAGE'] = '初校提出';
 api.importFromKiyoSheet();
 check('指定した工程まで進んだ本数を数える',
-  api.getBoardData(PIN).rows.find(r => r.key === '22962-000').paperTypeset === 5,
+  api.getBoardData(PIN).rows.find(r => r.key === '22962-000').paperTypeset === 4,
   api.getBoardData(PIN).rows.find(r => r.key === '22962-000').paperTypeset);
 delete _props['KIYO_TYPESET_STAGE'];
 api.importFromKiyoSheet();
+
+console.log('--- 掲載本数の手動修正 ---');
+let iss = api.saveCase('22962-000', { issueFixed: '未確定', name: '橋本' }, PIN);
+check('未確定に手で直せる', iss.manualFields.indexOf('count') >= 0 && iss.issueFixed === false && iss.issuePlanned === '', iss.manualFields);
+check('紀要シートの値は残る', iss.issueFixedAuto === true && iss.issuePlannedAuto === 7);
+api.importFromKiyoSheet();
+iss = api.getBoardData(PIN).rows.find(r => r.key === '22962-000');
+check('紀要の取込で手動の値は上書きされない', iss.issueFixed === false && iss.manualFields.indexOf('count') >= 0);
+iss = api.saveCase('22962-000', { issueFixed: '確定', issuePlanned: '7', name: '橋本' }, PIN);
+check('紀要シートと同じ値にすると手動が外れる', iss.manualFields.indexOf('count') < 0 && iss.issueFixed === true && iss.issuePlanned === 7, iss.manualFields);
+iss = api.saveCase('22962-000', { issueFixed: '確定', issuePlanned: '9', name: '橋本' }, PIN);
+check('本数だけ変えても手動になる', iss.manualFields.indexOf('count') >= 0 && iss.issuePlanned === 9);
+check('シートのZ・AA列に入る', board.cell(2, api.COL.ISSUE_FIXED_MANUAL) === '確定' && board.cell(2, api.COL.ISSUE_PLANNED_MANUAL) === '9');
+iss = api.saveCase('22990-000', { issueFixed: '確定', issuePlanned: '5', name: '橋本' }, PIN);
+check('未確定の号を手で確定にできる', iss.issueFixed === true && iss.issuePlanned === 5 && iss.manualFields.join(',') === 'count');
+api.resetToProduction('22962-000', ['count'], PIN);
+iss = api.getBoardData(PIN).rows.find(r => r.key === '22962-000');
+check('生産表（紀要シート）に戻せる', iss.manualFields.indexOf('count') < 0 && iss.issuePlanned === 7);
+api.saveCase('22990-000', { issueFixed: '', name: '橋本' }, PIN);
+check('「自動」を選ぶと手動が外れる', api.getBoardData(PIN).rows.find(r => r.key === '22990-000').manualFields.length === 0);
 
 console.log('--- 紀要が読めなくても生産表の取込は止めない ---');
 _props['KIYO_SS_ID'] = 'no-such-id';

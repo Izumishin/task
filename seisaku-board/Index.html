@@ -162,6 +162,11 @@
     .prog .num { font-weight: 700; color: var(--text); }
     .prog.full .num { color: var(--ok); }
     .prog .rest { color: var(--memo); }
+    .prog .kind { display: inline-block; font-size: 11px; font-weight: 700; color: var(--faint); border: 1px solid var(--line); border-radius: 6px; padding: 0 6px; }
+    .prog.front { color: var(--faint); }
+    .issue { font-size: 12px; color: var(--faint); margin-top: 2px; }
+    .issue b { color: var(--muted); font-weight: 700; }
+    .issue.manual b { color: var(--manual); }
     .bar { flex: 1; min-width: 60px; max-width: 96px; height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; display: flex; }
     .bar span { display: block; height: 100%; background: var(--accent); }
     .bar .mid { background: var(--proof-bg); }
@@ -267,7 +272,7 @@ const state = {
 };
 const REFRESH_MS = 30000;
 const STATUS_CLASS = { '未入稿': 'notyet', '作業中': 'working', '校正中': 'proof', '下版済': 'done' };
-const FIELD_LABEL = { status: '状態', date: '下版予定日', output: '出力区分', staff: '担当者' };
+const FIELD_LABEL = { status: '状態', date: '下版予定日', output: '出力区分', staff: '担当者', count: '掲載本数' };
 
 // ===========================================================================
 // ユーティリティ
@@ -323,40 +328,67 @@ function splitEvent(text) {
 }
 /**
  * 紀要の論文の進み具合。見る人の工程で表示を変える。
- *  DTP  ： 組上がり 6/10　未入稿 2      … 自分が組む分がどれだけ残っているか
- *  編集 ： 確認中 3 ／ 提出済 5 ／ 組待ち 2 … 組み上がって自分の確認待ちが何本あるか
- * group を渡さないとき（ステータスビュー・担当者未設定）は両方出す。
+ *  DTP  ： 本文 組上がり 3/5　未入稿 2        … 自分が組む分がどれだけ残っているか
+ *  編集 ： 本文 確認中 1 ／ 提出済 2 ／ 組待ち 2 … 組み上がって自分の確認待ちが何本あるか
+ * 本数は本文だけ。表回り（表紙・扉・奥付など）は別の1行で出す。
+ * 掲載本数が未確定の案件は分母・バー・「全本そろい」を出さない（実績の本数だけ）。
+ * group を渡さないとき（ステータスビュー・担当者未設定・詳細）は両方出す。
  */
 function progressHtml(r, group) {
   const d = state.data;
-  const total = r.papers.length;
-  if (!total) return '';
+  if (!r.papers.length) return '';
+  const fixed = !!r.issueFixed;
+  const planned = fixed && r.issuePlanned !== '' && r.issuePlanned !== null && r.issuePlanned !== undefined ? Number(r.issuePlanned) : null;
+  const rows = r.bodyTotal || 0;
+  const total = fixed ? (planned !== null ? planned : rows) : rows;   // 分母
   const arrived = r.paperArrived || 0;
   const typeset = r.paperTypeset || 0;
   const submitted = r.paperSubmitted || 0;
   const out = [];
+  const bar = function (a, b, cls) {
+    if (!fixed || !total) return '';
+    return '<span class="bar"><span style="width:' + Math.round(a / total * 100) + '%"></span>' +
+      (b ? '<span class="mid" style="width:' + Math.round(b / total * 100) + '%"></span>' : '') + '</span>';
+  };
 
   if (group !== '編集') {
-    const notArrived = total - arrived;
-    out.push('<div class="prog' + (typeset === total ? ' full' : '') + '" title="' + esc(d.typesetLabel) + 'まで進んだ論文の本数">' +
-      esc(d.typesetLabel) + ' <span class="num">' + typeset + '/' + total + '</span>' +
-      '<span class="bar"><span style="width:' + Math.round(typeset / total * 100) + '%"></span></span>' +
-      (typeset === total ? '<span>全本そろい</span>' : (notArrived ? '<span class="rest">未入稿 ' + notArrived + '</span>' : '')) +
+    const notArrived = Math.max(total - arrived, 0);
+    const full = fixed && total > 0 && typeset >= total;
+    out.push('<div class="prog' + (full ? ' full' : '') + '" title="本文：' + esc(d.typesetLabel) + 'まで進んだ本数">' +
+      '<span class="kind">本文</span>' + esc(d.typesetLabel) +
+      (fixed ? ' <span class="num">' + typeset + '/' + total + '</span>' : ' <span class="num">' + typeset + '本</span>') +
+      bar(typeset) +
+      (full ? '<span>全本そろい</span>' : (notArrived ? '<span class="rest">未入稿 ' + notArrived + '</span>' : '')) +
     '</div>');
   }
   if (group !== 'DTP') {
-    const checking = typeset - submitted;      // 組み上がったが、まだ提出の日付が入っていない＝編集が確認中
-    const waiting = total - typeset;           // まだ組み上がっていない
-    out.push('<div class="prog' + (submitted === total ? ' full' : '') + '" title="組み上がってから' + esc(d.submitLabel) + 'までが確認中">' +
-      '確認中 <span class="num">' + checking + '</span> ／ 提出済 <span class="num">' + submitted + '</span>' +
-      (waiting ? ' ／ 組待ち <span class="rest">' + waiting + '</span>' : '') +
-      '<span class="bar">' +
-        '<span style="width:' + Math.round(submitted / total * 100) + '%"></span>' +
-        '<span class="mid" style="width:' + Math.round(checking / total * 100) + '%"></span>' +
-      '</span>' +
-      (submitted === total ? '<span>全本提出済</span>' : '') +
+    const checking = Math.max(typeset - submitted, 0);   // 組み上がったが、まだ提出の日付が入っていない＝編集が確認中
+    const waiting = Math.max(total - typeset, 0);        // まだ組み上がっていない（確定時は未入稿も含む）
+    const full = fixed && total > 0 && submitted >= total;
+    out.push('<div class="prog' + (full ? ' full' : '') + '" title="本文：組み上がってから' + esc(d.submitLabel) + 'までが確認中">' +
+      '<span class="kind">本文</span>確認中 <span class="num">' + checking + '</span> ／ 提出済 <span class="num">' + submitted + '</span>' +
+      (fixed && waiting ? ' ／ 組待ち <span class="rest">' + waiting + '</span>' : '') +
+      bar(submitted, checking) +
+      (full ? '<span>全本提出済</span>' : '') +
     '</div>');
   }
+
+  // 表回り（表紙・扉・目次・奥付など）は本数に入れず、1行で
+  if (r.frontTotal) {
+    const ft = r.frontTotal, fty = r.frontTypeset || 0, fsu = r.frontSubmitted || 0;
+    let text;
+    if (group === 'DTP') text = fty >= ft ? '完了' : esc(d.typesetLabel) + ' <span class="num">' + fty + '/' + ft + '</span>';
+    else if (group === '編集') text = fsu >= ft ? '完了' : '提出済 <span class="num">' + fsu + '/' + ft + '</span>';
+    else text = fsu >= ft ? '完了' : esc(d.typesetLabel) + ' <span class="num">' + fty + '/' + ft + '</span> ／ 提出済 <span class="num">' + fsu + '/' + ft + '</span>';
+    out.push('<div class="prog front' + (text === '完了' ? ' full' : '') + '"><span class="kind">表回り</span>' + text + '</div>');
+  }
+
+  // 掲載本数の確定／未確定
+  const manual = r.manualFields.indexOf('count') >= 0;
+  out.push('<div class="issue' + (manual ? ' manual' : '') + '">' +
+    (fixed ? '掲載予定 <b>' + (planned !== null ? planned : rows) + '本</b>（確定）' : '掲載本数 <b>未確定</b>') +
+    (manual ? '<span class="conflict">　紀要シートは ' + (r.issueFixedAuto ? '確定 ' + r.issuePlannedAuto + '本' : '未確定') + '</span>' : '') +
+  '</div>');
   return out.join('');
 }
 
@@ -565,9 +597,9 @@ function openPanel(key) {
   const papersHtml = r.papers.length
     ? '<div class="section-title">論文の内訳（' + r.papers.length + '本／紀要「進行中」シートから自動取込）　' + papersSummary(r) + '</div>' +
       progressHtml(r) +
-      '<table class="ptable"><tr><th>論文名</th><th>著者</th><th>' + esc(d.typesetLabel) + '</th><th>' + esc(d.submitLabel) + '</th><th>状態</th><th>日付</th></tr>' +
+      '<table class="ptable"><tr><th>区分</th><th>論文名</th><th>著者</th><th>' + esc(d.typesetLabel) + '</th><th>' + esc(d.submitLabel) + '</th><th>状態</th><th>日付</th></tr>' +
       r.papers.map(function (p) {
-        return '<tr><td>' + esc(p.title) + '</td><td>' + esc(p.author) + '</td>' +
+        return '<tr><td>' + esc(p.kind || '') + '</td><td>' + esc(p.title) + '</td><td>' + esc(p.author) + '</td>' +
           '<td>' + (p.typeset ? '○' : '') + '</td><td>' + (p.submitted ? '○' : '') + '</td>' +
           '<td>' + esc(p.status) + '</td><td>' + (p.date ? shortDate(p.date) : '') + '</td></tr>';
       }).join('') + '</table>'
@@ -586,6 +618,10 @@ function openPanel(key) {
       '<dt>編集担当</dt><dd>' + esc(r.edit.join('、') || '—') + autoNote('staff', r.editAuto.join('、')) + '</dd>' +
       '<dt>直近の動き</dt><dd>' + esc(r.recent || '—') + '</dd>' +
       '<dt>次の予定</dt><dd>' + esc(r.next || '—') + '</dd>' +
+      (r.papers.length
+        ? '<dt>掲載本数</dt><dd>' + (r.issueFixed ? '確定 ' + esc(r.issuePlanned !== '' ? r.issuePlanned : r.bodyTotal) + '本' : '未確定') +
+          autoNote('count', r.issueFixedAuto ? '確定 ' + r.issuePlannedAuto + '本' : '未確定') + '</dd>'
+        : '') +
       (r.memo ? '<dt>メモ</dt><dd>' + esc(r.memo) + '</dd>' : '') +
       (r.manualFields.length ? '<dt>手動更新</dt><dd>' + esc(r.manualBy) + '　' + esc(r.manualAt) + '</dd>' : '') +
       '<dt>取込</dt><dd>' + esc(r.importedAt || '—') + '</dd>' +
@@ -618,6 +654,16 @@ function openPanel(key) {
       '<div class="field"><label>DTP担当</label><span class="checks">' + staffChecks('DTP', r.dtp) + '</span></div>' +
       '<div class="field"><label>編集担当</label><span class="checks">' + staffChecks('編集', r.edit) + '</span>' +
         resetHint('staff', r, (r.dtpAuto.join('、') || '—') + ' ／ ' + (r.editAuto.join('、') || '—')) + '</div>' +
+      (r.papers.length
+        ? '<div class="field"><label for="f_issueFixed">掲載本数</label>' +
+          '<select id="f_issueFixed">' +
+            '<option value=""' + (r.manualFields.indexOf('count') < 0 ? ' selected' : '') + '>自動（紀要シート：' + (r.issueFixedAuto ? '確定 ' + esc(r.issuePlannedAuto) + '本' : '未確定') + '）</option>' +
+            '<option value="確定"' + (r.manualFields.indexOf('count') >= 0 && r.issueFixed ? ' selected' : '') + '>確定</option>' +
+            '<option value="未確定"' + (r.manualFields.indexOf('count') >= 0 && !r.issueFixed ? ' selected' : '') + '>未確定</option>' +
+          '</select>' +
+          '<input type="number" id="f_issuePlanned" min="0" style="width:90px;flex:none;" value="' + (r.manualFields.indexOf('count') >= 0 && r.issueFixed ? esc(r.issuePlanned) : '') + '" placeholder="本数">' +
+          '<span class="hint">確定のときは本数を入れる。空のままだと紀要シートにある本文の行数を分母にする</span></div>'
+        : '') +
       '<div class="field"><label for="f_memo">メモ</label><input type="text" id="f_memo" maxlength="120" value="' + esc(r.memo) + '" placeholder="例：著者校待ち"></div>' +
       '<div class="divider"></div>' +
       '<div class="section-title">この案件を別の案件と統合する</div>' +
@@ -707,6 +753,11 @@ function savePanel() {
     dtp: dtp, edit: edit,
     memo: document.getElementById('f_memo').value
   };
+  const fixedSel = document.getElementById('f_issueFixed');
+  if (fixedSel && state.data.rows.filter(function (x) { return x.key === key; })[0].papers.length) {
+    patch.issueFixed = fixedSel.value;
+    patch.issuePlanned = document.getElementById('f_issuePlanned').value;
+  }
   document.getElementById('panelSave').disabled = true;
   call('saveCase', [key, patch, auth_()], function (rec) {
     closePanel();

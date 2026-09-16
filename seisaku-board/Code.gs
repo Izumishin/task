@@ -128,6 +128,8 @@ const KIYO_DEFAULT = {
   TYPESET_STAGE: '組上がり',   // ここまで進めば組版（DTP）は終わり
   SUBMIT_STAGE: '初校提出',    // ここまで進めば編集の確認は終わり（提出済）
   DONE_WORDS: '校了,責了',   // これが入っている論文は完了扱い
+  // 表回り（本文でない行）の判定語。著者名が空で、論文名にこれらを含む行を表回りとする。
+  FRONT_WORDS: '表紙,表1,表4,扉,中扉,目次,奥付,執筆者,編集後記,投稿規定,カバー,背,帯,索引',
   // 【受注番号】が無い見出し行（例「教養論集588」）を拾うための正規表現。論文名の1行目に対して、
   // 著者も各校の日付も無い行にだけ適用する。空にすると【受注番号】だけで見出しを判定する。
   HEADING_PATTERN: '(号|集|巻|輯|\\d)\\s*$'
@@ -138,8 +140,10 @@ const KIYO_PROP = {
   TITLE: 'KIYO_COL_TITLE', AUTHOR: 'KIYO_COL_AUTHOR', STATUS: 'KIYO_COL_STATUS',
   STAGES: 'KIYO_STAGE_COLS', STAGE_END: 'KIYO_STAGE_END',
   ARRIVED_STAGE: 'KIYO_ARRIVED_STAGE', TYPESET_STAGE: 'KIYO_TYPESET_STAGE', SUBMIT_STAGE: 'KIYO_SUBMIT_STAGE',
-  DONE_WORDS: 'KIYO_DONE_WORDS', HEADING_PATTERN: 'KIYO_HEADING_PATTERN'
+  DONE_WORDS: 'KIYO_DONE_WORDS', FRONT_WORDS: 'KIYO_FRONT_WORDS', HEADING_PATTERN: 'KIYO_HEADING_PATTERN'
 };
+const PAPER_KIND = { BODY: '本文', FRONT: '表回り' };
+const ISSUE_FIXED = { FIXED: '確定', UNFIXED: '未確定' };
 const KIYO_EMPTY_LABEL = '未提出';
 
 // ---------------------------------------------------------------------------
@@ -171,21 +175,25 @@ const COL = {
   DTP_MANUAL: 21,     // U DTP担当（手動）
   EDIT_MANUAL: 22,    // V 編集担当（手動）
   MANUAL_FIELDS: 23,  // W 手動更新の項目（status,date,output,staff のうち手で直したもの）
-  NEXT: 24            // X 次の予定（生産表の工程日付のうち、一番近い未来のもの。工程名＋日付）
+  NEXT: 24,           // X 次の予定（生産表の工程日付のうち、一番近い未来のもの。工程名＋日付）
+  ISSUE_PLANNED: 25,        // Y 掲載予定本数（自動＝紀要シート見出し行の「7本」。空なら未確定）
+  ISSUE_FIXED_MANUAL: 26,   // Z 掲載本数確定（手動：確定／未確定）
+  ISSUE_PLANNED_MANUAL: 27  // AA 掲載予定本数（手動）
 };
-const LAST_COL = COL.NEXT;
+const LAST_COL = COL.ISSUE_PLANNED_MANUAL;
 const HEADERS = [
   'キー', '受注番号', '得意先', '品名', '営業担当', 'DTP担当', '編集担当',
   '状態', '状態（手動）', '下版予定日', '下版予定日（手動）', '出力区分', '出力区分（手動）',
   '直近の動き', 'メモ', '手動更新者', '手動更新日時', '取込日時', '完了日',
-  '納期', 'DTP担当（手動）', '編集担当（手動）', '手動更新の項目', '次の予定'
+  '納期', 'DTP担当（手動）', '編集担当（手動）', '手動更新の項目', '次の予定',
+  '掲載予定本数', '掲載本数確定（手動）', '掲載予定本数（手動）'
 ];
 
 /** `論文明細` シートの列。 */
 const PCOL = { ORDER_NO: 1, TITLE: 2, AUTHOR: 3, STATUS: 4, DATE: 5, IMPORTED_AT: 6,
-  ARRIVED: 7, TYPESET: 8, SUBMITTED: 9 };
-const PAPER_LAST_COL = PCOL.SUBMITTED;
-const PAPER_HEADERS = ['受注番号', '論文名', '著者名', '状態', '直近の日付', '取込日時', '入稿済', '組上がり', '提出済'];
+  ARRIVED: 7, TYPESET: 8, SUBMITTED: 9, KIND: 10 };
+const PAPER_LAST_COL = PCOL.KIND;
+const PAPER_HEADERS = ['受注番号', '論文名', '著者名', '状態', '直近の日付', '取込日時', '入稿済', '組上がり', '提出済', '区分'];
 
 /** `担当者メモ` シートの列。 */
 const NCOL = { NAME: 1, NOTE: 2 };
@@ -195,7 +203,7 @@ const STATUS = { NOT_YET: '未入稿', WORKING: '作業中', PROOF: '校正中',
 const STATUSES = [STATUS.NOT_YET, STATUS.WORKING, STATUS.PROOF, STATUS.DONE];
 
 /** 手動で直せる項目（項目単位で取込との衝突を制御する）。 */
-const MANUAL_FIELD_KEYS = ['status', 'date', 'output', 'staff'];
+const MANUAL_FIELD_KEYS = ['status', 'date', 'output', 'staff', 'count'];
 
 // ---------------------------------------------------------------------------
 // 共通ユーティリティ
@@ -501,7 +509,7 @@ function getOrCreateSheet_(ss, name, headers, textCols) {
 function getBoardSheet_(ss) {
   ss = ss || openProductionSpreadsheet_();
   const sh = getOrCreateSheet_(ss, CONFIG.BOARD_SHEET_NAME, HEADERS,
-    [COL.KEY, COL.ORDER_NO, COL.GEHAN, COL.GEHAN_MANUAL, COL.DONE_DATE, COL.DUE]);
+    [COL.KEY, COL.ORDER_NO, COL.GEHAN, COL.GEHAN_MANUAL, COL.DONE_DATE, COL.DUE, COL.ISSUE_PLANNED, COL.ISSUE_PLANNED_MANUAL]);
   return sh;
 }
 function getPaperSheet_(ss) {
@@ -524,6 +532,8 @@ function applyBoardValidations_(sh) {
     const outRule = SpreadsheetApp.newDataValidation().requireValueInList(labels, true).build();
     sh.getRange(2, COL.OUTPUT_MANUAL, rows, 1).setDataValidation(outRule);
   }
+  const fixedRule = SpreadsheetApp.newDataValidation().requireValueInList([ISSUE_FIXED.FIXED, ISSUE_FIXED.UNFIXED], true).build();
+  sh.getRange(2, COL.ISSUE_FIXED_MANUAL, rows, 1).setDataValidation(fixedRule);
 }
 
 /**
@@ -573,8 +583,36 @@ function effective_(row) {
     output: m.output ? toText_(row[COL.OUTPUT_MANUAL - 1]) : toText_(row[COL.OUTPUT - 1]),
     dtp: m.staff ? splitList_(row[COL.DTP_MANUAL - 1]) : splitList_(row[COL.DTP - 1]),
     edit: m.staff ? splitList_(row[COL.EDIT_MANUAL - 1]) : splitList_(row[COL.EDIT - 1]),
+    issue: m.count
+      ? { fixed: toText_(row[COL.ISSUE_FIXED_MANUAL - 1]) === ISSUE_FIXED.FIXED, planned: toCount_(row[COL.ISSUE_PLANNED_MANUAL - 1]) }
+      : issueAuto_(row),
     manual: m
   };
+}
+
+/** 紀要シートから読んだ掲載予定本数（自動）。数字があれば確定、無ければ未確定。 */
+function issueAuto_(row) {
+  const n = toCount_(row[COL.ISSUE_PLANNED - 1]);
+  return { fixed: n !== '', planned: n };
+}
+
+/** 本数のセル → 整数 or ''。 */
+function toCount_(v) {
+  const t = toHalfWidth_(toText_(v));
+  const m = t.match(/\d+/);
+  return m ? Number(m[0]) : '';
+}
+
+/**
+ * 紀要シートの見出し行B列（「7本」「10本・ヨコ組み」「未定」…）→ 掲載予定本数。
+ * 数字＋本 があれば確定、「未定」「未確定」「？」を含むか空なら未確定。
+ */
+function parseIssueCount_(text) {
+  const t = toHalfWidth_(toText_(text));
+  if (!t || /未定|未確定|\?/.test(t)) return { fixed: false, planned: '' };
+  const m = t.match(/(\d+)\s*本/);
+  if (m) return { fixed: true, planned: Number(m[1]) };
+  return { fixed: false, planned: '' };
 }
 
 /**
@@ -820,6 +858,7 @@ function kiyoConfig_() {
     typesetStage: toText_(getProp_(KIYO_PROP.TYPESET_STAGE, KIYO_DEFAULT.TYPESET_STAGE)),
     submitStage: toText_(getProp_(KIYO_PROP.SUBMIT_STAGE, KIYO_DEFAULT.SUBMIT_STAGE)),
     doneWords: splitList_(getProp_(KIYO_PROP.DONE_WORDS, KIYO_DEFAULT.DONE_WORDS)),
+    frontWords: splitList_(getProp_(KIYO_PROP.FRONT_WORDS, KIYO_DEFAULT.FRONT_WORDS)),
     headingRe: pattern ? new RegExp(pattern) : null
   };
 }
@@ -897,7 +936,8 @@ function parseKiyoRows_(values, cfg, todayStr, bgs) {
     }
     if (isHeading) {
       const heading = (title || joined).replace(/\s+/g, ' ').trim();
-      current = { row: i + 1, heading: heading, orderNo: m ? m[1] : '', papers: 0 };
+      const issue = parseIssueCount_(author);   // 見出し行のB列に「7本」のように本数が書かれる
+      current = { row: i + 1, heading: heading, orderNo: m ? m[1] : '', papers: 0, fixed: issue.fixed, planned: issue.planned };
       groups.push(current);
       return;
     }
@@ -940,16 +980,44 @@ function parseKiyoRows_(values, cfg, todayStr, bgs) {
     if (cfg.status) check(pick_(row, cfg.status), '', -1);
 
     if (!current.orderNo) return;
+    // 表回り（表紙・扉・目次・奥付など）：著者名が空で、論文名に表回りの語を含む行。著者名があれば常に本文。
+    const isFront = !author && cfg.frontWords.some(function (w) { return w && title.indexOf(w) >= 0; });
     papers.push({
       orderNo: current.orderNo,
       title: title,
-      author: toText_(pick_(row, cfg.author)),
+      author: author,
       status: doneLabel || (last ? last.name : KIYO_EMPTY_LABEL),
       date: last ? last.date : '',
-      arrived: reached.arrived, typeset: reached.typeset, submitted: reached.submitted
+      arrived: reached.arrived, typeset: reached.typeset, submitted: reached.submitted,
+      done: !!doneLabel,
+      kind: isFront ? PAPER_KIND.FRONT : PAPER_KIND.BODY
     });
   });
   return { groups: groups, papers: papers, skipped: skipped };
+}
+
+/**
+ * 紀要の見出し行から読んだ掲載予定本数を、制作進行シートのY列（自動）に書く。
+ * 受注番号が一致する行だけ、値が変わったときだけ書く。手動列（Z・AA）は触らない。
+ */
+function writeIssueCounts_(groups) {
+  const byNo = {};
+  groups.forEach(function (g) { if (g.orderNo) byNo[g.orderNo] = g.planned === '' ? '' : String(g.planned); });
+  if (Object.keys(byNo).length === 0) return 0;
+  const sh = getBoardSheet_();
+  const last = boardLastDataRow_(sh);
+  if (last < 2) return 0;
+  const nos = sh.getRange(2, COL.ORDER_NO, last - 1, 1).getValues();
+  const cur = sh.getRange(2, COL.ISSUE_PLANNED, last - 1, 1).getValues();
+  let written = 0;
+  for (let i = 0; i < nos.length; i++) {
+    const no = toText_(nos[i][0]);
+    if (!byNo.hasOwnProperty(no)) continue;
+    if (toText_(cur[i][0]) === byNo[no]) continue;
+    sh.getRange(i + 2, COL.ISSUE_PLANNED).setValue(byNo[no]);
+    written++;
+  }
+  return written;
 }
 
 /** 見出し行（1行目）から工程列を補ったうえでの設定。 */
@@ -987,7 +1055,7 @@ function importFromKiyoSheet() {
     const cur = last > 1 ? sh.getRange(2, 1, last - 1, PAPER_LAST_COL).getValues() : [];
     const next = parsed.papers.map(function (p) {
       return [p.orderNo, p.title, p.author, p.status, p.date, stamp,
-        p.arrived ? '○' : '', p.typeset ? '○' : '', p.submitted ? '○' : ''];
+        p.arrived ? '○' : '', p.typeset ? '○' : '', p.submitted ? '○' : '', p.kind];
     });
 
     let same = cur.length === next.length;
@@ -1006,12 +1074,14 @@ function importFromKiyoSheet() {
       }
     }
 
+    const countsWritten = writeIssueCounts_(parsed.groups);
+
     const unlinked = parsed.groups.filter(function (g) { return !g.orderNo; }).map(function (g) { return g.heading; });
     props_().setProperty('LAST_KIYO_IMPORT_AT', stamp);
     props_().setProperty('LAST_KIYO_ERROR', '');
     props_().setProperty('LAST_KIYO_UNLINKED', unlinked.join(' ／ '));
     const result = { papers: next.length, issues: parsed.groups.length - unlinked.length, unlinked: unlinked,
-      skipped: parsed.skipped, changed: !same, at: stamp };
+      skipped: parsed.skipped, changed: !same || countsWritten > 0, at: stamp };
     console.log('紀要の取込: 論文 %s 本 / 案件 %s 件 / 番号なし見出し %s 件 / 中身が無く除外 %s 行',
       result.papers, result.issues, unlinked.length, parsed.skipped);
     return result;
@@ -1121,6 +1191,7 @@ function diagnoseKiyo() {
     ' 状態列=' + indexToCol_(cfg.status) + ' 各校=' + cfg.stages.map(function (s) { return indexToCol_(s.col) + '=' + s.name; }).join(',') +
     ' 完了語=' + cfg.doneWords.join(',') +
     ' 区切り: 入稿=' + cfg.arrivedStage + ' 組版完了=' + cfg.typesetStage + ' 提出=' + cfg.submitStage +
+    ' 表回りの語=' + cfg.frontWords.join('/') +
     ' 見る列の右端=' + indexToCol_(cfg.stageEnd) +
     ' 番号なし見出しの保険=' + (cfg.headingRe ? '/' + cfg.headingRe.source + '/' : '（なし）'));
   let kss;
@@ -1144,12 +1215,13 @@ function diagnoseKiyo() {
   lines.push('見出しとして検出した行：');
   parsed.groups.forEach(function (g) {
     lines.push('  ' + g.row + '行目：' + (isColoredCell_(bgs[g.row - 1]) ? '[色あり] ' : '') + g.heading +
-      ' → ' + (g.orderNo ? '受注番号 ' + g.orderNo : '番号なし（紐づけない）') + '　論文 ' + g.papers + ' 本');
+      ' → ' + (g.orderNo ? '受注番号 ' + g.orderNo : '番号なし（紐づけない）') + '　論文 ' + g.papers + ' 本' +
+      '　掲載本数 ' + (g.fixed ? '確定 ' + g.planned + '本' : '未確定'));
   });
   lines.push('紐づいた論文：' + parsed.papers.length + ' 本　／　論文名だけで中身が無く除外した行：' + parsed.skipped + ' 行');
   parsed.papers.slice(0, 5).forEach(function (p) {
     lines.push('  ' + p.orderNo + '　' + p.title + '／' + p.author + '　' + p.status + ' ' + p.date +
-      (p.arrived ? '　入稿済' : '') + (p.typeset ? '　組上がり済' : '') + (p.submitted ? '　提出済' : ''));
+      '　[' + p.kind + ']' + (p.arrived ? '　入稿済' : '') + (p.typeset ? '　組上がり済' : '') + (p.submitted ? '　提出済' : ''));
   });
   const msg = lines.join('\n');
   console.log(msg);
@@ -1175,14 +1247,19 @@ function buildRecord_(values, rowNumber, papers) {
   const doneDate = toDateString_(values[COL.DONE_DATE - 1]);
   const manualFields = MANUAL_FIELD_KEYS.filter(function (k) { return !!e.manual[k]; });
   const list = papers || [];
+  // 本数・内訳は本文だけで数える。表回り（表紙・扉・奥付など）は別に集計する
   const counts = {};
-  let arrived = 0, typeset = 0, submitted = 0;
+  const body = { total: 0, arrived: 0, typeset: 0, submitted: 0 };
+  const front = { total: 0, arrived: 0, typeset: 0, submitted: 0 };
   list.forEach(function (p) {
-    counts[p.status] = (counts[p.status] || 0) + 1;
-    if (p.arrived) arrived++;
-    if (p.typeset) typeset++;
-    if (p.submitted) submitted++;
+    const t = p.kind === PAPER_KIND.FRONT ? front : body;
+    t.total++;
+    if (p.arrived) t.arrived++;
+    if (p.typeset) t.typeset++;
+    if (p.submitted) t.submitted++;
+    if (t === body) counts[p.status] = (counts[p.status] || 0) + 1;
   });
+  const issueAuto = issueAuto_(values);
   return {
     row: rowNumber,
     key: toText_(values[COL.KEY - 1]),
@@ -1207,10 +1284,18 @@ function buildRecord_(values, rowNumber, papers) {
     doneDate: doneDate,
     isDone: e.status === STATUS.DONE,
     papers: list,
-    paperCounts: counts,
-    paperArrived: arrived,       // 入稿済（未入稿＝本数 − これ）
-    paperTypeset: typeset,       // 組上がり済（DTPの進み）
-    paperSubmitted: submitted    // 提出済（編集の確認が終わった分）
+    paperCounts: counts,         // 本文の状態別本数
+    bodyTotal: body.total,       // 本文の行数（紀要シートにある分）
+    paperArrived: body.arrived,  // 本文：入稿済
+    paperTypeset: body.typeset,  // 本文：組上がり済（DTPの進み）
+    paperSubmitted: body.submitted, // 本文：提出済（編集の確認が終わった分）
+    frontTotal: front.total,     // 表回りの行数
+    frontTypeset: front.typeset,
+    frontSubmitted: front.submitted,
+    issueFixed: e.issue.fixed,          // 掲載本数が確定しているか（有効値）
+    issuePlanned: e.issue.planned,      // 掲載予定本数（有効値。未確定なら ''）
+    issueFixedAuto: issueAuto.fixed,    // 紀要シートから読んだ値
+    issuePlannedAuto: issueAuto.planned
   };
 }
 
@@ -1227,7 +1312,8 @@ function readPapers_(ss) {
       status: toText_(r[PCOL.STATUS - 1]), date: toDateString_(r[PCOL.DATE - 1]),
       arrived: toText_(r[PCOL.ARRIVED - 1]) !== '',
       typeset: toText_(r[PCOL.TYPESET - 1]) !== '',
-      submitted: toText_(r[PCOL.SUBMITTED - 1]) !== ''
+      submitted: toText_(r[PCOL.SUBMITTED - 1]) !== '',
+      kind: toText_(r[PCOL.KIND - 1]) || PAPER_KIND.BODY
     });
   });
   return byNo;
@@ -1289,6 +1375,8 @@ function getBoardData(options) {
     typesetLabel: cfg.typesetStage,
     arrivedLabel: cfg.arrivedStage,
     submitLabel: cfg.submitStage,
+    paperKinds: [PAPER_KIND.BODY, PAPER_KIND.FRONT],
+    issueFixedValues: [ISSUE_FIXED.FIXED, ISSUE_FIXED.UNFIXED],
     lastImportAt: getProp_('LAST_IMPORT_AT', ''),
     lastKiyoImportAt: getProp_('LAST_KIYO_IMPORT_AT', ''),
     kiyoError: getProp_('LAST_KIYO_ERROR', ''),
@@ -1367,6 +1455,16 @@ function saveCase(key, patch, auth) {
         m.staff = true; v[COL.DTP_MANUAL - 1] = joinList_(dtp); v[COL.EDIT_MANUAL - 1] = joinList_(edit);
       }
     }
+    if (p.hasOwnProperty('issueFixed')) {
+      // 掲載本数：'' なら自動（紀要シート）に戻す。確定／未確定＋本数が紀要シートと同じなら手動にしない
+      const f = toText_(p.issueFixed);
+      if (f && f !== ISSUE_FIXED.FIXED && f !== ISSUE_FIXED.UNFIXED) throw new Error('掲載本数の値が不正です：' + f);
+      const n = f === ISSUE_FIXED.FIXED ? toCount_(p.issuePlanned) : '';
+      const auto = issueAuto_(v);
+      const sameAsAuto = !f || ((f === ISSUE_FIXED.FIXED) === auto.fixed && n === auto.planned);
+      if (sameAsAuto) { m.count = false; v[COL.ISSUE_FIXED_MANUAL - 1] = ''; v[COL.ISSUE_PLANNED_MANUAL - 1] = ''; }
+      else { m.count = true; v[COL.ISSUE_FIXED_MANUAL - 1] = f; v[COL.ISSUE_PLANNED_MANUAL - 1] = n === '' ? '' : String(n); }
+    }
     if (p.hasOwnProperty('memo')) {
       v[COL.MEMO - 1] = String(p.memo || '').replace(/[\r\n]+/g, ' ').trim();
     }
@@ -1392,7 +1490,7 @@ function normalizeNames_(arr) {
 }
 
 /**
- * 「生産表に戻す」。fields は ['status','date','output','staff'] の一部、または 'all'。
+ * 「生産表に戻す」。fields は ['status','date','output','staff','count'] の一部、または 'all'。
  */
 function resetToProduction(key, fields, auth) {
   assertEditor_(auth);
@@ -1412,6 +1510,7 @@ function resetToProduction(key, fields, auth) {
       if (f === 'date') v[COL.GEHAN_MANUAL - 1] = '';
       if (f === 'output') v[COL.OUTPUT_MANUAL - 1] = '';
       if (f === 'staff') { v[COL.DTP_MANUAL - 1] = ''; v[COL.EDIT_MANUAL - 1] = ''; }
+      if (f === 'count') { v[COL.ISSUE_FIXED_MANUAL - 1] = ''; v[COL.ISSUE_PLANNED_MANUAL - 1] = ''; }
     });
     v[COL.MANUAL_FIELDS - 1] = manualFieldsString_(m);
     recomputeDone_(v, today_());
@@ -1440,7 +1539,8 @@ function mergeCases(fromKey, toKey, auth) {
     const from = sh.getRange(fromRow, 1, 1, LAST_COL).getValues()[0];
     const to = sh.getRange(toRow, 1, 1, LAST_COL).getValues()[0];
     const fm = manualSet_(from), tm = manualSet_(to);
-    const pairs = { status: [COL.STATUS_MANUAL], date: [COL.GEHAN_MANUAL], output: [COL.OUTPUT_MANUAL], staff: [COL.DTP_MANUAL, COL.EDIT_MANUAL] };
+    const pairs = { status: [COL.STATUS_MANUAL], date: [COL.GEHAN_MANUAL], output: [COL.OUTPUT_MANUAL],
+      staff: [COL.DTP_MANUAL, COL.EDIT_MANUAL], count: [COL.ISSUE_FIXED_MANUAL, COL.ISSUE_PLANNED_MANUAL] };
     MANUAL_FIELD_KEYS.forEach(function (f) {
       if (fm[f] && !tm[f]) {
         pairs[f].forEach(function (c) { to[c - 1] = from[c - 1]; });
