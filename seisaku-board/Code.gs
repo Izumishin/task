@@ -178,15 +178,16 @@ const COL = {
   NEXT: 24,           // X 次の予定（生産表の工程日付のうち、一番近い未来のもの。工程名＋日付）
   ISSUE_PLANNED: 25,        // Y 掲載予定本数（自動＝紀要シート見出し行の「7本」。空なら未確定）
   ISSUE_FIXED_MANUAL: 26,   // Z 掲載本数確定（手動：確定／未確定）
-  ISSUE_PLANNED_MANUAL: 27  // AA 掲載予定本数（手動）
+  ISSUE_PLANNED_MANUAL: 27, // AA 掲載予定本数（手動）
+  ISSUE_NOTE: 28            // AB 紀要メモ（自動＝紀要シート見出し行B列の文字をそのまま。「未入稿」「確定」「◯◯先生だけ遅れ」など）
 };
-const LAST_COL = COL.ISSUE_PLANNED_MANUAL;
+const LAST_COL = COL.ISSUE_NOTE;
 const HEADERS = [
   'キー', '受注番号', '得意先', '品名', '営業担当', 'DTP担当', '編集担当',
   '状態', '状態（手動）', '下版予定日', '下版予定日（手動）', '出力区分', '出力区分（手動）',
   '直近の動き', 'メモ', '手動更新者', '手動更新日時', '取込日時', '完了日',
   '納期', 'DTP担当（手動）', '編集担当（手動）', '手動更新の項目', '次の予定',
-  '掲載予定本数', '掲載本数確定（手動）', '掲載予定本数（手動）'
+  '掲載予定本数', '掲載本数確定（手動）', '掲載予定本数（手動）', '紀要メモ'
 ];
 
 /** `論文明細` シートの列。 */
@@ -936,8 +937,11 @@ function parseKiyoRows_(values, cfg, todayStr, bgs) {
     }
     if (isHeading) {
       const heading = (title || joined).replace(/\s+/g, ' ').trim();
-      const issue = parseIssueCount_(author);   // 見出し行のB列に「7本」のように本数が書かれる
-      current = { row: i + 1, heading: heading, orderNo: m ? m[1] : '', papers: 0, fixed: issue.fixed, planned: issue.planned };
+      // 見出し行のB列は自由記入の備考（「7本」「未入稿」「◯◯先生だけ遅れ」…）。そのままカードに出し、
+      // 「N本」と書かれていればその数を掲載予定本数（分母）にも使う
+      const issue = parseIssueCount_(author);
+      current = { row: i + 1, heading: heading, orderNo: m ? m[1] : '', papers: 0,
+        fixed: issue.fixed, planned: issue.planned, note: author.replace(/\s+/g, ' ').trim() };
       groups.push(current);
       return;
     }
@@ -997,25 +1001,27 @@ function parseKiyoRows_(values, cfg, todayStr, bgs) {
 }
 
 /**
- * 紀要の見出し行から読んだ掲載予定本数を、制作進行シートのY列（自動）に書く。
+ * 紀要の見出し行から読んだ 掲載予定本数（Y列）と B列の備考（AB列）を、制作進行シートに書く（自動列）。
  * 受注番号が一致する行だけ、値が変わったときだけ書く。手動列（Z・AA）は触らない。
  */
 function writeIssueCounts_(groups) {
   const byNo = {};
-  groups.forEach(function (g) { if (g.orderNo) byNo[g.orderNo] = g.planned === '' ? '' : String(g.planned); });
+  groups.forEach(function (g) {
+    if (g.orderNo) byNo[g.orderNo] = { planned: g.planned === '' ? '' : String(g.planned), note: g.note || '' };
+  });
   if (Object.keys(byNo).length === 0) return 0;
   const sh = getBoardSheet_();
   const last = boardLastDataRow_(sh);
   if (last < 2) return 0;
   const nos = sh.getRange(2, COL.ORDER_NO, last - 1, 1).getValues();
-  const cur = sh.getRange(2, COL.ISSUE_PLANNED, last - 1, 1).getValues();
+  const curPlanned = sh.getRange(2, COL.ISSUE_PLANNED, last - 1, 1).getValues();
+  const curNote = sh.getRange(2, COL.ISSUE_NOTE, last - 1, 1).getValues();
   let written = 0;
   for (let i = 0; i < nos.length; i++) {
     const no = toText_(nos[i][0]);
     if (!byNo.hasOwnProperty(no)) continue;
-    if (toText_(cur[i][0]) === byNo[no]) continue;
-    sh.getRange(i + 2, COL.ISSUE_PLANNED).setValue(byNo[no]);
-    written++;
+    if (toText_(curPlanned[i][0]) !== byNo[no].planned) { sh.getRange(i + 2, COL.ISSUE_PLANNED).setValue(byNo[no].planned); written++; }
+    if (toText_(curNote[i][0]) !== byNo[no].note) { sh.getRange(i + 2, COL.ISSUE_NOTE).setValue(byNo[no].note); written++; }
   }
   return written;
 }
@@ -1216,7 +1222,7 @@ function diagnoseKiyo() {
   parsed.groups.forEach(function (g) {
     lines.push('  ' + g.row + '行目：' + (isColoredCell_(bgs[g.row - 1]) ? '[色あり] ' : '') + g.heading +
       ' → ' + (g.orderNo ? '受注番号 ' + g.orderNo : '番号なし（紐づけない）') + '　論文 ' + g.papers + ' 本' +
-      '　掲載本数 ' + (g.fixed ? '確定 ' + g.planned + '本' : '未確定'));
+      (g.note ? '　B列「' + g.note + '」' : '') + (g.fixed ? '（本数 ' + g.planned + '）' : ''));
   });
   lines.push('紐づいた論文：' + parsed.papers.length + ' 本　／　論文名だけで中身が無く除外した行：' + parsed.skipped + ' 行');
   parsed.papers.slice(0, 5).forEach(function (p) {
@@ -1295,7 +1301,8 @@ function buildRecord_(values, rowNumber, papers) {
     issueFixed: e.issue.fixed,          // 掲載本数が確定しているか（有効値）
     issuePlanned: e.issue.planned,      // 掲載予定本数（有効値。未確定なら ''）
     issueFixedAuto: issueAuto.fixed,    // 紀要シートから読んだ値
-    issuePlannedAuto: issueAuto.planned
+    issuePlannedAuto: issueAuto.planned,
+    issueNote: toText_(values[COL.ISSUE_NOTE - 1])   // 紀要シート見出し行B列の文字（そのまま）
   };
 }
 

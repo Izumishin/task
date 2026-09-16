@@ -32,7 +32,7 @@ kiyo.set(4, C('L'), 810); kiyo.set(4, C('M'), 819);
 kiyo.set(5, 1, '論文B'); kiyo.set(5, 2, '著者B');   // 何も進んでいない（未入稿・組待ち）
 kiyo.set(6, 1, '教養論集588'); kiyo.set(6, 2, '10本'); kiyo.setBg(6, 1, '#e69138');
 kiyo.set(7, 1, '表紙'); kiyo.set(7, C('L'), 804);
-kiyo.set(9, 1, '決算書 別冊【22970-000】'); kiyo.setBg(9, 1, '#e69138');   // B列が空＝掲載本数 未確定
+kiyo.set(9, 1, '決算書 別冊【22970-000】'); kiyo.set(9, 2, '未入稿 この先生だけ遅れ'); kiyo.setBg(9, 1, '#e69138');   // B列は自由記入（本数なし）
 kiyo.set(10, 1, '論文C'); kiyo.set(10, 2, '著者C'); kiyo.set(10, C('F'), 901); kiyo.set(10, C('K'), 905);
 api.importAll();
 
@@ -120,9 +120,10 @@ check('DTP側の未入稿は 予定本数−入稿済', staffHtml.indexOf('未�
 check('編集の見出しの下は「本文 確認中／提出済／組待ち」', staffHtml.indexOf('<span class="kind">本文</span>確認中 <span class="num">0</span> ／ 提出済 <span class="num">1</span>') >= 0);
 check('編集側の組待ちは 予定本数−組上がり', staffHtml.indexOf('組待ち <span class="rest">2</span>') >= 0);
 check('表回りは別の1行（表紙は責了→完了）', staffHtml.indexOf('<span class="kind">表回り</span>完了') >= 0);
-check('掲載予定 3本（確定）', staffHtml.indexOf('掲載予定 <b>3本</b>（確定）') >= 0);
+check('B列の文字が紀要メモとして出る（3本）', staffHtml.indexOf('<span class="kind">紀要</span>3本') >= 0);
+check('「掲載本数 未確定」の自動表記は出ない', staffHtml.indexOf('未確定') < 0);
 const kessan = staffHtml.slice(staffHtml.indexOf('決算書'), staffHtml.indexOf('決算書') + 1500);
-check('未確定の号は本数だけで分母無し', kessan.indexOf('<span class="kind">本文</span>組上がり <span class="num">1本</span>') >= 0 && kessan.indexOf('掲載本数 <b>未確定</b>') >= 0, kessan.match(/prog[^>]*>[\s\S]*?<\/div>/g));
+check('本数の無い号は本数だけで分母無し、B列の文字をそのまま転記', kessan.indexOf('<span class="kind">本文</span>組上がり <span class="num">1本</span>') >= 0 && kessan.indexOf('<span class="kind">紀要</span>未入稿 この先生だけ遅れ') >= 0, kessan.match(/(prog|issue)[^>]*>[\s\S]*?<\/div>/g));
 check('未確定の号にはバーも組待ちも無い', kessan.indexOf('class="bar"') < 0 && kessan.indexOf('組待ち') < 0);
 check('DTPの下に編集の表記は出ない',
   staffHtml.slice(staffHtml.indexOf('＊DTP'), staffHtml.indexOf('＊編集')).indexOf('確認中') < 0);

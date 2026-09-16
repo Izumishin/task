@@ -192,7 +192,7 @@ kRow(35, { A: '投稿規定', F: '0731' });                     // 入稿だけ�
 kRow(36, { A: '執筆者紹介' });                              // B列以降が空 → 数えない
 kHead(40, { A: '教養論集588', B: '10本・ヨコ組み', G: '野沢' });   // 受注番号なし（色だけで区切る）
 kRow(41, { A: '表紙', I: 731, K: 803, L: 804, N: 821, O: '校了' });
-kHead(45, { A: '政経論叢 第95号\n【22990-000】' });                 // B列が空＝掲載本数は未確定
+kHead(45, { A: '政経論叢 第95号\n【22990-000】', B: '未入稿あり・この先生だけ遅れ' });   // B列は自由記入の備考（本数なし）
 kRow(46, { A: '論文X', B: '著者X', F: 901, K: 905, L: 908 });
 kRow(47, { A: '論文Y', B: '著者Y', F: 903, K: 909 });
 kRow(48, { A: '奥付', K: 910 });
@@ -223,10 +223,12 @@ check('組上がり済みの本数を累計で数える（初校以降に進ん�
 check('表回り（表紙・投稿規定）は本文に数えない', bun.frontTotal === 2 && bun.frontTypeset === 1 && bun.frontSubmitted === 1, [bun.frontTotal, bun.frontTypeset, bun.frontSubmitted]);
 check('区分が付く', bun.papers.find(p => p.title === '表紙').kind === '表回り' && bun.papers.find(p => p.title === '投稿規定').kind === '表回り' && bun.papers.find(p => p.title === '光はそこに').kind === '本文');
 check('著者名があれば表回りの語を含んでも本文', bun.papers.find(p => p.title === '【タテ】本が、紙として').kind === '本文');
-check('見出し行B列の「7本」→ 掲載本数 確定 7本', bun.issueFixed === true && bun.issuePlanned === 7 && bun.issueFixedAuto === true && bun.issuePlannedAuto === 7, [bun.issueFixed, bun.issuePlanned]);
-check('制作進行シートのY列に自動で入る', board.cell(2, api.COL.ISSUE_PLANNED) === '7', board.cell(2, 25));
+check('見出し行B列の「7本」→ 掲載予定本数 7', bun.issueFixed === true && bun.issuePlanned === 7 && bun.issueFixedAuto === true && bun.issuePlannedAuto === 7, [bun.issueFixed, bun.issuePlanned]);
+check('B列の文字はそのまま紀要メモになる', bun.issueNote === '7本', bun.issueNote);
+check('制作進行シートのY列・AB列に自動で入る', board.cell(2, api.COL.ISSUE_PLANNED) === '7' && board.cell(2, api.COL.ISSUE_NOTE) === '7本', [board.cell(2, 25), board.cell(2, 28)]);
 const seikei = data.rows.find(r => r.key === '22990-000');
-check('B列が空の号は掲載本数 未確定', seikei.issueFixed === false && seikei.issuePlanned === '' && seikei.bodyTotal === 2 && seikei.frontTotal === 1, [seikei.issueFixed, seikei.bodyTotal, seikei.frontTotal]);
+check('B列に本数が無い号は分母なし', seikei.issueFixed === false && seikei.issuePlanned === '' && seikei.bodyTotal === 2 && seikei.frontTotal === 1, [seikei.issueFixed, seikei.bodyTotal, seikei.frontTotal]);
+check('自由記入の備考がそのまま入る', seikei.issueNote === '未入稿あり・この先生だけ遅れ', seikei.issueNote);
 check('組上がり前の論文は数えない', bun.papers.find(p => p.title === '投稿規定').typeset === false);
 check('組上がりの列に日付が入れば済みになる', bun.papers.find(p => p.title === '表紙').typeset === true);
 check('入稿済みの本数（本文）', bun.paperArrived === 4, bun.paperArrived);

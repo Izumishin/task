@@ -164,9 +164,9 @@
     .prog .rest { color: var(--memo); }
     .prog .kind { display: inline-block; font-size: 11px; font-weight: 700; color: var(--faint); border: 1px solid var(--line); border-radius: 6px; padding: 0 6px; }
     .prog.front { color: var(--faint); }
-    .issue { font-size: 12px; color: var(--faint); margin-top: 2px; }
-    .issue b { color: var(--muted); font-weight: 700; }
-    .issue.manual b { color: var(--manual); }
+    .issue { font-size: 12.5px; color: var(--memo); margin-top: 3px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .issue .kind { display: inline-block; font-size: 11px; font-weight: 700; color: var(--faint); border: 1px solid var(--line); border-radius: 6px; padding: 0 6px; }
+    .issue b { color: var(--manual); font-weight: 700; }
     .bar { flex: 1; min-width: 60px; max-width: 96px; height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; display: flex; }
     .bar span { display: block; height: 100%; background: var(--accent); }
     .bar .mid { background: var(--proof-bg); }
@@ -383,12 +383,14 @@ function progressHtml(r, group) {
     out.push('<div class="prog front' + (text === '完了' ? ' full' : '') + '"><span class="kind">表回り</span>' + text + '</div>');
   }
 
-  // 掲載本数の確定／未確定
+  // 紀要シート見出し行のB列（自由記入の備考）をそのまま。手で掲載本数を直しているときはそれも添える
   const manual = r.manualFields.indexOf('count') >= 0;
-  out.push('<div class="issue' + (manual ? ' manual' : '') + '">' +
-    (fixed ? '掲載予定 <b>' + (planned !== null ? planned : rows) + '本</b>（確定）' : '掲載本数 <b>未確定</b>') +
-    (manual ? '<span class="conflict">　紀要シートは ' + (r.issueFixedAuto ? '確定 ' + r.issuePlannedAuto + '本' : '未確定') + '</span>' : '') +
-  '</div>');
+  if (r.issueNote || manual) {
+    out.push('<div class="issue' + (manual ? ' manual' : '') + '">' +
+      (r.issueNote ? '<span class="kind">紀要</span>' + esc(r.issueNote) : '') +
+      (manual ? (r.issueNote ? '　' : '') + '<b>' + (fixed ? '掲載予定 ' + (planned !== null ? planned : rows) + '本' : '本数未確定') + '（手動）</b>' : '') +
+    '</div>');
+  }
   return out.join('');
 }
 
@@ -619,8 +621,9 @@ function openPanel(key) {
       '<dt>直近の動き</dt><dd>' + esc(r.recent || '—') + '</dd>' +
       '<dt>次の予定</dt><dd>' + esc(r.next || '—') + '</dd>' +
       (r.papers.length
-        ? '<dt>掲載本数</dt><dd>' + (r.issueFixed ? '確定 ' + esc(r.issuePlanned !== '' ? r.issuePlanned : r.bodyTotal) + '本' : '未確定') +
-          autoNote('count', r.issueFixedAuto ? '確定 ' + r.issuePlannedAuto + '本' : '未確定') + '</dd>'
+        ? '<dt>紀要メモ</dt><dd>' + esc(r.issueNote || '—') + '<span class="auto">（紀要シート見出し行のB列）</span></dd>' +
+          '<dt>掲載本数</dt><dd>' + (r.issueFixed ? esc(r.issuePlanned !== '' ? r.issuePlanned : r.bodyTotal) + '本' : '本数の記入なし') +
+          autoNote('count', r.issueFixedAuto ? r.issuePlannedAuto + '本' : '記入なし') + '</dd>'
         : '') +
       (r.memo ? '<dt>メモ</dt><dd>' + esc(r.memo) + '</dd>' : '') +
       (r.manualFields.length ? '<dt>手動更新</dt><dd>' + esc(r.manualBy) + '　' + esc(r.manualAt) + '</dd>' : '') +
@@ -657,12 +660,12 @@ function openPanel(key) {
       (r.papers.length
         ? '<div class="field"><label for="f_issueFixed">掲載本数</label>' +
           '<select id="f_issueFixed">' +
-            '<option value=""' + (r.manualFields.indexOf('count') < 0 ? ' selected' : '') + '>自動（紀要シート：' + (r.issueFixedAuto ? '確定 ' + esc(r.issuePlannedAuto) + '本' : '未確定') + '）</option>' +
+            '<option value=""' + (r.manualFields.indexOf('count') < 0 ? ' selected' : '') + '>自動（紀要シート：' + (r.issueFixedAuto ? esc(r.issuePlannedAuto) + '本' : '本数の記入なし') + '）</option>' +
             '<option value="確定"' + (r.manualFields.indexOf('count') >= 0 && r.issueFixed ? ' selected' : '') + '>確定</option>' +
             '<option value="未確定"' + (r.manualFields.indexOf('count') >= 0 && !r.issueFixed ? ' selected' : '') + '>未確定</option>' +
           '</select>' +
           '<input type="number" id="f_issuePlanned" min="0" style="width:90px;flex:none;" value="' + (r.manualFields.indexOf('count') >= 0 && r.issueFixed ? esc(r.issuePlanned) : '') + '" placeholder="本数">' +
-          '<span class="hint">確定のときは本数を入れる。空のままだと紀要シートにある本文の行数を分母にする</span></div>'
+          '<span class="hint">紀要シートのB列に「7本」と書けば自動で分母になる。ここは例外用。確定のときは本数を入れる（空なら本文の行数）</span></div>'
         : '') +
       '<div class="field"><label for="f_memo">メモ</label><input type="text" id="f_memo" maxlength="120" value="' + esc(r.memo) + '" placeholder="例：著者校待ち"></div>' +
       '<div class="divider"></div>' +
