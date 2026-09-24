@@ -42,7 +42,36 @@ function _infConstruct(lengths, n) {
   offs[1] = 0;
   for (len = 1; len < 15; len++) offs[len + 1] = offs[len] + count[len];
   for (i = 0; i < n; i++) if (lengths[i]) symbol[offs[lengths[i]]++] = i;
-  return { count: count, symbol: symbol };
+  // 9ビット以内の符号は表引きで一度に読めるようにする (1ビットずつ読むより大幅に速い)
+  // fast[下位9ビット] = 記号 * 16 + 符号の長さ (0 は長い符号なので1ビットずつ読む)
+  var fast = [], next = [], code = 0, bits, sym, L, c, r, b, k;
+  for (k = 0; k < 512; k++) fast[k] = 0;
+  count[0] = 0;
+  for (bits = 1; bits <= 15; bits++) { code = (code + count[bits - 1]) << 1; next[bits] = code; }
+  for (sym = 0; sym < n; sym++) {
+    L = lengths[sym];
+    if (!L) continue;
+    c = next[L]++;
+    if (L > 9) continue;
+    r = 0;
+    for (b = 0; b < L; b++) { r = (r << 1) | (c & 1); c >>= 1; }
+    for (k = r; k < 512; k += (1 << L)) fast[k] = sym * 16 + L;
+  }
+  return { count: count, symbol: symbol, fast: fast };
+}
+
+// 表引きで1記号読む (読めなければ1ビットずつ)
+function _infDecodeFast(st, h) {
+  var data = st.data, e;
+  while (st.bitcnt < 9 && st.pos < data.length) {
+    st.bitbuf |= (data.charCodeAt(st.pos++) & 0xFF) << st.bitcnt;
+    st.bitcnt += 8;
+  }
+  if (st.bitcnt >= 9) {
+    e = h.fast[st.bitbuf & 511];
+    if (e) { st.bitbuf >>>= (e & 15); st.bitcnt -= (e & 15); return e >> 4; }
+  }
+  return _infDecode(st, h);
 }
 
 function _infDecode(st, h) {
@@ -65,25 +94,34 @@ var _DBASE = [1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,15
 var _DEXT  = [0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13];
 
 function _infCodes(st, lencode, distcode, out) {
-  var sym, len, dist, from, k;
+  var sym, len, dist, from, k, e, n = out.length, data = st.data, dlen = data.length, lf = lencode.fast;
   for (;;) {
-    sym = _infDecode(st, lencode);
-    if (sym < 256) { out[out.length] = sym; }
+    // 文字/長さの記号 (よく出る短い符号はその場で表引き)
+    while (st.bitcnt < 9 && st.pos < dlen) {
+      st.bitbuf |= (data.charCodeAt(st.pos++) & 0xFF) << st.bitcnt;
+      st.bitcnt += 8;
+    }
+    e = st.bitcnt >= 9 ? lf[st.bitbuf & 511] : 0;
+    if (e) { st.bitbuf >>>= (e & 15); st.bitcnt -= (e & 15); sym = e >> 4; }
+    else sym = _infDecode(st, lencode);
+    if (sym < 256) { out[n++] = sym; }
     else if (sym === 256) return;
     else {
       sym -= 257;
-      len = _LBASE[sym] + _infBits(st, _LEXT[sym]);
-      sym = _infDecode(st, distcode);
-      dist = _DBASE[sym] + _infBits(st, _DEXT[sym]);
-      from = out.length - dist;
+      len = _LBASE[sym] + (_LEXT[sym] ? _infBits(st, _LEXT[sym]) : 0);
+      sym = _infDecodeFast(st, distcode);
+      dist = _DBASE[sym] + (_DEXT[sym] ? _infBits(st, _DEXT[sym]) : 0);
+      from = n - dist;
       if (from < 0) throw new Error("inflate: 距離が範囲外");
-      if (out.length > 50000000) throw new Error("inflate: 展開サイズが大きすぎます");
-      for (k = 0; k < len; k++) out[out.length] = out[from + k];
+      if (n > 50000000) throw new Error("inflate: 展開サイズが大きすぎます");
+      for (k = 0; k < len; k++) out[n++] = out[from + k];
     }
   }
 }
 
+var _infFixedCache = null;
 function _infFixedTrees() {
+  if (_infFixedCache !== null) return _infFixedCache;
   var lengths = [], i;
   for (i = 0; i < 144; i++) lengths[i] = 8;
   for (; i < 256; i++) lengths[i] = 9;
@@ -92,7 +130,8 @@ function _infFixedTrees() {
   var lencode = _infConstruct(lengths, 288);
   lengths = [];
   for (i = 0; i < 30; i++) lengths[i] = 5;
-  return { lencode: lencode, distcode: _infConstruct(lengths, 30) };
+  _infFixedCache = { lencode: lencode, distcode: _infConstruct(lengths, 30) };
+  return _infFixedCache;
 }
 
 var _CLORDER = [16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15];
@@ -107,7 +146,7 @@ function _infDynamicTrees(st) {
   var lencode = _infConstruct(lengths, 19);
   lengths = [];
   while (lengths.length < hlit + hdist) {
-    sym = _infDecode(st, lencode);
+    sym = _infDecodeFast(st, lencode);
     if (sym < 16) lengths[lengths.length] = sym;
     else {
       prev = 0; rep = 0;
@@ -130,6 +169,8 @@ function inflateRaw(data) {
     bfinal = _infBits(st, 1);
     btype = _infBits(st, 2);
     if (btype === 0) {
+      // 先読みしたバイトを戻し、途中のビットは捨てる
+      st.pos -= Math.floor(st.bitcnt / 8);
       st.bitbuf = 0; st.bitcnt = 0;
       len = u16at(st.data, st.pos); st.pos += 4; // len + nlen
       for (i = 0; i < len; i++) out[out.length] = bcc(st.data, st.pos++);
@@ -190,6 +231,7 @@ function unitsToString(units) {
 }
 
 function decodeXmlEntities(s) {
+  if (s.indexOf("&") < 0) return s;
   s = s.replace(/&#x([0-9A-Fa-f]+);/g, function (m0, h) { return String.fromCharCode(parseInt(h, 16)); });
   s = s.replace(/&#([0-9]+);/g, function (m0, d) { return String.fromCharCode(parseInt(d, 10)); });
   s = s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
@@ -265,9 +307,13 @@ function xmlAttr(tag, name) {
 }
 
 function _tagName(tag) {
-  var sp = 0;
-  while (sp < tag.length && !_isTagEnd(tag.charAt(sp))) sp++;
-  return tag.substring(0, sp);
+  var end = tag.length, i = tag.indexOf(" "), j = tag.indexOf("/");
+  if (i >= 0) end = i;
+  if (j > 0 && j < end) end = j;
+  i = tag.indexOf("\n"); if (i >= 0 && i < end) end = i;
+  i = tag.indexOf("\r"); if (i >= 0 && i < end) end = i;
+  i = tag.indexOf("\t"); if (i >= 0 && i < end) end = i;
+  return tag.substring(0, end);
 }
 
 function _isTagEnd(ch) {
@@ -325,7 +371,7 @@ function parseRels(xml) {
 // 段落: { type:"p", text, styleId, level, refs:[{pos, kind, id}], image:rId|null }
 // 表  : { type:"table", rows:[[cellText, ...]], widths:[twips...] }
 // 注の本文 XML (endnotes/footnotes) にも使う (collectNotes)
-function parseDocxBody(xml, styles, collectNotes) {
+function parseDocxBody(xml, styles, collectNotes, onProgress) {
   var blocks = [], pos = 0, n = xml.length, lt, gt, tag, name, selfClose, closeIdx;
   var para = null, skip = 0, inTabs = 0, fallback = 0, txbx = 0;
   var tblStack = [], tbl = null, row = null, cell = null, grid = null;
@@ -344,11 +390,13 @@ function parseDocxBody(xml, styles, collectNotes) {
     para = null;
   }
 
+  var tagCount = 0;
   while (pos < n) {
     lt = xml.indexOf("<", pos); if (lt < 0) break;
     gt = xml.indexOf(">", lt); if (gt < 0) break;
     tag = xml.substring(lt + 1, gt);
     pos = gt + 1;
+    if (onProgress && (++tagCount % 5000) === 0) onProgress(pos / n);
     if (tag.charAt(0) === "?" || tag.charAt(0) === "!") continue;
     if (tag.charAt(0) === "/") {
       name = tag.substring(1);
@@ -429,23 +477,30 @@ function parseDocxBody(xml, styles, collectNotes) {
   return collectNotes ? notes : blocks;
 }
 
-// docx 全体を読む
-function readDocxManuscript(bin) {
-  var idx = zipIndex(bin);
-  var docXml = zipEntryText(bin, idx, "word/document.xml");
+// docx の中身を読む。getText(名前) は docx 内のファイルを文字列で返す関数
+// (展開済みのフォルダから読む場合と、スクリプト内蔵の展開で読む場合で共通)
+function readDocxParts(getText, onProgress) {
+  var docXml = getText("word/document.xml");
   if (docXml === null) throw new Error("word/document.xml が見つかりません");
-  var styles = parseDocxStyles(zipEntryText(bin, idx, "word/styles.xml"));
-  var rels = parseRels(zipEntryText(bin, idx, "word/_rels/document.xml.rels"));
-  var endXml = zipEntryText(bin, idx, "word/endnotes.xml");
-  var footXml = zipEntryText(bin, idx, "word/footnotes.xml");
+  var styles = parseDocxStyles(getText("word/styles.xml"));
+  var rels = parseRels(getText("word/_rels/document.xml.rels"));
+  var endXml = getText("word/endnotes.xml");
+  var footXml = getText("word/footnotes.xml");
   return {
-    blocks: parseDocxBody(docXml, styles, false),
+    blocks: parseDocxBody(docXml, styles, false, onProgress),
     endnotes: endXml ? parseDocxBody(endXml, styles, true) : {},
     footnotes: footXml ? parseDocxBody(footXml, styles, true) : {},
     rels: rels,
-    styles: styles,
-    zipIndex: idx
+    styles: styles
   };
+}
+
+// docx をスクリプト内蔵の展開で読む
+function readDocxManuscript(bin, onProgress) {
+  var idx = zipIndex(bin);
+  var ms = readDocxParts(function (name) { return zipEntryText(bin, idx, name); }, onProgress);
+  ms.zipIndex = idx;
+  return ms;
 }
 
 // ------------------------------------------------------------
@@ -1080,7 +1135,7 @@ function readStoryParas(story, withRuns) {
   }
   if (withRuns) {
     // 文字スタイルは、注番号・ダーシ・「キーワード：」「出典：」がある段落だけ調べる
-    var re = /[（(][\s　 - ]*[0-9０-９]{1,3}|[―—─]|^(キーワード|出典)/;
+    var re = /[（(][\s　\u2002-\u200A]*[0-9０-９]{1,3}|[―—─]|^(キーワード|出典)/;
     var paras = story.paragraphs.everyItem().getElements();
     for (i = 0; i < out.length; i++) {
       if (!re.test(out[i].text)) continue;
@@ -1154,7 +1209,7 @@ function oldTitleText(paras, roles) {
   var i;
   for (i = 0; i < paras.length; i++) {
     if (roles[i] === "title") {
-      var t = trimWS(paras[i].text.replace(/[（(][\s　 - ]*[0-9０-９]{1,3}[\s　 - ]*[）)]/g, ""));
+      var t = trimWS(paras[i].text.replace(/[（(][\s　\u2002-\u200A]*[0-9０-９]{1,3}[\s　\u2002-\u200A]*[）)]/g, ""));
       return t.length >= 6 ? t : null;
     }
   }
@@ -1294,8 +1349,103 @@ function writeBinary(file, s) {
   return true;
 }
 
+// ---- docx の展開 (パソコンに入っている展開機能を使うと、内蔵の展開よりずっと速い) ----
+
+function _vbsStr(s) { return String(s).replace(/"/g, '""'); }
+
+// docx を一時フォルダに展開する。展開できなければ null
+function unzipDocxWithOS(src) {
+  var dest = new Folder(Folder.temp + "/kiyo_docx_" + (new Date()).getTime());
+  if (!dest.create()) return null;
+  var check = new File(dest.fsName + "/word/document.xml");
+  try {
+    if (File.fs === "Windows") {
+      // 1) PowerShell (Windows 標準) で展開
+      var ps = "Add-Type -AssemblyName System.IO.Compression.FileSystem; " +
+               "[System.IO.Compression.ZipFile]::ExtractToDirectory('" + src.fsName.replace(/'/g, "''") + "','" +
+               dest.fsName.replace(/'/g, "''") + "')";
+      var vbs = 'Set sh = CreateObject("WScript.Shell")\r\n' +
+                'sh.Run "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ""' + _vbsStr(ps) + '""", 0, True\r\n';
+      try { app.doScript(vbs, ScriptLanguage.VISUAL_BASIC); } catch (e1) {}
+      // 2) PowerShell が使えない環境では、エクスプローラーの ZIP 展開を使う
+      if (!check.exists) {
+        var zipPath = dest.fsName + "\\genko.zip";
+        var vbs2 = 'Set fso = CreateObject("Scripting.FileSystemObject")\r\n' +
+                   'fso.CopyFile "' + _vbsStr(src.fsName) + '", "' + _vbsStr(zipPath) + '"\r\n' +
+                   'Set sa = CreateObject("Shell.Application")\r\n' +
+                   'sa.NameSpace("' + _vbsStr(dest.fsName) + '").CopyHere sa.NameSpace("' + _vbsStr(zipPath) + '").Items, 20\r\n';
+        try { app.doScript(vbs2, ScriptLanguage.VISUAL_BASIC); } catch (e2) {}
+        // この方法は裏で続くことがあるので、ファイルができるまで少し待つ
+        var t, lastSize = -1;
+        for (t = 0; t < 60; t++) {
+          if (check.exists) {
+            var sz = check.length;
+            if (sz > 0 && sz === lastSize) break;
+            lastSize = sz;
+          }
+          $.sleep(250);
+        }
+      }
+    } else {
+      var q = function (x) { return String(x).replace(/\\/g, "\\\\").replace(/"/g, '\\"'); };
+      app.doScript('do shell script "/usr/bin/unzip -o -q " & quoted form of "' + q(src.fsName) +
+                   '" & " -d " & quoted form of "' + q(dest.fsName) + '"', ScriptLanguage.APPLESCRIPT_LANGUAGE);
+    }
+  } catch (e) {}
+  if (!check.exists) { removeFolder(dest); return null; }
+  return dest;
+}
+
+function readUtf8File(path) {
+  var f = new File(path);
+  if (!f.exists) return null;
+  f.encoding = "UTF-8";
+  if (!f.open("r")) return null;
+  var s = f.read();
+  f.close();
+  if (s.length > 0 && s.charCodeAt(0) === 0xFEFF) s = s.substring(1);
+  return s;
+}
+
+function removeFolder(folder) {
+  try {
+    var items = folder.getFiles(), i;
+    for (i = 0; i < items.length; i++) {
+      if (items[i] instanceof Folder) removeFolder(items[i]);
+      else items[i].remove();
+    }
+    folder.remove();
+  } catch (e) {}
+}
+
+// Word 原稿を読む。まずパソコンの展開機能、だめなら内蔵の展開
+function loadDocx(src, docxName) {
+  var onProgress = function (r) { showProgress("Word 原稿を解析しています… " + Math.round(r * 100) + "%"); };
+  showProgress("Word 原稿を展開しています… (" + docxName + ")");
+  var folder = unzipDocxWithOS(src), ms;
+  if (folder !== null) {
+    showProgress("Word 原稿を解析しています…");
+    try {
+      ms = readDocxParts(function (name) { return readUtf8File(folder.fsName + "/" + name); }, onProgress);
+      ms.folder = folder;
+      return ms;
+    } catch (e) {
+      removeFolder(folder);
+      throw e;
+    }
+  }
+  showProgress("Word 原稿を展開しています… (内蔵の方法のため、数分かかることがあります)");
+  src.encoding = "BINARY";
+  if (!src.open("r")) throw new Error("ファイルを開けませんでした");
+  var bin = src.read();
+  src.close();
+  ms = readDocxManuscript(bin, onProgress);
+  ms.bin = bin;
+  return ms;
+}
+
 // docx 内の画像を、InDesign ファイルと同じ場所の「Links」フォルダに書き出す
-function extractImages(doc, bin, ms, items, docxName) {
+function extractImages(doc, ms, items, docxName) {
   var folder, out = {}, i, rid, target, data, f;
   try { folder = new Folder(doc.filePath + "/Links"); } catch (e) { folder = new Folder(Folder.myDocuments + "/Links"); }
   if (!folder.exists) folder.create();
@@ -1308,10 +1458,14 @@ function extractImages(doc, bin, ms, items, docxName) {
     if (!target) continue;
     var path = target.indexOf("/") === 0 ? target.substring(1) : "word/" + target;
     try {
-      data = zipEntryBinary(bin, ms.zipIndex, path);
-      if (data === null) continue;
       f = new File(folder + "/" + base + "_" + target.replace(/^.*\//, ""));
-      if (writeBinary(f, data)) out[rid] = f;
+      if (ms.folder) {
+        var img = new File(ms.folder.fsName + "/" + path);
+        if (img.exists && img.copy(f)) out[rid] = f;
+      } else {
+        data = zipEntryBinary(ms.bin, ms.zipIndex, path);
+        if (data !== null && writeBinary(f, data)) out[rid] = f;
+      }
     } catch (e2) {}
   }
   return out;
@@ -1604,18 +1758,14 @@ function main() {
   var src = File.openDialog("今回の Word 原稿(.docx)を選んでください", "*.docx");
   if (!src) return;
   var docxName = decodeURI(src.name);
-  showProgress("Word 原稿を読み込んでいます… (" + docxName + ")");
-  var bin, ms, built;
+  var ms, built;
   try {
-    src.encoding = "BINARY";
-    if (!src.open("r")) throw new Error("ファイルを開けませんでした");
-    bin = src.read();
-    src.close();
-    showProgress("Word 原稿を解析しています…");
-    ms = readDocxManuscript(bin);
+    ms = loadDocx(src, docxName);
+    showProgress("段落の種類を判定しています…");
     built = buildItems(ms, profile);
   } catch (e2) {
     hideProgress();
+    if (ms && ms.folder) removeFolder(ms.folder);
     alert("Word 原稿を読み込めませんでした:\n" + e2.message + "\n\n.docx 形式で保存し直してから選んでください。");
     return;
   }
@@ -1627,7 +1777,10 @@ function main() {
   if (profile.learnedFrom === 0) notes.push("※ 前回号の体裁を学習できなかったため、スタイル名から推測しています。");
   if (front) notes.push("※ 題目〜キーワードは、別のテキストボックス(前回号で題目があった所)に入れます。");
   if (tailStart >= 0) notes.push("※ 英文要旨の部分は原稿にないため、前回号のまま残します。");
-  if (!confirmDialog(built, profile, styleMap, sty.names, { docxName: docxName, notes: notes })) return;
+  if (!confirmDialog(built, profile, styleMap, sty.names, { docxName: docxName, notes: notes })) {
+    if (ms.folder) removeFolder(ms.folder);
+    return;
+  }
 
   // 前付けを別ストーリーに分ける
   var FRONT = { title: 1, subtitle: 1, author: 1, affiliation: 1, abstractTitle: 1, "abstract": 1, keywords: 1 };
@@ -1647,12 +1800,13 @@ function main() {
   var newTitle = null;
   for (k = 0; k < (frontBuilt ? frontBuilt.items : built.items).length; k++) {
     var itx = (frontBuilt ? frontBuilt.items : built.items)[k];
-    if (itx.role === "title") { newTitle = trimWS(itx.text.replace(/[（(][\s　 - ]*[0-9０-９]{1,3}[\s　 - ]*[）)]/g, "")); break; }
+    if (itx.role === "title") { newTitle = trimWS(itx.text.replace(/[（(][\s　\u2002-\u200A]*[0-9０-９]{1,3}[\s　\u2002-\u200A]*[）)]/g, "")); break; }
   }
 
   showProgress("図の画像を取り出しています…");
   var images = {};
-  try { images = extractImages(doc, bin, ms, built.items, docxName); } catch (e3) {}
+  try { images = extractImages(doc, ms, built.items, docxName); } catch (e3) {}
+  if (ms.folder) removeFolder(ms.folder);
   hideProgress();
 
   var report = [];

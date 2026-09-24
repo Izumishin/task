@@ -117,6 +117,20 @@ check('図の画像の参照', paras.some(p => p.image === 'rId9') && ms.rels.rI
 check('互換用の重複データ(Fallback)は読まない', !paras.some(p => p.text.indexOf('重複') >= 0));
 check('画像を取り出せる (無圧縮)', zipEntryBinary(docxBin, ms.zipIndex, 'word/media/image1.png') === png.toString('latin1'));
 
+// 展開済みのフォルダから読む場合 (パソコンの展開機能を使う経路) も同じ結果になるか
+const files = {
+  'word/document.xml': docXml, 'word/endnotes.xml': endXml, 'word/styles.xml': stylesXml,
+  'word/_rels/document.xml.rels': relsXml
+};
+const progress = [];
+const msFolder = readDocxParts(name => (files[name] !== undefined ? files[name] : null), r => progress.push(r));
+check('展開済みフォルダから読んでも同じ結果', JSON.stringify(msFolder.blocks) === JSON.stringify(ms.blocks) &&
+      JSON.stringify(msFolder.endnotes) === JSON.stringify(ms.endnotes));
+const bigXml = docXml.replace('<w:sectPr/>', new Array(3000).fill(P('進み具合の表示用の段落です。')).join('') + '<w:sectPr/>');
+const prog2 = [];
+readDocxParts(name => (name === 'word/document.xml' ? bigXml : files[name] !== undefined ? files[name] : null), r => prog2.push(r));
+check('解析の進み具合を知らせる', prog2.length > 0 && prog2.every((r, i) => r > 0 && r <= 1 && (i === 0 || r >= prog2[i - 1])), prog2.length);
+
 // ---- 前回号の紙面から体裁を学習する ----
 console.log('learnProfile:');
 const THIN = ' ';
