@@ -251,5 +251,56 @@ check('buildReplacement: 発表者', brRole === '発表者　長谷川　千春�
 const brTitle = buildReplacement('　旧タイトルの行　', '越境する武士道—西部劇映画『レッド・サン』における文化混淆とグローバル中世主義—');
 check('buildReplacement: タイトル (前後空白維持)', brTitle === '　越境する武士道—西部劇映画『レッド・サン』における文化混淆とグローバル中世主義—　', brTitle);
 
+// ---- docx の XML 読み取り (正規表現を使わない走査) ----
+console.log('docxXmlToText:');
+const xmlSample = '<w:p><w:pPr><w:tabs><w:tab w:val="left" w:pos="840"/></w:tabs></w:pPr>' +
+  '<w:r><w:t>A</w:t></w:r><w:r><w:tab/><w:t xml:space="preserve">B &amp; C</w:t></w:r></w:p>' +
+  '<w:p/><w:p><w:r><w:instrText>PAGE</w:instrText><w:t>D</w:t></w:r><w:r><w:br/><w:t>E</w:t></w:r></w:p>';
+const xmlOut = docxXmlToText(xmlSample);
+check('タブ位置設定は無視・本文タブは残す・実体参照・空段落・フィールド除外・改行',
+      xmlOut === 'A\tB & C\n\nD\nE', JSON.stringify(xmlOut));
+const refText = fs.readFileSync(path.join(__dirname, 'sample_manuscript.txt'), 'utf8').replace(/\n$/, '');
+check('実原稿 docx の取り出し結果がタブ以外は参照テキストと一致', docxText !== null && docxText.replace(/\t/g, '') === refText);
+check('壊れた ZIP データは止まらずにエラーになる', (() => {
+  try { inflateRaw(docxBin.substring(100, 3000)); return false; } catch (e) { return true; }
+})());
+
+// ---- 1つずつモードの反映処理 (ダイアログを閉じた後にまとめて書き込む) ----
+console.log('applyPendingEdits (mock story):');
+function MockStory(texts) {
+  const story = this;
+  this.paras = texts.map((t, i) => ({ contents: t + (i < texts.length - 1 ? '\r' : '') }));
+  this.insertionPoints = {
+    item(ip) {
+      return { paragraphs: { item() {
+        let pos = 0;
+        for (const p of story.paras) {
+          if (ip >= pos && ip < pos + p.contents.length) return p;
+          pos += p.contents.length;
+        }
+        return story.paras[story.paras.length - 1];
+      } } };
+    }
+  };
+  this.startOf = (i) => this.paras.slice(0, i).reduce((s, p) => s + p.contents.length, 0);
+}
+const ms = new MockStory(['〈10：30 － 11：00〉', '旧タイトル', '発表者　旧名前（旧大学）', '司会者　旧司会（旧大学）']);
+const edits = [
+  // 前の段落を長くしても、後ろの段落が正しく置き換わるか
+  { story: ms, ip: ms.startOf(1), orig: '旧タイトル', text: 'とても長い新しいタイトル—副題つき—' },
+  { story: ms, ip: ms.startOf(2), orig: '発表者　旧名前（旧大学）', text: '発表者　閑田　朋子（早稲田大学）' },
+  // 実際の内容と違う段落は書き換えずにスキップされるか
+  { story: ms, ip: ms.startOf(3), orig: '司会者　別人（別大学）', text: '司会者　誤り' },
+];
+_pendingEdits = edits;
+_applyResult = { n: 0, skipped: [] };
+applyPendingEdits();
+const after = ms.paras.map(p => p.contents.replace(/\r$/, ''));
+check('反映件数 2', _applyResult.n === 2, String(_applyResult.n));
+check('タイトル置換', after[1] === 'とても長い新しいタイトル—副題つき—', after[1]);
+check('後ろの段落も正しく置換', after[2] === '発表者　閑田　朋子（早稲田大学）', after[2]);
+check('内容が違う段落はスキップ', after[3] === '司会者　旧司会（旧大学）' && _applyResult.skipped.length === 1, after[3]);
+check('段落数は変わらない', ms.paras.length === 4);
+
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
 process.exit(failures === 0 ? 0 : 1);

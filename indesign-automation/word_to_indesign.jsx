@@ -382,6 +382,8 @@ function u32at(bin, i) {
 // --- DEFLATE 展開 (Mark Adler の puff アルゴリズムの移植) ---
 function _infBits(st, n) {
   while (st.bitcnt < n) {
+    // データ末尾を超えたら止める (壊れたファイルで無限ループにならないように)
+    if (st.pos >= st.data.length) throw new Error("inflate: データが途中で終わっています");
     st.bitbuf |= bcc(st.data, st.pos++) << st.bitcnt;
     st.bitcnt += 8;
   }
@@ -434,6 +436,7 @@ function _infCodes(st, lencode, distcode, out) {
       dist = _DBASE[sym] + _infBits(st, _DEXT[sym]);
       from = out.length - dist;
       if (from < 0) throw new Error("inflate: 距離が範囲外");
+      if (out.length > 50000000) throw new Error("inflate: 展開サイズが大きすぎます");
       for (k = 0; k < len; k++) out[out.length] = out[from + k];
     }
   }
@@ -563,11 +566,18 @@ function utf8DecodeBytes(bytes) {
 }
 
 function unitsToString(units) {
-  var s = "", i, chunk = 8192;
+  var parts = [], i, j, chunk = 1024, piece;
   for (i = 0; i < units.length; i += chunk) {
-    s += String.fromCharCode.apply(null, units.slice(i, i + chunk));
+    try {
+      parts[parts.length] = String.fromCharCode.apply(null, units.slice(i, i + chunk));
+    } catch (e) {
+      // apply の引数数に制限がある環境向けに1文字ずつ組み立てる
+      piece = [];
+      for (j = i; j < units.length && j < i + chunk; j++) piece[piece.length] = String.fromCharCode(units[j]);
+      parts[parts.length] = piece.join("");
+    }
   }
-  return s;
+  return parts.join("");
 }
 
 function utf8DecodeStr(bin, start) {
@@ -625,22 +635,52 @@ function decodeXmlEntities(s) {
   return s;
 }
 
+// タグ名 (例 "<w:t" の直後の文字が名前の終わりか) の判定
+function _isTagEnd(ch) {
+  return ch === ">" || ch === " " || ch === "/" || ch === "\t" || ch === "\r" || ch === "\n";
+}
+
+// document.xml をタグ単位で1回だけ走査してテキストを取り出す。
+// InDesign の古い JavaScript エンジンは長い文字列への複雑な正規表現が極端に遅いため、
+// indexOf による単純な走査にしている。
 function docxXmlToText(xml) {
-  var lines = [], pRe = /<w:p(?:\s[^>]*)?\/>|<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g, pm;
-  var tokRe, tm, seg, line;
-  while ((pm = pRe.exec(xml)) !== null) {
-    seg = pm[0];
-    // フィールドコードや削除済みテキストは無視
-    seg = seg.replace(/<w:instrText[\s\S]*?<\/w:instrText>/g, "").replace(/<w:delText[\s\S]*?<\/w:delText>/g, "");
-    line = "";
-    tokRe = /<w:t(?:\s[^>]*)?\/>|<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:tab(?:\s[^>]*)?\/>|<w:br(?:\s[^>]*)?\/>/g;
-    while ((tm = tokRe.exec(seg)) !== null) {
-      if (tm[0].indexOf("<w:tab") === 0) line += "\t";
-      else if (tm[0].indexOf("<w:br") === 0) line += "\n";
-      else if (tm[1]) line += decodeXmlEntities(tm[1]);
+  var lines = [], line = "", pos = 0, lt, gt, tag, name, sp, skip = 0, inTabs = 0, closeIdx;
+  var n = xml.length;
+  while (pos < n) {
+    lt = xml.indexOf("<", pos);
+    if (lt < 0) break;
+    gt = xml.indexOf(">", lt);
+    if (gt < 0) break;
+    tag = xml.substring(lt + 1, gt);
+    pos = gt + 1;
+    if (tag.charAt(0) === "/") {
+      name = tag.substring(1);
+      if (name === "w:p") { lines[lines.length] = line; line = ""; }
+      else if (name === "w:instrText" || name === "w:delText") { if (skip > 0) skip--; }
+      else if (name === "w:tabs") { if (inTabs > 0) inTabs--; }
+      continue;
     }
-    lines[lines.length] = line;
+    if (tag.charAt(0) === "?" || tag.charAt(0) === "!") continue;
+    sp = 0;
+    while (sp < tag.length && !_isTagEnd(tag.charAt(sp))) sp++;
+    name = tag.substring(0, sp);
+    var selfClose = tag.charAt(tag.length - 1) === "/";
+    if (name === "w:instrText" || name === "w:delText") { if (!selfClose) skip++; continue; }
+    if (name === "w:t" && !selfClose) {
+      closeIdx = xml.indexOf("</w:t>", pos);
+      if (closeIdx < 0) break;
+      if (skip === 0) line += decodeXmlEntities(xml.substring(pos, closeIdx));
+      pos = closeIdx + 6;
+      continue;
+    }
+    // <w:tabs> の中の <w:tab .../> はタブ位置の設定であって本文のタブではない
+    if (name === "w:tabs" && !selfClose) { inTabs++; continue; }
+    if (skip > 0) continue;
+    if (name === "w:tab" && selfClose) { if (inTabs === 0) line += "\t"; }
+    else if ((name === "w:br" || name === "w:cr") && selfClose) line += "\n";
+    else if (name === "w:p" && selfClose) { lines[lines.length] = line; line = ""; }
   }
+  if (line !== "") lines[lines.length] = line;
   return lines.join("\n");
 }
 
@@ -666,16 +706,17 @@ function main() {
   }
   var doc = app.activeDocument;
 
-  // テキストフレームを選択して実行 → 1つずつ置き換えモード
-  var selFrame = selectedTextFrame();
+  // テキストボックスを選択して実行 → 1つずつ置き換えモード
+  // (原稿の読み込みで選択状態が変わる前に取得しておく)
+  var selFrames = selectedTextFrames();
 
-  var src = File.openDialog("今年の Word 原稿を選択してください (.docx または .txt)");
-  if (!src) return;
+  var loaded = loadManuscript();
+  if (loaded === null) return;
+  var text = loaded.text;
 
-  var text = readManuscript(src);
-  if (text === null) return;
-
+  showProgress("原稿を解析しています…");
   var model = parseManuscript(text);
+  hideProgress();
   if (model.rawLines.length === 0) {
     alert("原稿が空でした。ファイルを確認してください。");
     return;
@@ -685,8 +726,8 @@ function main() {
     alert("原稿の構造(発表・セクション)を認識できませんでしたが、行単位の置き換えは可能です。\n\n読み取った内容の先頭:\n" + preview);
   }
 
-  if (selFrame !== null) {
-    interactiveMode(selFrame, model);
+  if (selFrames.length > 0) {
+    interactiveMode(selFrames, model);
     return;
   }
 
@@ -700,18 +741,19 @@ function main() {
 
   var report = [];
   report.push("=== 自動流し込みレポート ===");
-  report.push("原稿: " + decodeURI(src.name));
+  report.push("原稿: " + loaded.name);
   report.push("解析結果: 発表 " + model.presentations.length + " 件 / セクション " + model.events.length + " 件");
   report.push("");
 
-  // 1) 大会回数 (第43回 → 第44回 のように、ドキュメント全体で置換)
-  replaceTaikaiNumber(doc, model, report);
-
-  // 2) 開催日 (令和X年X月X日（X） をドキュメント全体で置換)
-  replaceDates(doc, model, report);
-
-  // 3) ページ上の全テキストボックスを位置順(上→下、左→右)に処理
-  var replaced = autoFill(doc, model, report);
+  // 紙面の書き換えだけを取り消し1回で戻せる単位にまとめる
+  _autoCtx = { doc: doc, model: model, report: report, replaced: 0 };
+  showProgress("紙面を置き換えています…");
+  try {
+    app.doScript(runAutoFill, ScriptLanguage.JAVASCRIPT, [], UndoModes.ENTIRE_SCRIPT, "Word原稿の自動流し込み");
+  } finally {
+    hideProgress();
+  }
+  var replaced = _autoCtx.replaced;
 
   // 4) 残りの警告
   var i;
@@ -727,17 +769,146 @@ function main() {
         "\n\n(全文はドキュメントと同じ場所の txt に保存されています)");
 }
 
-function selectedTextFrame() {
-  var i, it;
+var _autoCtx = null;
+
+function runAutoFill() {
+  var c = _autoCtx;
+  // 1) 大会回数 (第43回 → 第44回 のように、ドキュメント全体で置換)
+  replaceTaikaiNumber(c.doc, c.model, c.report);
+  // 2) 開催日 (令和X年X月X日（X） をドキュメント全体で置換)
+  replaceDates(c.doc, c.model, c.report);
+  // 3) ページ上の全テキストボックスを位置順(上→下、左→右)に処理
+  c.replaced = autoFill(c.doc, c.model, c.report);
+}
+
+// 選択中のテキストボックスを配列で返す (複数選択・文字カーソル状態にも対応)
+function selectedTextFrames() {
+  var out = [], seen = {}, i, it, fr, key;
   try {
     for (i = 0; i < app.selection.length; i++) {
       it = app.selection[i];
-      if (it.constructor.name === "TextFrame") return it;
-      // テキスト編集中(カーソルが入っている)場合も対象フレームとみなす
-      if (it.hasOwnProperty("parentTextFrames") && it.parentTextFrames.length > 0) return it.parentTextFrames[0];
+      fr = null;
+      if (it.constructor.name === "TextFrame") fr = it;
+      else if (it.hasOwnProperty("parentTextFrames") && it.parentTextFrames.length > 0) fr = it.parentTextFrames[0];
+      if (fr === null) continue;
+      key = String(fr.id);
+      if (seen[key]) continue;
+      seen[key] = 1;
+      out.push(fr);
     }
   } catch (e) {}
-  return null;
+  // 紙面の上から順に並べる
+  out.sort(function (a, b) {
+    try {
+      var ba = a.geometricBounds, bb = b.geometricBounds;
+      return (ba[0] !== bb[0]) ? ba[0] - bb[0] : ba[1] - bb[1];
+    } catch (e2) { return 0; }
+  });
+  return out;
+}
+
+// ---- 原稿の読み込み (前回の原稿を覚えておき、ボックスごとの再実行を速くする) ----
+
+function cacheFiles() {
+  return {
+    text: new File(Folder.userData + "/word_to_indesign_genko.txt"),
+    info: new File(Folder.userData + "/word_to_indesign_genko_info.txt")
+  };
+}
+
+function readUtf8(f) {
+  f.encoding = "UTF-8";
+  if (!f.open("r")) return null;
+  var s = f.read();
+  f.close();
+  if (s.length > 0 && s.charCodeAt(0) === 0xFEFF) s = s.substring(1);
+  return s;
+}
+
+function writeUtf8(f, s) {
+  f.encoding = "UTF-8";
+  if (!f.open("w")) return false;
+  f.write(s);
+  f.close();
+  return true;
+}
+
+function loadCache() {
+  try {
+    var c = cacheFiles();
+    if (!c.text.exists || !c.info.exists) return null;
+    var info = readUtf8(c.info), text = readUtf8(c.text);
+    if (info === null || text === null) return null;
+    var lines = info.split("\n");
+    if (lines.length < 3) return null;
+    return { srcPath: lines[0], srcName: lines[1], modified: lines[2], text: text };
+  } catch (e) { return null; }
+}
+
+function saveCache(src, text) {
+  try {
+    var c = cacheFiles();
+    writeUtf8(c.text, text);
+    writeUtf8(c.info, src.fsName + "\n" + decodeURI(src.name) + "\n" + String(src.modified));
+  } catch (e) {}
+}
+
+function loadManuscript() {
+  var cache = loadCache();
+  if (cache !== null) {
+    var prev = new File(cache.srcPath);
+    // 原稿ファイルが前回から変わっていなければ、読み込み済みの内容を使える
+    if (prev.exists && String(prev.modified) === cache.modified) {
+      if (confirm("前回読み込んだ原稿を使いますか?\n\n  " + cache.srcName +
+                  "\n\n「いいえ」を押すと別の原稿を選べます。")) {
+        return { text: cache.text, name: cache.srcName };
+      }
+    }
+  }
+  var src = File.openDialog("今年の Word 原稿を選択してください (.docx または .txt)");
+  if (!src) return null;
+  showProgress("原稿を読み込んでいます… (" + decodeURI(src.name) + ")");
+  var text;
+  try {
+    text = readManuscript(src);
+  } finally {
+    hideProgress();
+  }
+  if (text === null) return null;
+  saveCache(src, text);
+  return { text: text, name: decodeURI(src.name) };
+}
+
+// .docx を InDesign 自身の Word 読み込み機能で読む (最も速く確実)。
+// 見えない一時ドキュメントに配置して文字だけ取り出し、すぐ閉じる。
+function readDocxViaInDesign(src) {
+  var tmpDoc = null, text = null, i, s, best = "";
+  var oldUIL = app.scriptPreferences.userInteractionLevel;
+  var prefs = app.wordRTFImportPreferences;
+  var keys = ["removeFormatting", "preserveGraphics", "importUnusedStyles", "useTypographersQuotes"];
+  var vals = [true, false, false, false], saved = [];
+  for (i = 0; i < keys.length; i++) {
+    try { saved[i] = prefs[keys[i]]; prefs[keys[i]] = vals[i]; } catch (e) { saved[i] = undefined; }
+  }
+  try {
+    // 読み込みオプションやフォント不足の確認ダイアログを出さない
+    app.scriptPreferences.userInteractionLevel = UserInteractionLevels.NEVER_INTERACT;
+    tmpDoc = app.documents.add(false);
+    var tf = tmpDoc.pages[0].textFrames.add({ geometricBounds: [0, 0, 200, 200] });
+    tf.place(src, false);
+    for (i = 0; i < tmpDoc.stories.length; i++) {
+      s = tmpDoc.stories[i].contents;
+      if (typeof s === "string" && s.length > best.length) best = s;
+    }
+    text = best;
+  } finally {
+    try { if (tmpDoc !== null && tmpDoc.isValid) tmpDoc.close(SaveOptions.NO); } catch (e1) {}
+    for (i = 0; i < keys.length; i++) {
+      try { if (saved[i] !== undefined) prefs[keys[i]] = saved[i]; } catch (e2) {}
+    }
+    app.scriptPreferences.userInteractionLevel = oldUIL;
+  }
+  return text;
 }
 
 function readBinary(src) {
@@ -761,16 +932,31 @@ function readWithFileEncoding(src, enc) {
 }
 
 function readManuscript(src) {
-  var bin = readBinary(src);
-  if (bin === null) return null;
   var name = decodeURI(src.name).toLowerCase();
 
-  // .docx は ZIP を直接展開して読む (Mac/Windows 共通・外部ツール不要)
+  // .docx: まず InDesign 自身の Word 読み込み機能で読む
+  var nativeErr = "";
+  if (/\.docx$/.test(name)) {
+    try {
+      var t = readDocxViaInDesign(src);
+      if (t !== null && trimWS(t) !== "") return t;
+      nativeErr = "内容が空でした";
+    } catch (e0) {
+      nativeErr = e0.message;
+    }
+  }
+
+  var bin = readBinary(src);
+  if (bin === null) return null;
+
+  // うまくいかなければ、スクリプト内蔵の方法で ZIP を展開して読む
   if (/\.docx$/.test(name) || bin.substring(0, 2) === "PK") {
     try {
       return docxBinToText(bin);
     } catch (e) {
-      alert("Word(.docx)の読み取りに失敗しました。\n" + e.message +
+      alert("Word(.docx)の読み取りに失敗しました。\n" +
+            (nativeErr ? "InDesign の読み込み: " + nativeErr + "\n" : "") +
+            "内蔵の読み込み: " + e.message +
             "\n\nWord で「書式なし/テキストのみ(.txt)」保存したファイルでも実行できます。");
       return null;
     }
@@ -1078,31 +1264,41 @@ function fillMainStory(story, model, report) {
   return state.replaced;
 }
 
-// 選択したテキストボックスの段落を、原稿の行と突き合わせて1つずつ置き換える
-function interactiveMode(frame, model) {
-  var paras, i;
-  function shorten(s) { s = trimWS(s); return s.length > 60 ? s.substring(0, 60) + "…" : s; }
+// 選択したテキストボックスの段落を、原稿の行と突き合わせて1つずつ置き換える。
+// ダイアログを開いている間は紙面に一切触れず、置き換え内容をためておき、
+// ダイアログを閉じてからまとめて反映する (開いたまま紙面を書き換えると
+// InDesign が固まることがあるため)。
+function interactiveMode(frames, model) {
+  var i, f, paras, p, tx;
+  function shorten(s) { s = trimWS(s); return s.length > 50 ? s.substring(0, 50) + "…" : s; }
+
+  showProgress("選択したテキストボックスを読み込んでいます…");
+  var items = [];
   try {
-    paras = frame.paragraphs;
-    if (paras.length === 0) paras = frame.parentStory.paragraphs;
+    for (f = 0; f < frames.length; f++) {
+      paras = frames[f].paragraphs;
+      for (i = 0; i < paras.length; i++) {
+        p = paras[i];
+        tx = p.contents.replace(/\r$/, "");
+        if (trimWS(tx) === "") continue;
+        items.push({ story: p.parentStory, ip: p.insertionPoints[0].index, text: tx, orig: tx });
+      }
+    }
   } catch (e) {
+    hideProgress();
     alert("選択したテキストボックスを読めませんでした: " + e.message);
     return;
   }
-  var items = [];
-  for (i = 0; i < paras.length; i++) {
-    var tx = paras[i].contents.replace(/\r$/, "");
-    if (trimWS(tx) === "") continue;
-    items.push({ para: paras[i], text: tx });
-  }
+  hideProgress();
   if (items.length === 0) {
-    alert("選択したテキストボックスに本文がありません。");
+    alert("選択したテキストボックスに文字がありません。\n(文字が別のボックスからあふれて流れ込んでいる場合は、先頭のボックスを選んでください)");
     return;
   }
   var used = [];
-  var applied = 0;
+  var pending = [];   // items と同じ添字に、置き換え後のテキスト (未確定は undefined)
+  var pendingCount = 0;
 
-  var w = new Window("dialog", "1つずつ置き換え — 紙面の段落と原稿の行を対応させてください");
+  var w = new Window("dialog", "1つずつ置き換え (" + items.length + " 段落)");
   w.orientation = "column";
   w.alignChildren = "fill";
   var row = w.add("group");
@@ -1111,22 +1307,24 @@ function interactiveMode(frame, model) {
   var colL = row.add("panel", undefined, "紙面 (選択したボックスの段落)");
   colL.alignChildren = "fill";
   var lbOld = colL.add("listbox", undefined, [], { multiselect: false });
-  lbOld.preferredSize = [420, 400];
-  var colR = row.add("panel", undefined, "原稿 (新しい内容)");
+  lbOld.preferredSize = [360, 340];
+  var colR = row.add("panel", undefined, "原稿 (クリックで選び直せます)");
   colR.alignChildren = "fill";
   var lbNew = colR.add("listbox", undefined, [], { multiselect: false });
-  lbNew.preferredSize = [420, 400];
+  lbNew.preferredSize = [360, 340];
   for (i = 0; i < items.length; i++) lbOld.add("item", shorten(items[i].text));
   for (i = 0; i < model.rawLines.length; i++) lbNew.add("item", shorten(model.rawLines[i]));
 
-  w.add("statictext", undefined, "置き換え後のテキスト (自由に編集できます。時刻や括弧の体裁は紙面側を維持します):");
+  w.add("statictext", undefined, "置き換え後のテキスト (直接直せます。時刻の〈 〉やタブは紙面側の形を残します):");
   var edit = w.add("edittext", undefined, "", { multiline: true });
-  edit.preferredSize = [860, 60];
+  edit.preferredSize = [730, 56];
+  var status = w.add("statictext", undefined, "確定: 0 件");
   var btns = w.add("group");
   btns.alignment = "center";
-  var bApply = btns.add("button", undefined, "置き換えて次へ");
-  var bSkip = btns.add("button", undefined, "スキップ (次へ)");
-  var bClose = btns.add("button", undefined, "終了");
+  var bApply = btns.add("button", undefined, "確定して次へ");
+  var bSkip = btns.add("button", undefined, "スキップ");
+  var bDone = btns.add("button", undefined, "反映して終了");
+  var bCancel = btns.add("button", undefined, "キャンセル");
 
   lbNew.onChange = function () {
     var oi = lbOld.selection ? lbOld.selection.index : -1;
@@ -1157,29 +1355,90 @@ function interactiveMode(frame, model) {
     var oi = lbOld.selection ? lbOld.selection.index : -1;
     if (oi < 0) return;
     var nix = lbNew.selection ? lbNew.selection.index : -1;
-    try {
-      setParaText(items[oi].para, edit.text);
-      items[oi].text = edit.text;
-      lbOld.items[oi].text = "✓ " + shorten(edit.text);
-      if (nix >= 0) {
-        used[nix] = true;
-        lbNew.items[nix].text = "✓ " + shorten(model.rawLines[nix]);
-      }
-      applied++;
-    } catch (e) {
-      alert("置き換えに失敗しました: " + e.message);
+    // 改行を入力された場合は段落を増やさないよう強制改行にする
+    var val = String(edit.text).replace(/\r\n|\r|\n/g, "\n").replace(/\n+$/, "");
+    if (pending[oi] === undefined) pendingCount++;
+    pending[oi] = val;
+    lbOld.items[oi].text = "✓ " + shorten(val);
+    if (nix >= 0) {
+      used[nix] = true;
+      lbNew.items[nix].text = "✓ " + shorten(model.rawLines[nix]);
     }
+    status.text = "確定: " + pendingCount + " 件";
     advance(oi);
   };
   bSkip.onClick = function () {
     var oi = lbOld.selection ? lbOld.selection.index : -1;
     advance(oi < 0 ? -1 : oi);
   };
-  bClose.onClick = function () { w.close(); };
+  bDone.onClick = function () { w.close(1); };
+  bCancel.onClick = function () { w.close(2); };
 
   lbOld.selection = 0;
-  w.show();
-  alert(applied + " 箇所を置き換えました。\n別のテキストボックスも処理する場合は、そのボックスを選択してスクリプトを再実行してください。");
+  w.center();
+  var result = w.show();
+  if (result !== 1 || pendingCount === 0) {
+    if (result === 1) alert("確定した置き換えがないため、何も変更しませんでした。");
+    return;
+  }
+
+  // ---- ダイアログを閉じてから紙面へ反映 (取り消し1回で全部戻せる) ----
+  _pendingEdits = [];
+  for (i = 0; i < items.length; i++) {
+    if (pending[i] !== undefined && pending[i] !== items[i].orig) {
+      _pendingEdits.push({ story: items[i].story, ip: items[i].ip, orig: items[i].orig, text: pending[i] });
+    }
+  }
+  _applyResult = { n: 0, skipped: [] };
+  app.doScript(applyPendingEdits, ScriptLanguage.JAVASCRIPT, [], UndoModes.ENTIRE_SCRIPT, "原稿の置き換え");
+  var msg = _applyResult.n + " 箇所を置き換えました。";
+  if (_applyResult.skipped.length > 0) {
+    msg += "\n\n次の段落は内容が変わっていたため置き換えませんでした:\n" + _applyResult.skipped.join("\n");
+  }
+  msg += "\n\n元に戻すときは「編集 > 取り消し」を1回。\n続けて別のボックスを処理するときは、そのボックスを選んでもう一度実行してください (原稿は前回のものをそのまま使えます)。";
+  alert(msg);
+}
+
+var _pendingEdits = null;
+var _applyResult = null;
+
+function applyPendingEdits() {
+  var list = _pendingEdits, i, e, p, cur;
+  // 後ろの段落から書き換える (前の段落の文字数が変わっても、後ろの段落の位置がずれないように)
+  list.sort(function (a, b) { return b.ip - a.ip; });
+  for (i = 0; i < list.length; i++) {
+    e = list[i];
+    try {
+      p = e.story.insertionPoints.item(e.ip).paragraphs.item(0);
+      cur = p.contents.replace(/\r$/, "");
+      if (cur !== e.orig) { _applyResult.skipped.push("・" + trimWS(e.orig).substring(0, 30)); continue; }
+      setParaText(p, e.text);
+      _applyResult.n++;
+    } catch (err) {
+      _applyResult.skipped.push("・" + trimWS(e.orig).substring(0, 30) + " (" + err.message + ")");
+    }
+  }
+}
+
+// 処理状況を小さなウィンドウで表示する (止まって見えるときにどの段階か分かるように)
+var _prog = null;
+function showProgress(msg) {
+  try {
+    if (_prog === null) {
+      _prog = new Window("palette", "Word原稿の流し込み");
+      _prog.msg = _prog.add("statictext", undefined, msg);
+      _prog.msg.preferredSize = [380, 24];
+      _prog.center();
+      _prog.show();
+    } else {
+      _prog.msg.text = msg;
+    }
+    _prog.update();
+  } catch (e) { _prog = null; }
+}
+function hideProgress() {
+  if (_prog !== null) { try { _prog.close(); } catch (e) {} }
+  _prog = null;
 }
 
 function writeReport(doc, report) {
@@ -1200,6 +1459,13 @@ function timestamp() {
   return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + "_" + p(d.getHours()) + p(d.getMinutes());
 }
 
+// ダイアログは取り消し用のまとまり(doScript)の外で出し、紙面の書き換えだけを
+// doScript で囲む (まとまりの中でダイアログを開くと InDesign が固まることがあるため)。
 if (typeof app !== "undefined" && app.name && /InDesign/i.test(app.name)) {
-  app.doScript(main, ScriptLanguage.JAVASCRIPT, [], UndoModes.ENTIRE_SCRIPT, "Word原稿の自動流し込み");
+  try {
+    main();
+  } catch (e) {
+    hideProgress();
+    alert("エラーが発生しました:\n" + e.message + (e.line ? "\n(スクリプトの " + e.line + " 行目)" : ""));
+  }
 }
