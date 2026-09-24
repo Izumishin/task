@@ -247,5 +247,10 @@ if (process.env.KIYO_DOCX) {
   check('実原稿: 注番号の位置', buildStoryText(rb.items).chars.filter(c => c.kind === 'noteRef').length === rb.notes);
 }
 
+// ---- InDesign の古い JavaScript で使えない予約語 ----
+console.log('ExtendScript:');
+const reservedHits = require('./es3_reserved')(src);
+check('予約語 (abstract など) を名前に使っていない', reservedHits.length === 0, reservedHits.join(' / '));
+
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
 process.exit(failures === 0 ? 0 : 1);

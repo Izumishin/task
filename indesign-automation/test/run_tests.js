@@ -302,5 +302,10 @@ check('後ろの段落も正しく置換', after[2] === '発表者　閑田　�
 check('内容が違う段落はスキップ', after[3] === '司会者　旧司会（旧大学）' && _applyResult.skipped.length === 1, after[3]);
 check('段落数は変わらない', ms.paras.length === 4);
 
+// ---- InDesign の古い JavaScript で使えない予約語 ----
+console.log('ExtendScript:');
+const reservedHits = require('./es3_reserved')(src);
+check('予約語 (abstract など) を名前に使っていない', reservedHits.length === 0, reservedHits.join(' / '));
+
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
 process.exit(failures === 0 ? 0 : 1);

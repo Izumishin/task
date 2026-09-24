@@ -914,7 +914,7 @@ var STYLE_GUESS = {
   author: [[/著者名|氏名|執筆者/, /著者/], /Abstract/i],
   affiliation: [[/所属/], /Abstract/i],
   abstractTitle: [[/要旨.*(タイトル|見出し)/], /英文|Abstract/i],
-  abstract: [[/要旨|概要|抄録/], /タイトル|見出し|英文|Abstract/i],
+  "abstract": [[/要旨|概要|抄録/], /タイトル|見出し|英文|Abstract/i],
   keywords: [[/キーワード/], /英文|Abstract/i],
   h1: [[/大見出し|見出し\s*[1１]/], /Abstract/i],
   h2: [[/中見出し|見出し\s*[2２]/], /Abstract|大見出し|下中見出し/i],
@@ -1630,7 +1630,7 @@ function main() {
   if (!confirmDialog(built, profile, styleMap, sty.names, { docxName: docxName, notes: notes })) return;
 
   // 前付けを別ストーリーに分ける
-  var FRONT = { title: 1, subtitle: 1, author: 1, affiliation: 1, abstractTitle: 1, abstract: 1, keywords: 1 };
+  var FRONT = { title: 1, subtitle: 1, author: 1, affiliation: 1, abstractTitle: 1, "abstract": 1, keywords: 1 };
   var frontBuilt = null;
   if (front) {
     var fi = [], bi = [], x, inFront = true;
