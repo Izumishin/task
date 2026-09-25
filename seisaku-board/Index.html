@@ -164,6 +164,7 @@
     .prog .rest { color: var(--memo); }
     .prog .kind { display: inline-block; font-size: 11px; font-weight: 700; color: var(--faint); border: 1px solid var(--line); border-radius: 6px; padding: 0 6px; }
     .prog.front { color: var(--faint); }
+    .prog.todo .num { color: var(--memo); }
     .issue { font-size: 12.5px; color: var(--memo); margin-top: 3px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
     .issue .kind { display: inline-block; font-size: 11px; font-weight: 700; color: var(--faint); border: 1px solid var(--line); border-radius: 6px; padding: 0 6px; }
     .issue b { color: var(--manual); font-weight: 700; }
@@ -307,15 +308,43 @@ function cardDate(r) {
   if (r.isDone) return { date: r.doneDate, name: '下版済', past: true, sort: r.doneDate || '9999/99/99' };
   if (r.next) {
     const ev = splitEvent(r.next);
-    return { date: ev.ymd, name: ev.name, sort: ev.ymd };
+    return { date: ev.ymd, name: isProofStage(r, ev.name) ? '次の予定' : ev.name, sort: ev.ymd };
   }
   if (r.gehan) return { date: r.gehan, name: '下版予定', sort: r.gehan };
   if (r.due) return { date: r.due, name: '納期', sort: r.due };
   if (r.recent) {
     const ev = splitEvent(r.recent);
-    return { date: ev.ymd, name: ev.name + '（実績・予定なし）', past: true, sort: '9999/99/98' };
+    return { date: ev.ymd, name: (isProofStage(r, ev.name) ? '直近の動き' : ev.name) + '（実績・予定なし）', past: true, sort: '9999/99/98' };
   }
   return { date: '', name: '', sort: '9999/99/99' };
+}
+
+/**
+ * 紀要（論文明細がある案件）で、生産表の工程名が「●校提出／●校戻り」のときは true。
+ * 紀要は論文ごとに校正の進みがバラつくので、案件全体に「初校戻り予定」と付けると実態とずれる。
+ * そのときは工程名を出さず、何が何本かは内訳（初校戻り待ち 1 ／ 再校直し待ち 2 …）で読む。
+ */
+function isProofStage(r, name) {
+  return !!(r.papers && r.papers.length) && /校(提出|戻り)/.test(String(name || ''));
+}
+
+/**
+ * 論文の状態を「いま誰の番か」が分かる言い方に。
+ *  ●校提出 → ●校戻り待ち（著者から戻るのを待っている）
+ *  ●校戻り → ●校直し待ち（赤字が戻ってきて DTP が直す番）
+ */
+function paperStatusLabel(status) {
+  const s = String(status || '');
+  if (/校提出$/.test(s)) return s.replace(/提出$/, '戻り待ち');
+  if (/校戻り$/.test(s)) return s.replace(/戻り$/, '直し待ち');
+  return s;
+}
+
+/** 赤字が戻ってきて DTP が直す番の本文の本数（状態が「●校戻り」）。 */
+function fixWaitingCount(r) {
+  return (r.papers || []).filter(function (p) {
+    return p.kind !== '表回り' && /校戻り$/.test(String(p.status || ''));
+  }).length;
 }
 function isThisWeek(r) {
   const d = state.data;
@@ -360,6 +389,11 @@ function progressHtml(r, group) {
       bar(typeset) +
       (full ? '<span>全本そろい</span>' : (notArrived ? '<span class="rest">未入稿 ' + notArrived + '</span>' : '')) +
     '</div>');
+    // DTP の次の作業：赤字が戻ってきて直す番の本数（0本なら手が空いている）
+    const fixN = fixWaitingCount(r);
+    out.push('<div class="prog' + (fixN ? ' todo' : '') + '" title="●校戻りの本数（赤字が戻ってきて直す番）">' +
+      '<span class="kind">DTP</span>直し待ち <span class="num">' + fixN + '本</span>' +
+    '</div>');
   }
   if (group !== 'DTP') {
     const checking = Math.max(typeset - submitted, 0);   // 組み上がったが、まだ提出の日付が入っていない＝編集が確認中
@@ -399,7 +433,7 @@ function papersSummary(r) {
   const counts = r.paperCounts || {};
   const keys = d.paperStatusOrder.filter(function (k) { return counts[k]; });
   Object.keys(counts).forEach(function (k) { if (keys.indexOf(k) < 0) keys.push(k); });
-  return keys.map(function (k) { return esc(k) + ' <b>' + counts[k] + '</b>'; }).join(' ／ ');
+  return keys.map(function (k) { return esc(paperStatusLabel(k)) + ' <b>' + counts[k] + '</b>'; }).join(' ／ ');
 }
 
 // ===========================================================================
@@ -537,7 +571,7 @@ function cardHtml(r, group) {
     whenHtml = '<span class="when" title="納期">納期 <b>' + shortDate(r.due) + '</b></span>';
   } else if (r.recent) {
     const ev = splitEvent(r.recent);
-    whenHtml = '<span class="when" title="直近の実績">' + esc(ev.name) + ' <b>' + shortDate(ev.ymd) + '</b></span>';
+    whenHtml = '<span class="when" title="直近の実績">' + esc(isProofStage(r, ev.name) ? '直近の動き' : ev.name) + ' <b>' + shortDate(ev.ymd) + '</b></span>';
   }
 
   const conflicts = [];
@@ -603,7 +637,7 @@ function openPanel(key) {
       r.papers.map(function (p) {
         return '<tr><td>' + esc(p.kind || '') + '</td><td>' + esc(p.title) + '</td><td>' + esc(p.author) + '</td>' +
           '<td>' + (p.typeset ? '○' : '') + '</td><td>' + (p.submitted ? '○' : '') + '</td>' +
-          '<td>' + esc(p.status) + '</td><td>' + (p.date ? shortDate(p.date) : '') + '</td></tr>';
+          '<td>' + esc(paperStatusLabel(p.status)) + '</td><td>' + (p.date ? shortDate(p.date) : '') + '</td></tr>';
       }).join('') + '</table>'
     : '';
 

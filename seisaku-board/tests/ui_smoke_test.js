@@ -110,13 +110,18 @@ const gehanInWeek = (D(2) >= ui.state.data.weekStart && D(2) <= ui.state.data.we
 check('高橋は今週下版' + gehanInWeek + '件', new RegExp('【高橋】.*抱え <b>1</b>件 ／ 今週下版 <b>' + gehanInWeek + '</b>件').test(staffHtml), staffHtml.match(/【高橋】.*?<\/span>/));
 const shortOf = (ymd) => ymd.replace(/^\d{4}\/0?(\d+)\/0?(\d+)$/, '$1/$2');
 check('予定が無い案件は納期を大きく出す', staffHtml.indexOf('<span class="date">9/30</span><span class="evt">納期</span>') >= 0, staffHtml.match(/dateline[^>]*>.*?<\/div>/g));
-check('その場合は状態の横に直近の実績', staffHtml.indexOf('初校戻り <b>9/4</b>') >= 0);
+check('その場合は状態の横に直近の実績（紀要の案件は工程名を出さず「直近の動き」）', staffHtml.indexOf('直近の動き <b>9/4</b>') >= 0);
 check('次の予定を大きく出す（下版予定）', staffHtml.indexOf('<span class="date">' + shortOf(D(2)) + '</span><span class="evt">下版予定</span>') >= 0);
 check('その場合は状態の横に納期', staffHtml.indexOf('納期 <b>' + shortOf(D(10)) + '</b>') >= 0);
 check('予定も実績も無い未入稿は納期を大きく出す', staffHtml.indexOf('<span class="date">' + shortOf(D(30)) + '</span><span class="evt">納期</span>') >= 0);
 check('下版済は完了日と「下版済」', staffHtml.indexOf('<span class="evt">下版済</span>') >= 0);
 check('オフは濃い色', staffHtml.indexOf('out-badge strong">オフ') >= 0);
-check('論文の内訳は本文だけ（表紙の責了は入らない）', staffHtml.indexOf('責了 <b>1</b>') < 0 && staffHtml.indexOf('初校戻り <b>1</b>') >= 0);
+check('論文の内訳は本文だけ（表紙の責了は入らない）', staffHtml.indexOf('責了 <b>1</b>') < 0 && staffHtml.indexOf('初校直し待ち <b>1</b>') >= 0);
+check('内訳は「●校戻り」を「●校直し待ち」と言い換える', staffHtml.indexOf('初校戻り <b>') < 0);
+check('DTPの下に「直し待ち ◯本」（論文Aが初校戻り）', staffHtml.indexOf('<span class="kind">DTP</span>直し待ち <span class="num">1本</span>') >= 0, staffHtml.match(/DTP<\/span>[^<]*<span class="num">[^<]*/g));
+check('編集の下には「直し待ち」を出さない',
+  staffHtml.slice(staffHtml.indexOf('＊編集')).indexOf('<span class="kind">DTP</span>直し待ち') < 0);
+check('「直し待ち」が0本でも出す（手が空いていると読める）', staffHtml.indexOf('直し待ち <span class="num">0本</span>') >= 0);
 check('DTPの見出しの下は「本文 組上がり n/N」（確定3本、本文2行のうち1本）', staffHtml.indexOf('<span class="kind">本文</span>組上がり <span class="num">1/3</span>') >= 0, staffHtml.match(/prog[^>]*>[\s\S]*?<\/div>/g));
 check('DTP側の未入稿は 予定本数−入稿済', staffHtml.indexOf('未入稿 2</span>') >= 0);
 check('編集の見出しの下は「本文 確認中／提出済／組待ち」', staffHtml.indexOf('<span class="kind">本文</span>確認中 <span class="num">0</span> ／ 提出済 <span class="num">1</span>') >= 0);
@@ -169,17 +174,17 @@ check('編集フォームが出る', panel.indexOf('id="f_status"') >= 0 && pane
 check('生産表の値が分かる', panel.indexOf('校正中（生産表）') >= 0 && panel.indexOf('オフ（生産表）') >= 0);
 check('統合先に自分は出ない', panel.indexOf('22962-000　学校法人') < 0 && panel.indexOf('22970-000　台東区') >= 0);
 
-preset.f_name = '和泉'; preset.f_status = '作業中'; preset.f_gehan = '2026-09-20'; preset.f_output = 'オフ'; preset.f_memo = '著者校待ち'; preset.chkTakahashi = true;
+preset.f_name = '和泉'; preset.f_status = '作業中'; preset.f_gehan = D(20).replace(/\//g, '-'); preset.f_output = 'オフ'; preset.f_memo = '著者校待ち'; preset.chkTakahashi = true;
 ui.savePanel();
 check('saveCase が呼ばれた', calls.indexOf('saveCase') >= 0, calls);
 check('保存後に再描画される', calls.filter(c => c === 'getBoardData').length >= 3);
 const saved = ui.state.data.rows.find(r => r.key === '22962-000');
-check('状態・日付・担当が手動になった', saved.status === '作業中' && saved.gehan === '2026/09/20' && saved.dtp.join(',') === '和泉,高橋' && saved.manualFields.join(',') === 'status,date,staff', saved.manualFields);
+check('状態・日付・担当が手動になった', saved.status === '作業中' && saved.gehan === D(20) && saved.dtp.join(',') === '和泉,高橋' && saved.manualFields.join(',') === 'status,date,staff', saved.manualFields);
 check('出力は生産表と同じなので手動にならない', saved.manualFields.indexOf('output') < 0);
 const cardAfter = el('viewStaff').innerHTML;
 check('カードに手動の印と直した人', cardAfter.indexOf('manual-badge') >= 0 && cardAfter.indexOf('手動 和泉') >= 0);
 check('生産表とボードを並べて表示', cardAfter.indexOf('状態 生産表 校正中 ／ ボード 作業中') >= 0, cardAfter.match(/conflict">[^<]*/g));
-check('手動の下版予定日が大きい日付になる', cardAfter.indexOf('<span class="date">9/20</span><span class="evt">下版予定</span>') >= 0, cardAfter.match(/dateline[^>]*>.*?<\/div>/g));
+check('手動の下版予定日が大きい日付になる', cardAfter.indexOf('<span class="date">' + shortOf(D(20)) + '</span><span class="evt">下版予定</span>') >= 0, cardAfter.match(/dateline[^>]*>.*?<\/div>/g));
 check('高橋の抱えが増える', new RegExp('【高橋】.*抱え <b>2</b>件 ／ 今週下版 <b>' + gehanInWeek + '</b>件').test(cardAfter), cardAfter.match(/【高橋】.*?<\/span>/));
 
 console.log('--- 自動更新はパネルを開いている間止まる ---');
@@ -194,8 +199,18 @@ check('閉じると再取得する', calls.length === before + 1);
 console.log('--- 表示ユーティリティ ---');
 check('shortStamp は途中の日付も複数でも短縮', ui.shortStamp('初校戻り 2026/09/04 ／ 再校提出予定 2026/09/20') === '初校戻り 9/4 ／ 再校提出予定 9/20' && ui.shortStamp('2026/09/11 03:20') === '9/11 03:20');
 const sorted = ui.sortRows(ui.state.data.rows).map(r => r.key);
-// 22950-000=完了(今日) / 22970-000=下版予定(+2) / 22962-000=下版予定(手動 9/20) / 仮:港製作所=納期(+30)
+// 22950-000=完了(今日) / 22970-000=下版予定(+2) / 22962-000=下版予定(手動 +20日) / 仮:港製作所=納期(+30)
 check('大きい日付の順に並ぶ', sorted[0] === '22950-000' && sorted[1] === '22970-000' && sorted[sorted.length - 1] === '仮:港製作所|暑中見舞', sorted);
+
+console.log('--- 紀要の案件は「●校提出／●校戻り」の工程名を出さない ---');
+const kiyoRow = Object.assign({}, ui.state.data.rows.find(r => r.key === '22962-000'), { next: '再校戻り予定 ' + D(3), isDone: false });
+const kiyoCard = ui.cardHtml(kiyoRow, '編集');
+check('紀要の案件は「次の予定」', kiyoCard.indexOf('<span class="evt">次の予定</span>') >= 0 && kiyoCard.indexOf('再校戻り予定') < 0, kiyoCard.match(/dateline[^>]*>.*?<\/div>/g));
+const plainRow = Object.assign({}, ui.state.data.rows.find(r => r.key === '22970-000'), { next: '初校提出予定 ' + D(3), papers: [], isDone: false });
+const plainCard = ui.cardHtml(plainRow, 'DTP');
+check('紀要でない案件は今までどおり工程名を出す', plainCard.indexOf('<span class="evt">初校提出予定</span>') >= 0, plainCard.match(/dateline[^>]*>.*?<\/div>/g));
+const gehanRow = Object.assign({}, kiyoRow, { next: '下版予定 ' + D(3) });
+check('紀要の案件でも「下版予定」はそのまま', ui.cardHtml(gehanRow, 'DTP').indexOf('<span class="evt">下版予定</span>') >= 0);
 
 console.log(fails === 0 ? '\nすべて成功' : `\n失敗 ${fails} 件`);
 process.exit(fails === 0 ? 0 : 1);
