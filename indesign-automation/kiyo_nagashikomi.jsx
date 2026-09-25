@@ -564,21 +564,39 @@ var RE_AFFIL = /(大学|大学院|研究科|学部|学科|研究所|研究セン
 var RE_SUBTITLE = /^[―—－‐\-〜～─━].*[―—－‐\-〜～─━]$/;
 
 // 見出しの深さ (番号の付き方から)。見出しらしくなければ 0
+var RE_H_CHAPTER = /^第[0-9０-９一二三四五六七八九十百]+章/;
+var RE_H_SECTION = /^第[0-9０-９一二三四五六七八九十]+節/;
+var RE_H_ROMAN = /^([ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅪⅫ]+|(?:I|II|III|IV|V|VI|VII|VIII|IX|X|XI|XII)(?=[.．]))[\s　]*[．.、]?[\s　]*\S/;
+var RE_H_HYPHEN = /^[0-9０-９]+[-－‐][0-9０-９]+[\s　]+\S/;
+
 function headingDepthByText(t) {
   if (t.length > 60) return 0;
   // 「。」で終わるものは文 (見出しではない)
   if (/[。．]$/.test(t) && !/^[0-9０-９]+[．.]$/.test(t)) return 0;
   if (RE_H_SUB2.test(t)) return 3;
   if (RE_H_SUB.test(t)) return 2;
+  if (RE_H_HYPHEN.test(t)) return 2;
+  if (RE_H_SECTION.test(t)) return 2;
+  if (RE_H_CHAPTER.test(t)) return 1;
+  if (RE_H_ROMAN.test(t) && t.length <= 50) return 1;
   if (RE_H_NUM.test(t) && t.length <= 50) return 1;
   if (RE_H_WORDS.test(t)) return 1;
+  return 0;
+}
+
+// 前回号の段落スタイル名から見出しの深さを読む (大見出し/中見出し/小見出し)。見出しでなければ 0
+function headingDepthByStyle(name) {
+  if (!name || /Abstract|注|要旨|表|図/i.test(name)) return 0;
+  if (/大見出し|章見出し|見出し\s*[1１]/.test(name)) return 1;
+  if (/中見出し|節見出し|見出し\s*[2２]/.test(name)) return 2;
+  if (/小見出し|見出し\s*[3３]/.test(name)) return 3;
   return 0;
 }
 
 // items: [{ text, level (Word の見出しレベル, 不明なら 0), isTable, isImage }]
 // 戻り値: 役割の配列
 function classifySequence(items) {
-  var roles = [], i, it, t, st = "front", mode = "body", haveTitle = false, depth, lastFig = -10;
+  var roles = [], i, it, t, st = "front", mode = "body", haveTitle = false, depth, lastFig = -10, styleHinted = false;
   for (i = 0; i < items.length; i++) {
     it = items[i];
     t = trimWS(it.text);
@@ -589,6 +607,9 @@ function classifySequence(items) {
     // 全角スペースで字下げした長めの段落は本文
     if (depth > 0 && it.text.charAt(0) === "　" && t.length > 15) depth = 0;
     if (it.level > 0 && t.length <= 80) depth = depth > 0 ? depth : Math.min(it.level, 3);
+    // 前回号の段落はスタイル名 (大見出し・中見出し…) をいちばん信用する
+    var sd = headingDepthByStyle(it.style);
+    if (sd > 0 && t.length <= 80) { depth = sd; styleHinted = true; }
 
     if (st !== "body" && st !== "done") {
       // 最初の段落が見出しなら、題目などの前付けはこのテキストに含まれていない
@@ -616,6 +637,21 @@ function classifySequence(items) {
     if (RE_FIG_CAPTION.test(t) && t.length < 100) { roles.push("figCaption"); lastFig = i; continue; }
     if (RE_FIG_SOURCE.test(t) && (i - lastFig <= 3 || /^(出典|出所)/.test(t))) { roles.push("figSource"); lastFig = i; continue; }
     roles.push("body");
+  }
+  // 原稿に最上位の見出しがなく、2段目以下だけのときは繰り上げる
+  // (Word で「見出し 2」を最上位に使っている場合など)
+  if (!styleHinted) {
+    var minD = 9, j, dd;
+    for (j = 0; j < roles.length; j++) {
+      dd = roles[j] === "h1" ? 1 : roles[j] === "h2" ? 2 : roles[j] === "h3" ? 3 : 0;
+      if (dd > 0 && dd < minD) minD = dd;
+    }
+    if (minD > 1 && minD < 9) {
+      for (j = 0; j < roles.length; j++) {
+        dd = roles[j] === "h1" ? 1 : roles[j] === "h2" ? 2 : roles[j] === "h3" ? 3 : 0;
+        if (dd > 0) roles[j] = "h" + Math.max(1, dd - (minD - 1));
+      }
+    }
   }
   return roles;
 }
@@ -800,7 +836,8 @@ function _noteRef(n, p) {
 
 function _normHeading(t, role, p) {
   var m, num, rest;
-  if (role === "h1") {
+  // 番号の形 (「1．」か「1.1」か) で整える。種類 (大見出し/中見出し) とは限らず一致しないため
+  if (!/^[0-9０-９]+[.．][0-9０-９]/.test(t)) {
     m = /^([0-9０-９]+)(?:[\s　]*[．.、][\s　]*|[\s　]+)/.exec(t);
     if (!m) return t;
     num = p.headingDigits === "zen" ? toZenDigits(m[1]) : toHanDigits(m[1]);
@@ -1238,15 +1275,11 @@ function confirmDialog(built, p, styleMap, styleNames, info) {
   var showAll = w.add("checkbox", undefined, "本文・注・参考文献の段落もすべて表示する");
   var lb = w.add("listbox", undefined, undefined, {
     numberOfColumns: 3, showHeaders: true,
-    columnTitles: ["種類", "内容", "段落スタイル"], columnWidths: [120, 420, 210], multiselect: false
+    columnTitles: ["種類", "内容", "段落スタイル"], columnWidths: [120, 420, 210], multiselect: true
   });
   lb.preferredSize = [760, 360];
 
   var rowMap = [];
-  function styleFor(k) {
-    var names = resolveStyleNames(items, p, styleMap);
-    return names[k] || "(なし)";
-  }
   function fill() {
     lb.removeAll();
     rowMap = [];
@@ -1266,7 +1299,7 @@ function confirmDialog(built, p, styleMap, styleNames, info) {
   showAll.onClick = fill;
 
   var g = w.add("group");
-  g.add("statictext", undefined, "選んだ段落の種類を変更:");
+  g.add("statictext", undefined, "選んだ段落 (Shift / Ctrl で複数可) の種類を変更:");
   var labels = [], codes = [], r;
   for (r = 0; r < ROLES.length; r++) {
     if (ROLES[r][0] === "table" || ROLES[r][0] === "figure") continue;
@@ -1276,21 +1309,39 @@ function confirmDialog(built, p, styleMap, styleNames, info) {
   dd.preferredSize = [180, 24];
   var bStyles = g.add("button", undefined, "種類ごとの段落スタイルを確認・変更…");
 
+  // 複数選択のときは配列、1つのときは項目1つが返るので、配列にそろえる
+  function selectedRows() {
+    var sel = lb.selection, out = [], q;
+    if (!sel) return out;
+    if (!(sel instanceof Array)) sel = [sel];
+    for (q = 0; q < sel.length; q++) out.push(sel[q].index);
+    return out;
+  }
+  var updating = false;
   lb.onChange = function () {
-    if (!lb.selection) return;
-    var it = items[rowMap[lb.selection.index]], c;
-    for (c = 0; c < codes.length; c++) if (codes[c] === it.role) { dd.selection = c; return; }
+    var rows = selectedRows(), c, role0 = null, same = true, q;
+    if (rows.length === 0) return;
+    for (q = 0; q < rows.length; q++) {
+      var ro = items[rowMap[rows[q]]].role;
+      if (role0 === null) role0 = ro; else if (ro !== role0) same = false;
+    }
+    updating = true;
     dd.selection = null;
+    if (same) for (c = 0; c < codes.length; c++) if (codes[c] === role0) { dd.selection = c; break; }
+    updating = false;
   };
   dd.onChange = function () {
-    if (!lb.selection || !dd.selection) return;
-    var idx = lb.selection.index, it = items[rowMap[idx]];
-    if (it.role === "table" || it.role === "figure") return;
-    var nr = codes[dd.selection.index];
-    if (nr === it.role) return;
-    changeRole(it, nr, p);
-    lb.items[idx].text = roleLabel(nr);
-    lb.items[idx].subItems[1].text = styleFor(rowMap[idx]);
+    if (updating || !dd.selection) return;
+    var rows = selectedRows(), nr = codes[dd.selection.index], q, idx, it;
+    for (q = 0; q < rows.length; q++) {
+      idx = rows[q]; it = items[rowMap[idx]];
+      if (it.role === "table" || it.role === "figure" || it.role === nr) continue;
+      changeRole(it, nr, p);
+      lb.items[idx].text = roleLabel(nr);
+    }
+    // 見出しの種類が変わると前後の段落のスタイル(変化形)も変わるので、全行の表示を更新する
+    var names = resolveStyleNames(items, p, styleMap);
+    for (q = 0; q < rowMap.length; q++) lb.items[q].subItems[1].text = names[rowMap[q]] || "(なし)";
   };
   bStyles.onClick = function () {
     if (styleMapDialog(styleMap, styleNames, cnt)) fill();

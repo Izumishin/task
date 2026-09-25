@@ -261,6 +261,27 @@ if (process.env.KIYO_DOCX) {
   check('実原稿: 注番号の位置', buildStoryText(rb.items).chars.filter(c => c.kind === 'noteRef').length === rb.notes);
 }
 
+// ---- 見出しの判定 (前回号のスタイル名・番号の形・段の繰り上げ) ----
+console.log('headings:');
+const romanOld = [
+  { text: '前回の題目', style: '【01_タイトル】20pt' }, { text: '鈴木　花子', style: '【03_著者名】12pt' },
+  { text: 'Ⅰ．序論', style: '【06_大見出し】12pt' }, { text: '　本文。', style: '【00_本文】10pt' },
+  { text: '1.　問題の所在', style: '【07_中見出し】10pt' }, { text: '　本文。', style: '【00_本文】10pt' },
+  { text: 'Ⅱ．分析', style: '【06_大見出し】12pt' }, { text: '　本文。', style: '【00_本文】10pt' }
+].map(x => Object.assign({ level: 0, runs: null }, x));
+const romanProf = learnProfile(romanOld);
+check('前回号の見出しはスタイル名で判定 (大見出し→大見出し)', romanProf.styles.h1 === '【06_大見出し】12pt' && romanProf.styles.h2 === '【07_中見出し】10pt',
+      JSON.stringify(romanProf.styles));
+check('「Ⅰ．」「第1章」「第2節」「1-1」の形も見出し', headingDepthByText('Ⅰ．序論') === 1 && headingDepthByText('II. Method') === 1 &&
+      headingDepthByText('第1章　背景') === 1 && headingDepthByText('第2節　方法') === 2 && headingDepthByText('1-1　対象') === 2);
+check('ローマ数字で始まる英文は見出しにしない', headingDepthByText('It is known that.') === 0 && headingDepthByText('In this paper we') === 0);
+// Word の「見出し 2」を最上位に使っている原稿
+const h2only = [{ text: '題目', level: 0 }, { text: 'はじめにの前の本文ではない長い段落です。'.repeat(5), level: 0 },
+  { text: '背景', level: 2 }, { text: '本文です。', level: 0 }, { text: '研究の方法', level: 2 }, { text: '対象', level: 3 }, { text: '本文です。', level: 0 }];
+const h2roles = classifySequence(h2only);
+check('最上位が「見出し 2」でも大見出しに繰り上げる', h2roles[2] === 'h1' && h2roles[4] === 'h1' && h2roles[5] === 'h2', h2roles.join(','));
+check('繰り上げても「1.1」の番号の形は崩さない', _normHeading('1.1　 対象', 'h1', prof) === '1.1　対象', _normHeading('1.1　 対象', 'h1', prof));
+
 // ---- InDesign の古い JavaScript で使えない予約語 ----
 console.log('ExtendScript:');
 const reservedHits = require('./es3_reserved')(src);
