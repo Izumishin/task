@@ -821,6 +821,14 @@ function learnProfile(oldParas) {
       if (blankSt[k]) p.blankStyle[k] = _mostCommon(blankSt[k]).key;
     }
   }
+  // 句読点 (「、」か「，」か、「。」か「．」か)
+  var pc = { "、": 0, "，": 0, "。": 0, "．": 0 }, pk;
+  for (i = 0; i < oldParas.length; i++) {
+    r = roles[i];
+    if (r !== "body" && r !== "abstract" && r !== "note") continue;
+    countPunctInto(oldParas[i].text, pc);
+  }
+  p.punct = { counts: pc, comma: _dominant(pc["、"], pc["，"], "、", "，"), period: _dominant(pc["。"], pc["．"], "。", "．") };
   p.learnedFrom = oldParas.length;
   p.oldRoles = roles;
   return p;
@@ -1108,6 +1116,69 @@ function changeRole(item, role, p) {
   item.role = role;
 }
 
+// ---- 句読点の統一 ----
+
+// 日本語の文の終わりの「．」(見出し番号「1．」や「M．J．」などは数えない)
+var RE_JP_PERIOD = /([ぁ-んァ-ヶー一-龠々〆〇」』）\)])．/g;
+
+function countPunctInto(text, pc) {
+  var m;
+  pc["、"] += (text.match(/、/g) || []).length;
+  pc["，"] += (text.match(/，/g) || []).length;
+  pc["。"] += (text.match(/。/g) || []).length;
+  RE_JP_PERIOD.lastIndex = 0;
+  while ((m = RE_JP_PERIOD.exec(text)) !== null) pc["．"]++;
+}
+
+// どちらかが9割以上 (かつ5回以上) 使われていれば、それが前回号の書き方
+function _dominant(a, b, ca, cb) {
+  if (a + b < 5) return null;
+  if (a / (a + b) >= 0.9) return ca;
+  if (b / (a + b) >= 0.9) return cb;
+  return null;
+}
+
+function _eachBuiltText(built, fn) {
+  var i, it, r, c;
+  for (i = 0; i < built.items.length; i++) {
+    it = built.items[i];
+    if (it.role === "table" && it.table) {
+      for (r = 0; r < it.table.rows.length; r++) for (c = 0; c < it.table.rows[r].length; c++) {
+        it.table.rows[r][c] = fn(it.table.rows[r][c]);
+      }
+    } else if (it.role !== "figure") {
+      it.text = fn(it.text);
+    }
+  }
+  if (built.footnotes) for (i = 0; i < built.footnotes.length; i++) built.footnotes[i].text = fn(built.footnotes[i].text);
+}
+
+// 原稿のうち、前回号と違う句読点の数 → [{ kind, from, to, count }]
+function punctMismatches(built, p) {
+  var pc = { "、": 0, "，": 0, "。": 0, "．": 0 }, out = [];
+  if (!p.punct) return out;
+  _eachBuiltText(built, function (t) { countPunctInto(t, pc); return t; });
+  if (p.punct.comma) {
+    var oc = p.punct.comma === "，" ? "、" : "，";
+    if (pc[oc] > 0) out.push({ kind: "comma", from: oc, to: p.punct.comma, count: pc[oc] });
+  }
+  if (p.punct.period) {
+    var op = p.punct.period === "．" ? "。" : "．";
+    if (pc[op] > 0) out.push({ kind: "period", from: op, to: p.punct.period, count: pc[op] });
+  }
+  return out;
+}
+
+// 句読点を置き換える (1文字を1文字に置き換えるので、注番号などの位置はずれない)
+function unifyPunct(built, change) {
+  _eachBuiltText(built, function (t) {
+    if (change.kind === "comma") return t.split(change.from).join(change.to);
+    if (change.to === "．") return t.split("。").join("．");
+    RE_JP_PERIOD.lastIndex = 0;
+    return t.replace(RE_JP_PERIOD, "$1。");
+  });
+}
+
 // 段落ごとのスタイル名を決める (前後の種類による変化形も考慮)
 // styleMap: 役割 → スタイル名 (ダイアログで変更後のもの)
 function resolveStyleNames(items, p, styleMap) {
@@ -1321,6 +1392,18 @@ function confirmDialog(built, p, styleMap, styleNames, info) {
     w.add("statictext", undefined, info.notes.join("\n"), { multiline: true }).preferredSize = [760, 16 * info.notes.length + 4];
   }
 
+  // 句読点が前回号と違うときは、統一するか聞く
+  var punctBoxes = [], pq;
+  if (info.punct && info.punct.length > 0) {
+    var pp = w.add("panel", undefined, "句読点");
+    pp.alignChildren = "left";
+    for (pq = 0; pq < info.punct.length; pq++) {
+      var pm = info.punct[pq];
+      var cb = pp.add("checkbox", undefined, "前回号に合わせて「" + pm.to + "」に統一する (原稿の「" + pm.from + "」" + pm.count + " か所を置き換え)");
+      cb.value = true;
+      punctBoxes.push({ box: cb, change: pm });
+    }
+  }
   var showAll = w.add("checkbox", undefined, "本文・注・参考文献の段落もすべて表示する");
   var lb = w.add("listbox", undefined, undefined, {
     numberOfColumns: 3, showHeaders: true,
@@ -1431,7 +1514,11 @@ function confirmDialog(built, p, styleMap, styleNames, info) {
   btns.alignment = "right";
   var ok = btns.add("button", undefined, "流し込む", { name: "ok" });
   var cancel = btns.add("button", undefined, "キャンセル", { name: "cancel" });
-  ok.onClick = function () { w.close(1); };
+  ok.onClick = function () {
+    var q;
+    for (q = 0; q < punctBoxes.length; q++) punctBoxes[q].change.apply = punctBoxes[q].box.value;
+    w.close(1);
+  };
   cancel.onClick = function () { w.close(2); };
   fill();
   w.center();
@@ -1641,6 +1728,35 @@ function makeTableTemplate(doc, story) {
   }
 }
 
+// 行数・列数を合わせる。増減は中ほどで行い、最初と最後の行(列)は残す。
+// (最後の行だけ下罫線が太いなど、端の行・列のセルスタイルを保つため。
+//  最後の行を写して増やすと、太い罫線の行が増えてしまう)
+function resizeKeepingEnds(tbl, bodyRows, cols) {
+  var guard = 0, n;
+  while (tbl.bodyRowCount < bodyRows && guard++ < 1000) {
+    n = tbl.rows.length;
+    // 最後から2番目の行の後ろに足す = ふつうの行の書式を写す
+    if (tbl.bodyRowCount >= 2) tbl.rows.add(LocationOptions.AFTER, tbl.rows[n - 2]);
+    else tbl.bodyRowCount = tbl.bodyRowCount + 1;
+  }
+  while (tbl.bodyRowCount > bodyRows && tbl.bodyRowCount >= 2 && guard++ < 2000) {
+    n = tbl.rows.length;
+    tbl.rows[n - 2].remove();   // 本文の行が2行以上あるので、最後から2番目は本文の行
+  }
+  while (tbl.columnCount < cols && guard++ < 3000) {
+    n = tbl.columns.length;
+    if (n >= 2) tbl.columns.add(LocationOptions.AFTER, tbl.columns[n - 2]);
+    else tbl.columnCount = tbl.columnCount + 1;
+  }
+  while (tbl.columnCount > cols && tbl.columnCount >= 2 && guard++ < 4000) {
+    n = tbl.columns.length;
+    tbl.columns[n - 2].remove();
+  }
+  // 念のため、合わなかったときは数で合わせる
+  if (tbl.bodyRowCount !== bodyRows) tbl.bodyRowCount = bodyRows;
+  if (tbl.columnCount !== cols) tbl.columnCount = cols;
+}
+
 function fillTable(tbl, rows, widths, targetWidth) {
   var R = rows.length, C = 0, r, c, flat = [];
   for (r = 0; r < R; r++) if (rows[r].length > C) C = rows[r].length;
@@ -1648,8 +1764,7 @@ function fillTable(tbl, rows, widths, targetWidth) {
   var h = tbl.headerRowCount > 0 ? 1 : 0;
   if (R - h < 1) h = 0;
   tbl.headerRowCount = h;
-  tbl.bodyRowCount = R - h;
-  tbl.columnCount = C;
+  resizeKeepingEnds(tbl, R - h, C);
   for (r = 0; r < R; r++) for (c = 0; c < C; c++) flat.push(rows[r][c] !== undefined ? rows[r][c] : "");
   try { tbl.contents = flat; }
   catch (e) {
@@ -1925,9 +2040,16 @@ function main() {
   if (profile.learnedFrom === 0) notes.push("※ 前回号の体裁を学習できなかったため、スタイル名から推測しています。");
   if (front) notes.push("※ 題目〜キーワードは、別のテキストボックス(前回号で題目があった所)に入れます。");
   if (tailStart >= 0) notes.push("※ 英文要旨の部分は原稿にないため、前回号のまま残します。");
-  if (!confirmDialog(built, profile, styleMap, sty.names, { docxName: docxName, notes: notes })) {
+  var punct = punctMismatches(built, profile);
+  if (!confirmDialog(built, profile, styleMap, sty.names, { docxName: docxName, notes: notes, punct: punct })) {
     if (ms.folder) removeFolder(ms.folder);
     return;
+  }
+  var pu, punctReport = [];
+  for (pu = 0; pu < punct.length; pu++) {
+    if (!punct[pu].apply) continue;
+    unifyPunct(built, punct[pu]);
+    punctReport.push("「" + punct[pu].from + "」→「" + punct[pu].to + "」を " + punct[pu].count + " か所置き換えました。");
   }
 
   // 前付けを別ストーリーに分ける
@@ -1957,7 +2079,7 @@ function main() {
   if (ms.folder) removeFolder(ms.folder);
   hideProgress();
 
-  var report = [];
+  var report = punctReport;
   _ctx = {
     doc: doc, story: story, tailStart: tailStart, built: built,
     styleNames: resolveStyleNames(built.items, profile, styleMap),

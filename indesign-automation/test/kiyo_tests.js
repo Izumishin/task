@@ -327,6 +327,69 @@ const sameProf = defaultProfile(); sameProf.styles.h1 = '【06_大見出し】10
 check('中見出しが大見出しと同じスタイルなら、名前から中見出しのスタイルを探す', initialStyleMap(sameProf, names).h2 === '【07_中見出し】9pt',
       initialStyleMap(sameProf, names).h2);
 
+// ---- 句読点の統一 ----
+console.log('punctuation:');
+const commaOld = [{ text: '前回の題目', style: 'T' }, { text: '1．はじめに', style: '【06_大見出し】' },
+  { text: '　本研究は，制度と産業の関係を，三つの層から論じる．先行研究は，技術の面を，主に扱ってきた．', style: 'B' },
+  { text: '　さらに，第2章では，事例を，検討する．M．J．Evans（1981）は，これを示した．', style: 'B' },
+  { text: '　最後に，結論を述べる．', style: 'B' }
+].map(x => Object.assign({ level: 0, runs: null }, x));
+const commaProf = learnProfile(commaOld);
+check('前回号は「，」と「．」', commaProf.punct.comma === '，' && commaProf.punct.period === '．', JSON.stringify(commaProf.punct));
+const pBuilt = buildItems(readDocxParts(n => (files[n] !== undefined ? files[n] : null)), commaProf);
+pBuilt.items.find(x => x.role === 'body').text = '　制度、産業、技術を論じる。1．5倍になった。';
+pBuilt.items.find(x => x.role === 'table').table.rows[1][1] = '一、二。';
+const mism = punctMismatches(pBuilt, commaProf);
+check('原稿の「、」「。」を数える', mism.length === 2 && mism[0].from === '、' && mism[0].to === '，' && mism[1].from === '。' && mism[1].to === '．',
+      JSON.stringify(mism));
+const beforeRefs = JSON.stringify(buildStoryText(pBuilt.items).chars);
+mism.forEach(m => unifyPunct(pBuilt, m));
+check('本文・表のセルの句読点を置き換える', pBuilt.items.find(x => x.role === 'body').text === '　制度，産業，技術を論じる．1．5倍になった．' &&
+      pBuilt.items.find(x => x.role === 'table').table.rows[1][1] === '一，二．', pBuilt.items.find(x => x.role === 'body').text);
+check('置き換えても注番号などの位置はずれない', JSON.stringify(buildStoryText(pBuilt.items).chars) === beforeRefs);
+// 逆向き (「．」→「。」) は日本語の文の終わりだけ
+const toMaru = { kind: 'period', from: '．', to: '。' };
+const bk = { items: [{ role: 'body', text: '1．はじめに。M．J．Evansは示した．数値は3．5である．' }], footnotes: [{ text: '脚注です．' }] };
+unifyPunct(bk, toMaru);
+check('「．」→「。」は文の終わりだけ (見出し番号・略称・小数はそのまま)', bk.items[0].text === '1．はじめに。M．J．Evansは示した。数値は3．5である。' && bk.footnotes[0].text === '脚注です。',
+      bk.items[0].text);
+check('前回号がどちらとも言えないときは聞かない', _dominant(10, 5, '、', '，') === null && _dominant(2, 0, '、', '，') === null);
+
+// ---- 表の行数・列数の合わせ方 (端の行・列のセルスタイルを残す) ----
+console.log('table resize:');
+const resizeSrc = src.match(/function resizeKeepingEnds[\s\S]*?\n}\n/)[0];
+const LocationOptions = { AFTER: 'after', BEFORE: 'before' };
+eval(resizeSrc);
+function mockTable(rowStyles, header, colStyles) {
+  const t = { rows: [], columns: [], headerRowCount: header };
+  rowStyles.forEach(st => t.rows.push({ style: st }));
+  colStyles.forEach(st => t.columns.push({ style: st }));
+  const wrap = (arr, key) => {
+    arr.add = (loc, ref) => { const i = arr.indexOf(ref); arr.splice(loc === 'after' ? i + 1 : i, 0, { style: ref.style }); };
+    arr.forEach(x => { x.remove = () => arr.splice(arr.indexOf(x), 1); });
+    const origAdd = arr.add;
+    arr.add = (loc, ref) => { origAdd(loc, ref); arr.forEach(x => { x.remove = () => arr.splice(arr.indexOf(x), 1); }); };
+  };
+  wrap(t.rows); wrap(t.columns);
+  Object.defineProperty(t, 'bodyRowCount', {
+    get() { return t.rows.length - t.headerRowCount; },
+    set(v) { while (t.rows.length - t.headerRowCount < v) { t.rows.push({ style: t.rows[t.rows.length - 1].style }); } while (t.rows.length - t.headerRowCount > v) t.rows.pop(); t.rows.forEach(x => { x.remove = () => t.rows.splice(t.rows.indexOf(x), 1); }); }
+  });
+  Object.defineProperty(t, 'columnCount', {
+    get() { return t.columns.length; },
+    set(v) { while (t.columns.length < v) t.columns.push({ style: t.columns[t.columns.length - 1].style }); while (t.columns.length > v) t.columns.pop(); }
+  });
+  return t;
+}
+let mt = mockTable(['見出し行', '本文行', '本文行', '最終行'], 1, ['1列目', '列', '最終列']);
+resizeKeepingEnds(mt, 6, 5);
+check('行・列を増やしても最初と最後は残る', mt.rows.map(r => r.style).join(',') === '見出し行,本文行,本文行,本文行,本文行,本文行,最終行' &&
+      mt.columns.map(c => c.style).join(',') === '1列目,列,列,列,最終列', mt.rows.map(r => r.style).join(',') + ' / ' + mt.columns.map(c => c.style).join(','));
+mt = mockTable(['見出し行', '本文行', '本文行', '最終行'], 1, ['1列目', '列', '最終列']);
+resizeKeepingEnds(mt, 1, 2);
+check('行・列を減らしても最後の行・列は残る', mt.rows.map(r => r.style).join(',') === '見出し行,最終行' &&
+      mt.columns.map(c => c.style).join(',') === '1列目,最終列', mt.rows.map(r => r.style).join(',') + ' / ' + mt.columns.map(c => c.style).join(','));
+
 // ---- InDesign の古い JavaScript で使えない予約語 ----
 console.log('ExtendScript:');
 const reservedHits = require('./es3_reserved')(src);
