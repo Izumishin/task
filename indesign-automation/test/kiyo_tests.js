@@ -282,6 +282,51 @@ const h2roles = classifySequence(h2only);
 check('最上位が「見出し 2」でも大見出しに繰り上げる', h2roles[2] === 'h1' && h2roles[4] === 'h1' && h2roles[5] === 'h2', h2roles.join(','));
 check('繰り上げても「1.1」の番号の形は崩さない', _normHeading('1.1　 対象', 'h1', prof) === '1.1　対象', _normHeading('1.1　 対象', 'h1', prof));
 
+// ---- Word の脚注 → InDesign の脚注 ----
+console.log('footnotes:');
+const FN = id => `<w:r><w:footnoteReference w:id="${id}"/></w:r>`;
+const fnDoc = `<?xml version="1.0"?><w:document ${W}><w:body>
+${P('脚注のある論文')}${P('１．はじめに', 'Heading1')}
+<w:p><w:r><w:t>本文の一文目</w:t></w:r>${FN(2)}<w:r><w:t>。二文目</w:t></w:r>${FN(3)}</w:p>
+<w:tbl><w:tblGrid><w:gridCol w:w="1000"/></w:tblGrid><w:tr><w:tc><w:p><w:r><w:t>表の中</w:t></w:r>${FN(4)}</w:p></w:tc></w:tr></w:tbl>
+${P('注・参考文献', 'Heading1')}${P('理論・方法・関連研究', 'Heading2')}${P('文献A（2020）')}${P('付録A：分析の手順', 'Heading1')}${P('付録の本文。')}
+<w:sectPr/></w:body></w:document>`;
+const fnXml = `<?xml version="1.0"?><w:footnotes ${W}>
+<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>
+<w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>
+<w:footnote w:id="2"><w:p><w:r><w:footnoteRef/></w:r><w:r><w:t xml:space="preserve"> 一つ目の脚注。</w:t></w:r></w:p></w:footnote>
+<w:footnote w:id="3"><w:p><w:r><w:footnoteRef/></w:r><w:r><w:t xml:space="preserve"> 二つ目の脚注</w:t></w:r></w:p><w:p><w:r><w:t>二段落目</w:t></w:r></w:p></w:footnote>
+<w:footnote w:id="4"><w:p><w:r><w:footnoteRef/></w:r><w:r><w:t xml:space="preserve"> 表の中の脚注</w:t></w:r></w:p></w:footnote>
+</w:footnotes>`;
+const fnFiles = { 'word/document.xml': fnDoc, 'word/footnotes.xml': fnXml, 'word/styles.xml': stylesXml };
+const fnMs = readDocxParts(n => (fnFiles[n] !== undefined ? fnFiles[n] : null));
+const fnBuilt = buildItems(fnMs, prof);
+const fnBody = fnBuilt.items.find(x => x.role === 'body');
+check('脚注は文字にせず位置だけ残す (注の欄も作らない)', fnBody.text === '　本文の一文目。二文目' && !fnBuilt.items.some(x => x.role === 'note' || x.role === 'noteTitle'),
+      JSON.stringify(fnBuilt.items.map(x => x.role + ':' + x.text)));
+check('脚注の本文 (2段落目も)', fnBuilt.footnotes.length === 2 && fnBuilt.footnotes[0].text === '一つ目の脚注。' && fnBuilt.footnotes[1].text === '二つ目の脚注\r二段落目',
+      JSON.stringify(fnBuilt.footnotes));
+const fnSb = buildStoryText(fnBuilt.items);
+const fnPos = fnSb.chars.filter(c => c.kind === 'footnote');
+check('脚注の位置 (字下げの分もずらす)', fnPos.length === 2 && fnSb.text.substring(fnPos[0].start - 6, fnPos[0].start) === '本文の一文目' &&
+      fnSb.text.substring(fnPos[1].start - 3, fnPos[1].start) === '二文目' && fnPos[0].footnote === 0 && fnPos[1].footnote === 1,
+      JSON.stringify(fnPos));
+check('表の中の注は警告に出す', fnBuilt.warnings.some(w => w.indexOf('表の中') >= 0), JSON.stringify(fnBuilt.warnings));
+const fnRoles = fnBuilt.items.map(x => x.role);
+check('「注・参考文献」は参考文献の見出し、その中の見出しは小見出し、付録は大見出し',
+      fnBuilt.items.find(x => x.text === '注・参考文献').role === 'refTitle' &&
+      fnBuilt.items.find(x => x.text === '理論・方法・関連研究').role === 'refSub' &&
+      fnBuilt.items.find(x => x.text === '文献A（2020）').role === 'ref' &&
+      fnBuilt.items.find(x => x.text.indexOf('付録A') === 0).role === 'h1', fnRoles.join(','));
+
+// ---- 段落スタイルの個別指定・大見出しと同じスタイルの防止 ----
+const ovItems = JSON.parse(JSON.stringify(its));
+ovItems[h1Idx].styleOverride = '【08_小見出し】9pt';
+check('段落ごとに個別指定したスタイルを優先', resolveStyleNames(ovItems, prof, smap)[h1Idx] === '【08_小見出し】9pt');
+const sameProf = defaultProfile(); sameProf.styles.h1 = '【06_大見出し】10.5pt'; sameProf.styles.h2 = '【06_大見出し】10.5pt';
+check('中見出しが大見出しと同じスタイルなら、名前から中見出しのスタイルを探す', initialStyleMap(sameProf, names).h2 === '【07_中見出し】9pt',
+      initialStyleMap(sameProf, names).h2);
+
 // ---- InDesign の古い JavaScript で使えない予約語 ----
 console.log('ExtendScript:');
 const reservedHits = require('./es3_reserved')(src);

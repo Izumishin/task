@@ -381,6 +381,7 @@ function parseDocxBody(xml, styles, collectNotes, onProgress) {
     if (para === null) return;
     if (cell !== null) {
       cell.paras.push(para.text);
+      if (para.refs.length > 0 && tbl !== null) tbl.lostRefs = (tbl.lostRefs || 0) + para.refs.length;
     } else if (collectNotes) {
       if (noteParas !== null) noteParas.push(para.text);
     } else {
@@ -412,7 +413,7 @@ function parseDocxBody(xml, styles, collectNotes, onProgress) {
         var done = tbl;
         tbl = tblStack.length > 0 ? tblStack.pop() : null;
         if (tbl === null) {
-          blocks.push({ type: "table", rows: done.rows, widths: done.widths });
+          blocks.push({ type: "table", rows: done.rows, widths: done.widths, lostRefs: done.lostRefs || 0 });
         } else if (cell !== null) {
           // 表の中の表は、文字だけ親のセルに入れる
           var k, flat = [];
@@ -552,7 +553,7 @@ var RE_H_NUM = /^[0-9０-９]+[\s　]*[．.、][\s　]*\S|^[0-9０-９]+[\s　]+
 var RE_H_SUB = /^[0-9０-９]+[.．][0-9０-９]+(?![.．][0-9０-９])/;
 var RE_H_SUB2 = /^[0-9０-９]+[.．][0-9０-９]+[.．][0-9０-９]+/;
 var RE_H_WORDS = /^(はじめに|序論|序章|序|おわりに|結論|結語|まとめ|むすび|むすびにかえて|謝辞|付記|補論)$/;
-var RE_REF_TITLE = /^(参考文献|引用文献|参考・引用文献|引用・参考文献|文献|文献一覧|文献リスト|References?|Bibliography)$/i;
+var RE_REF_TITLE = /^([0-9０-９]+[．.\s　]*)?(参考文献|引用文献|参考・引用文献|引用・参考文献|注・参考文献|注および参考文献|注と参考文献|参考文献・注|参考文献および注|文献|文献一覧|文献リスト|References?|Bibliography)$/i;
 var RE_NOTE_TITLE = /^[《〈【［\[(（]?[\s　]*(注|註|注釈|脚注|Notes?)[\s　]*[》〉】］\])）]?$/i;
 var RE_NOTE_ITEM = /^[（(][\s　\u2002-\u200A]*[0-9０-９]+[\s　\u2002-\u200A]*[）)]/;
 var RE_ABS_TITLE = /^(要[\s　]*旨|概[\s　]*要|抄[\s　]*録|Abstract|ABSTRACT|Summary)$/;
@@ -628,8 +629,14 @@ function classifySequence(items) {
     // ---- 本文以降 ----
     if (RE_REF_TITLE.test(t)) { roles.push("refTitle"); mode = "ref"; continue; }
     if (RE_NOTE_TITLE.test(t)) { roles.push("noteTitle"); mode = "note"; continue; }
+    if (mode === "ref" && depth > 0 && !/^([0-9０-９]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]|第|付録|補論|Appendix)/i.test(t) && !RE_H_WORDS.test(t)) {
+      roles.push("refSub"); continue;
+    }
     if (depth > 0 && !(mode === "note" && RE_NOTE_ITEM.test(t))) {
-      if (mode === "ref" && depth === 1 && !RE_H_WORDS.test(t) && !/^[0-9０-９]+[．.]/.test(t)) { /* 文献中の数字始まりは文献 */ }
+      // 参考文献の欄の「1 Smith (2000)…」のような数字始まりの行は文献。
+      // Word の見出しスタイルが付いているか、付録・章などで始まるときだけ見出しに戻す
+      if (mode === "ref" && !(it.level > 0) && !RE_H_WORDS.test(t) && !/^[0-9０-９]+[．.]/.test(t) &&
+          !/^(付録|補論|Appendix|第)/i.test(t) && !RE_H_ROMAN.test(t)) { /* 文献 */ }
       else { roles.push(depth === 1 ? "h1" : depth === 2 ? "h2" : "h3"); mode = "body"; continue; }
     }
     if (mode === "ref") { roles.push(RE_REF_SUB.test(t) ? "refSub" : "ref"); continue; }
@@ -880,15 +887,23 @@ function buildItems(ms, p) {
   var roles = classifySequence(seq);
   for (i = 0; i < seq.length; i++) if (seq[i].forceRole && roles[i] !== "empty") roles[i] = seq[i].forceRole;
 
-  // 注番号は本文中に出てきた順
-  var noteOrder = [], noteNo = {}, items = [], warnings = [];
+  // 注番号は本文中に出てきた順。Word の脚注は InDesign の脚注にするので別に数える
+  var noteOrder = [], noteNo = {}, items = [], warnings = [], footnotes = [], fnNo = {};
   for (i = 0; i < seq.length; i++) {
     b = seq[i].block;
     if (!b.refs) continue;
     var q;
     for (q = 0; q < b.refs.length; q++) {
       var key = b.refs[q].kind + ":" + b.refs[q].id;
-      if (!noteNo[key]) { noteOrder.push(b.refs[q]); noteNo[key] = noteOrder.length; }
+      if (b.refs[q].kind === "footnote") {
+        if (fnNo[key] === undefined) {
+          var fpar = ms.footnotes[b.refs[q].id], ftxt = [], fq;
+          if (!fpar) { warnings.push("脚注 " + (footnotes.length + 1) + " の本文が見つかりませんでした"); fpar = [""]; }
+          for (fq = 0; fq < fpar.length; fq++) { var ft = trimWS(fpar[fq]); if (ft !== "" || fq === 0) ftxt.push(ft); }
+          fnNo[key] = footnotes.length;
+          footnotes.push({ text: ftxt.join("\r") });
+        }
+      } else if (!noteNo[key]) { noteOrder.push(b.refs[q]); noteNo[key] = noteOrder.length; }
     }
   }
 
@@ -898,7 +913,11 @@ function buildItems(ms, p) {
     b = seq[i].block;
     if (role === "empty") continue;
     if (role === "refTitle" && noteInsertAt < 0) noteInsertAt = items.length;
-    if (role === "table") { items.push({ role: "table", text: "■表■", table: b }); continue; }
+    if (role === "table") {
+      if (b.lostRefs) warnings.push("表の中にある注 " + b.lostRefs + " 件は取り込めませんでした (表の中の注番号を確認してください)");
+      items.push({ role: "table", text: "■表■", table: b });
+      continue;
+    }
     if (role === "figure") { items.push({ role: "figure", text: "■図■", image: b.image }); continue; }
     var text = b.text.replace(/\n/g, "\n"), refs = [], k, off = 0, sorted = b.refs.slice(0);
     sorted.sort(function (x, y) { return x.pos - y.pos; });
@@ -906,18 +925,24 @@ function buildItems(ms, p) {
     var out = "";
     var last = 0;
     for (k = 0; k < sorted.length; k++) {
-      var n = noteNo[sorted[k].kind + ":" + sorted[k].id];
       out += text.substring(last, sorted[k].pos);
+      last = sorted[k].pos;
+      if (sorted[k].kind === "footnote") {
+        // 脚注は位置だけ覚えておき、流し込むときに InDesign の脚注を入れる
+        refs.push({ start: out.length, len: 0, footnote: fnNo[sorted[k].kind + ":" + sorted[k].id] });
+        continue;
+      }
+      var n = noteNo[sorted[k].kind + ":" + sorted[k].id];
       var mark = _noteRef(n, p);
       refs.push({ start: out.length, len: mark.length });
       out += mark;
-      last = sorted[k].pos;
     }
     out += text.substring(last);
     // 体裁の調整
     var lead = /^[ \t]*/.exec(out)[0].length;
-    if (lead > 0) { out = out.substring(lead); for (k = 0; k < refs.length; k++) refs[k].start -= lead; }
+    if (lead > 0) { out = out.substring(lead); for (k = 0; k < refs.length; k++) refs[k].start = Math.max(0, refs[k].start - lead); }
     var tr = /[\s　]+$/.exec(out); if (tr) out = out.substring(0, out.length - tr[0].length);
+    for (k = 0; k < refs.length; k++) if (refs[k].start > out.length) refs[k].start = out.length;
     var shift = 0;
     if (role === "h1" || role === "h2" || role === "h3") {
       var before = out;
@@ -932,7 +957,8 @@ function buildItems(ms, p) {
       if (p.abstractIndent && out.charAt(0) !== "　") { out = "　" + out; shift = 1; }
     } else if (role === "abstractTitle" && p.labels.abstractTitle) {
       out = p.labels.abstractTitle;
-    } else if (role === "refTitle" && p.labels.refTitle) {
+    } else if (role === "refTitle" && p.labels.refTitle && !/注/.test(out) && !/注/.test(p.labels.refTitle)) {
+      // 「引用文献」「文献」などの言い換えは前回号の表記にそろえる (「注・参考文献」はそのまま)
       out = p.labels.refTitle;
     } else if (role === "noteTitle" && p.labels.noteTitle) {
       out = p.labels.noteTitle;
@@ -981,7 +1007,7 @@ function buildItems(ms, p) {
     }
     withBlanks.push(items[w]);
   }
-  return { items: withBlanks, notes: noteOrder.length, warnings: warnings };
+  return { items: withBlanks, notes: noteOrder.length, footnotes: footnotes, warnings: warnings };
 }
 
 // 段落列 → 1つの文字列と、段落・文字スタイルの位置
@@ -990,7 +1016,10 @@ function buildStoryText(items) {
   for (i = 0; i < items.length; i++) {
     it = items[i];
     paras.push({ role: it.role, start: pos, len: it.text.length, index: i });
-    if (it.refs) for (k = 0; k < it.refs.length; k++) chars.push({ kind: "noteRef", start: pos + it.refs[k].start, len: it.refs[k].len });
+    if (it.refs) for (k = 0; k < it.refs.length; k++) {
+      if (it.refs[k].footnote !== undefined) chars.push({ kind: "footnote", start: pos + it.refs[k].start, len: 0, footnote: it.refs[k].footnote });
+      else chars.push({ kind: "noteRef", start: pos + it.refs[k].start, len: it.refs[k].len });
+    }
     if (it.dash) for (k = 0; k < it.dash.length; k++) chars.push({ kind: "dash", start: pos + it.dash[k].start, len: it.dash[k].len });
     if (it.label) chars.push({ kind: it.role === "keywords" ? "keywordsLabel" : "figSourceLabel", start: pos + it.label.start, len: it.label.len });
     parts.push(it.text);
@@ -1055,6 +1084,11 @@ function initialStyleMap(p, names) {
     }
   }
   for (i = 0; i < ROLES.length; i++) { r = ROLES[i][0]; if (!map[r]) map[r] = map.body || null; }
+  // 中見出し・小見出しが大見出しと同じスタイルになったら、名前から別のスタイルを探す
+  var sub = ["h2", "h3"], g2;
+  for (i = 0; i < sub.length; i++) {
+    if (map[sub[i]] === map.h1) { g2 = guessStyleName(sub[i], names); if (g2 && g2 !== map.h1) map[sub[i]] = g2; }
+  }
   return map;
 }
 
@@ -1085,6 +1119,7 @@ function resolveStyleNames(items, p, styleMap) {
   for (i = 0; i < items.length; i++) {
     r = items[i].role;
     if (r === "blank") { out.push(p.blankStyle[items[i].forRole] || styleMap.body || null); continue; }
+    if (items[i].styleOverride) { out.push(items[i].styleOverride); continue; }
     name = styleMap[r] || null;
     next = nonBlank(i + 1, 1);
     prev = nonBlank(i - 1, -1);
@@ -1257,17 +1292,31 @@ function oldTitleText(paras, roles) {
 
 var MAIN_ROLES = { body: 0, note: 0, ref: 0, blank: 0 };
 
-function confirmDialog(built, p, styleMap, styleNames, info) {
-  var items = built.items, i, w, cnt = {};
+function countRoles(items) {
+  var cnt = {}, i;
   for (i = 0; i < items.length; i++) cnt[items[i].role] = (cnt[items[i].role] || 0) + 1;
+  return cnt;
+}
+
+function confirmDialog(built, p, styleMap, styleNames, info) {
+  var items = built.items, i, w;
+  var nFoot = built.footnotes ? built.footnotes.length : 0;
+  function summaryText() {
+    var cnt = countRoles(items);
+    return "原稿: " + info.docxName + "\n" +
+      "大見出し " + (cnt.h1 || 0) + " / 中見出し " + (cnt.h2 || 0) + " / 小見出し " + (cnt.h3 || 0) +
+      " / 表 " + (cnt.table || 0) + " / 図 " + (cnt.figure || 0) + " / 脚注 " + nFoot + " 件 / 文末脚注 " + built.notes +
+      " 件 / 本文 " + (cnt.body || 0) + " 段落";
+  }
 
   w = new Window("dialog", "紀要の流し込み — 内容の確認");
   w.orientation = "column";
   w.alignChildren = "fill";
-  var sum = "原稿: " + info.docxName + "\n" +
-    "大見出し " + (cnt.h1 || 0) + " / 中見出し " + (cnt.h2 || 0) + " / 小見出し " + (cnt.h3 || 0) +
-    " / 表 " + (cnt.table || 0) + " / 図 " + (cnt.figure || 0) + " / 注 " + built.notes + " 件 / 本文 " + (cnt.body || 0) + " 段落";
-  w.add("statictext", undefined, sum, { multiline: true }).preferredSize = [760, 36];
+  var sumText = w.add("statictext", undefined, summaryText(), { multiline: true });
+  sumText.preferredSize = [760, 36];
+  if (built.warnings && built.warnings.length > 0) {
+    w.add("statictext", undefined, "［注意］" + built.warnings.join(" / "), { multiline: true }).preferredSize = [760, 32];
+  }
   if (info.notes.length > 0) {
     w.add("statictext", undefined, info.notes.join("\n"), { multiline: true }).preferredSize = [760, 16 * info.notes.length + 4];
   }
@@ -1307,7 +1356,20 @@ function confirmDialog(built, p, styleMap, styleNames, info) {
   }
   var dd = g.add("dropdownlist", undefined, labels);
   dd.preferredSize = [180, 24];
-  var bStyles = g.add("button", undefined, "種類ごとの段落スタイルを確認・変更…");
+
+  // 選んだ段落にだけ、別の段落スタイルを使う
+  var g2 = w.add("group");
+  g2.add("statictext", undefined, "選んだ段落の段落スタイルを個別に指定:");
+  var styleChoices = ["(種類ごとの設定に従う)"].concat(styleNames);
+  var ddStyle = g2.add("dropdownlist", undefined, styleChoices);
+  ddStyle.preferredSize = [300, 24];
+  var bStyles = g2.add("button", undefined, "種類ごとの段落スタイルを確認・変更…");
+
+  function refreshStyles() {
+    var names = resolveStyleNames(items, p, styleMap), q;
+    for (q = 0; q < rowMap.length; q++) lb.items[q].subItems[1].text = names[rowMap[q]] || "(なし)";
+    sumText.text = summaryText();
+  }
 
   // 複数選択のときは配列、1つのときは項目1つが返るので、配列にそろえる
   function selectedRows() {
@@ -1328,7 +1390,24 @@ function confirmDialog(built, p, styleMap, styleNames, info) {
     updating = true;
     dd.selection = null;
     if (same) for (c = 0; c < codes.length; c++) if (codes[c] === role0) { dd.selection = c; break; }
+    // 個別に指定したスタイルがあれば表示する
+    var ov = items[rowMap[rows[0]]].styleOverride || null, sameOv = true;
+    for (q = 1; q < rows.length; q++) if ((items[rowMap[rows[q]]].styleOverride || null) !== ov) sameOv = false;
+    ddStyle.selection = null;
+    if (sameOv) {
+      if (ov === null) ddStyle.selection = 0;
+      else for (c = 0; c < styleNames.length; c++) if (styleNames[c] === ov) { ddStyle.selection = c + 1; break; }
+    }
     updating = false;
+  };
+  ddStyle.onChange = function () {
+    if (updating || !ddStyle.selection) return;
+    var rows = selectedRows(), q, it, sel = ddStyle.selection.index;
+    for (q = 0; q < rows.length; q++) {
+      it = items[rowMap[rows[q]]];
+      if (sel === 0) delete it.styleOverride; else it.styleOverride = styleNames[sel - 1];
+    }
+    refreshStyles();
   };
   dd.onChange = function () {
     if (updating || !dd.selection) return;
@@ -1337,14 +1416,15 @@ function confirmDialog(built, p, styleMap, styleNames, info) {
       idx = rows[q]; it = items[rowMap[idx]];
       if (it.role === "table" || it.role === "figure" || it.role === nr) continue;
       changeRole(it, nr, p);
+      delete it.styleOverride;
       lb.items[idx].text = roleLabel(nr);
     }
     // 見出しの種類が変わると前後の段落のスタイル(変化形)も変わるので、全行の表示を更新する
-    var names = resolveStyleNames(items, p, styleMap);
-    for (q = 0; q < rowMap.length; q++) lb.items[q].subItems[1].text = names[rowMap[q]] || "(なし)";
+    updating = true; ddStyle.selection = 0; updating = false;
+    refreshStyles();
   };
   bStyles.onClick = function () {
-    if (styleMapDialog(styleMap, styleNames, cnt)) fill();
+    if (styleMapDialog(styleMap, styleNames, countRoles(items))) refreshStyles();
   };
 
   var btns = w.add("group");
@@ -1367,11 +1447,12 @@ function styleMapDialog(styleMap, styleNames, cnt) {
   pnl.alignChildren = "left";
   var dds = [], i, r, row, dd, k;
   var list = ["(本文と同じ)"].concat(styleNames);
+  var ALWAYS = { h1: 1, h2: 1, h3: 1, body: 1 };
   for (i = 0; i < ROLES.length; i++) {
     r = ROLES[i][0];
-    if (!cnt[r]) continue;
+    if (!cnt[r] && !ALWAYS[r]) continue;
     row = pnl.add("group");
-    row.add("statictext", undefined, ROLES[i][1]).preferredSize = [140, 20];
+    row.add("statictext", undefined, ROLES[i][1] + (cnt[r] ? " (" + cnt[r] + ")" : "")).preferredSize = [150, 20];
     dd = row.add("dropdownlist", undefined, list);
     dd.preferredSize = [320, 22];
     dd.selection = 0;
@@ -1677,13 +1758,29 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
   var cs, c, miss = {};
   for (i = 0; i < sb.chars.length; i++) {
     c = sb.chars[i];
+    if (c.kind === "footnote") continue;
     cs = ctx.charStyles[c.kind];
     if (!cs) { miss[c.kind] = true; continue; }
     var s0 = mapIdx(c.start), s1 = mapIdx(c.start + c.len) - 1;
     try { story.characters.itemByRange(s0, s1).texts[0].appliedCharacterStyle = cs; } catch (e3) {}
   }
 
-  // 4) 図と表 (後ろから入れると、前の段落の位置がずれない)
+  // 4) Word の脚注を InDesign の脚注として入れる (後ろから入れると、前の位置がずれない)
+  //    番号の書式と脚注本文のスタイルは、InDesign の「脚注オプション」の設定に従う
+  var fns = [], nFn = 0, fnFail = 0;
+  for (i = 0; i < sb.chars.length; i++) if (sb.chars[i].kind === "footnote") fns.push(sb.chars[i]);
+  for (i = fns.length - 1; i >= 0; i--) {
+    try {
+      var fn = story.insertionPoints.item(mapIdx(fns[i].start)).footnotes.add();
+      var ftx = built.footnotes && built.footnotes[fns[i].footnote] ? built.footnotes[fns[i].footnote].text : "";
+      if (ftx !== "") fn.insertionPoints.item(-1).contents = ftx;
+      nFn++;
+    } catch (e6) { fnFail++; }
+  }
+  if (nFn > 0) report.push("脚注 " + nFn + " 件を InDesign の脚注として入れました。");
+  if (fnFail > 0) report.push("[注意] 脚注 " + fnFail + " 件を入れられませんでした。");
+
+  // 5) 図と表 (後ろから入れると、前の段落の位置がずれない)
   var nFig = 0, nTbl = 0, it, para;
   for (i = n - 1; i >= 0; i--) {
     it = built.items[i];
@@ -1844,8 +1941,8 @@ function main() {
       (inFront ? fi : bi).push(built.items[x]);
     }
     while (bi.length > 0 && bi[0].role === "blank") bi.shift();
-    frontBuilt = { items: fi, notes: 0 };
-    built = { items: bi, notes: built.notes, warnings: built.warnings };
+    frontBuilt = { items: fi, notes: 0, footnotes: built.footnotes };
+    built = { items: bi, notes: built.notes, footnotes: built.footnotes, warnings: built.warnings };
   }
 
   var newTitle = null;
