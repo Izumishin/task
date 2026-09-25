@@ -390,6 +390,63 @@ resizeKeepingEnds(mt, 1, 2);
 check('行・列を減らしても最後の行・列は残る', mt.rows.map(r => r.style).join(',') === '見出し行,最終行' &&
       mt.columns.map(c => c.style).join(',') === '1列目,最終列', mt.rows.map(r => r.style).join(',') + ' / ' + mt.columns.map(c => c.style).join(','));
 
+// ---- 文字の飾り (イタリック・ルビなど) ----
+console.log('character formatting:');
+const R = (t, rpr) => `<w:r><w:rPr>${rpr}</w:rPr><w:t xml:space="preserve">${t}</w:t></w:r>`;
+const T = t => `<w:r><w:t xml:space="preserve">${t}</w:t></w:r>`;
+const fmtStyles = `<?xml version="1.0"?><w:styles ${W}>
+<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/></w:style>
+<w:style w:type="character" w:styleId="Emph"><w:name w:val="Emphasis"/><w:rPr><w:i/></w:rPr></w:style>
+<w:style w:type="character" w:styleId="MyEmph"><w:name w:val="独自の強調"/><w:basedOn w:val="Emph"/></w:style>
+<w:style w:type="character" w:styleId="Hyperlink"><w:name w:val="Hyperlink"/><w:rPr><w:u w:val="single"/></w:rPr></w:style>
+<w:style w:type="character" w:styleId="EndnoteReference"><w:name w:val="endnote reference"/><w:rPr><w:vertAlign w:val="superscript"/></w:rPr></w:style>
+</w:styles>`;
+const fmtDoc = `<?xml version="1.0"?><w:document ${W}><w:body>
+<w:p><w:pPr><w:rPr><w:b/></w:rPr></w:pPr>${R('飾りの題目', '<w:b/>')}</w:p>
+${P('１．はじめに', 'Heading1')}
+<w:p>${T('雑誌')}${R('Nature', '<w:i/>')}${R(' Medicine', '<w:i/><w:b w:val="0"/>')}${EN(1)}${T('と')}${R('強調', '<w:rStyle w:val="MyEmph"/>')}${T('、')}${R('https://x.jp', '<w:rStyle w:val="Hyperlink"/>')}${T('、H')}${R('2', '<w:vertAlign w:val="subscript"/>')}${T('O、')}${R('大事', '<w:em w:val="dot"/>')}${T('、')}${R('下線', '<w:u w:val="single"/>')}${T('、')}<w:r><w:ruby><w:rubyPr/><w:rt>${T('けいざい')}</w:rt><w:rubyBase>${T('経済')}</w:rubyBase></w:ruby></w:r>${T('。')}</w:p>
+<w:p>${T('本文')}${FN(5)}${T('。')}</w:p>
+<w:sectPr/></w:body></w:document>`;
+const fmtEnd = `<?xml version="1.0"?><w:endnotes ${W}><w:endnote w:id="1"><w:p><w:r><w:endnoteRef/></w:r>${T(' 注の中の')}${R('Cell', '<w:i/>')}${T('誌。')}</w:p></w:endnote></w:endnotes>`;
+const fmtFoot = `<?xml version="1.0"?><w:footnotes ${W}><w:footnote w:id="5"><w:p><w:r><w:footnoteRef/></w:r>${T(' 一段落目')}</w:p><w:p>${R('Science', '<w:i/>')}${T('を参照。')}</w:p></w:footnote></w:footnotes>`;
+const fmtFiles = { 'word/document.xml': fmtDoc, 'word/styles.xml': fmtStyles, 'word/endnotes.xml': fmtEnd, 'word/footnotes.xml': fmtFoot };
+const fmtMs = readDocxParts(n => (fmtFiles[n] !== undefined ? fmtFiles[n] : null));
+const fb = fmtMs.blocks.find(b => b.text.indexOf('雑誌') === 0);
+const seg = f => fb.text.substring(f.start, f.end);
+const got = fb.fmt.map(f => f.key + ':' + seg(f) + (f.ruby ? '(' + f.ruby + ')' : ''));
+check('直接の書式・Word の文字スタイル・ルビを読む',
+      JSON.stringify(got) === JSON.stringify(['italic:Nature Medicine', 'italic:強調', 'sub:2', 'kenten:大事', 'underline:下線', 'ruby:経済(けいざい)']),
+      JSON.stringify(got));
+check('ルビの文字は本文に入れない', fb.text.indexOf('けいざい') < 0 && fb.text.indexOf('経済') > 0, fb.text);
+check('リンクの下線・段落記号の書式は飾りにしない', !got.some(g => g.indexOf('https') >= 0) && fmtMs.blocks[0].fmt.length === 1);
+
+const fmtBuilt = buildItems(fmtMs, prof);
+const fbody = fmtBuilt.items.find(x => x.role === 'body' && x.text.indexOf('雑誌') >= 0);
+const segB = f => fbody.text.substring(f.start, f.end);
+check('字下げ・注番号を入れても飾りの位置が合う', segB(fbody.fmt[0]) === 'Nature Medicine' && segB(fbody.fmt[1]) === '強調' &&
+      fbody.text.indexOf('Nature Medicine（1）と') > 0 && segB(fbody.fmt[5]) === '経済', fbody.fmt.map(segB).join(','));
+check('題目全体の太字は段落スタイルに任せて外す', (fmtBuilt.items.find(x => x.role === 'title').fmt || []).length === 0);
+const fnote = fmtBuilt.items.find(x => x.role === 'note');
+check('文末脚注の中のイタリックも位置が合う', fnote.text.substring(fnote.fmt[0].start, fnote.fmt[0].end) === 'Cell', JSON.stringify(fnote));
+const ff = fmtBuilt.footnotes[0];
+check('脚注の中のイタリック (2段落目) も位置が合う', ff.text === '一段落目\rScienceを参照。' && ff.text.substring(ff.fmt[0].start, ff.fmt[0].end) === 'Science',
+      JSON.stringify(ff));
+const fsb = buildStoryText(fmtBuilt.items);
+check('流し込み用テキストでも飾りの位置が合う', fsb.chars.filter(c => c.kind === 'fmt').map(c => fsb.text.substr(c.start, c.len)).join(',') ===
+      'Nature Medicine,強調,2,大事,下線,経済,Cell', fsb.chars.filter(c => c.kind === 'fmt').map(c => fsb.text.substr(c.start, c.len)).join(','));
+const fcnt = countFmtKinds(fmtBuilt);
+check('飾りの数 (本文・注・脚注)', fcnt.italic === 4 && fcnt.ruby === 1 && fcnt.sub === 1 && fcnt.kenten === 1 && fcnt.underline === 1, JSON.stringify(fcnt));
+const descs = [
+  { name: '[なし]' }, { name: '【太ゴB101】', fontStyle: 'B101' }, { name: '欧文イタリック', fontStyle: 'Italic' },
+  { name: '上付き', position: 'sup' }, { name: '圏点', kenten: true }, { name: '【ルビ】', ruby: true }, { name: 'アンダーライン', underline: true },
+  { name: 'Bold', fontStyle: 'Bold' }
+].map(d => Object.assign({ fontStyle: '', underline: false, position: '', kenten: false, strike: false, ruby: false }, d));
+const gm = guessFmtStyleNames(descs);
+check('文字スタイルの設定から飾り用を選ぶ', gm.italic === '欧文イタリック' && gm.sup === '上付き' && gm.kenten === '圏点' && gm.ruby === '【ルビ】' &&
+      gm.underline === 'アンダーライン' && gm.bold === 'Bold' && !gm.sub, JSON.stringify(gm));
+check('飾りが重なったら上付き・下付き → 斜体 → 太字の順', pickFmtKind({ italic: true, bold: true }, { italic: 'x', bold: 'y' }) === 'italic' &&
+      pickFmtKind({ italic: true, sup: true }, { italic: 'x', sup: 'z' }) === 'sup' && pickFmtKind({ italic: true }, { bold: 'y' }) === null);
+
 // ---- InDesign の古い JavaScript で使えない予約語 ----
 console.log('ExtendScript:');
 const reservedHits = require('./es3_reserved')(src);

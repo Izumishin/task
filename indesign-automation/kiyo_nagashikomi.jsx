@@ -322,24 +322,206 @@ function _isTagEnd(ch) {
 
 // styles.xml → { styleId: { name, basedOn, outline } }
 function parseDocxStyles(xml) {
-  var styles = {}, pos = 0, lt, gt, tag, name, cur = null;
+  var styles = {}, pos = 0, lt, gt, tag, name, cur = null, inRPr = 0;
   if (!xml) return styles;
   while (true) {
     lt = xml.indexOf("<", pos); if (lt < 0) break;
     gt = xml.indexOf(">", lt); if (gt < 0) break;
     tag = xml.substring(lt + 1, gt); pos = gt + 1;
-    if (tag.charAt(0) === "/") { if (tag === "/w:style") cur = null; continue; }
+    if (tag.charAt(0) === "/") {
+      if (tag === "/w:style") cur = null;
+      else if (tag === "/w:rPr" && inRPr > 0) inRPr--;
+      continue;
+    }
     name = _tagName(tag);
     if (name === "w:style") {
-      cur = { id: xmlAttr(tag, "w:styleId") || "", name: "", basedOn: null, outline: null };
+      cur = { id: xmlAttr(tag, "w:styleId") || "", type: xmlAttr(tag, "w:type") || "", name: "", basedOn: null, outline: null, fmt: {} };
       styles[cur.id] = cur;
     } else if (cur !== null) {
       if (name === "w:name") cur.name = xmlAttr(tag, "w:val") || "";
       else if (name === "w:basedOn") cur.basedOn = xmlAttr(tag, "w:val");
       else if (name === "w:outlineLvl") cur.outline = parseInt(xmlAttr(tag, "w:val"), 10);
+      else if (name === "w:rPr" && tag.charAt(tag.length - 1) !== "/") inRPr++;
+      else if (inRPr > 0) readRunProp(name, tag, cur.fmt);
     }
   }
   return styles;
+}
+
+// ---- 文字の飾り (イタリック・太字・下線・上付き・下付き・圏点・取り消し線・ルビ) ----
+
+var FMT_KINDS = [
+  ["italic", "イタリック"], ["bold", "太字"], ["underline", "下線"], ["sup", "上付き"], ["sub", "下付き"],
+  ["kenten", "圏点"], ["strike", "取り消し線"], ["ruby", "ルビ"]
+];
+
+function fmtLabel(kind) {
+  var i;
+  for (i = 0; i < FMT_KINDS.length; i++) if (FMT_KINDS[i][0] === kind) return FMT_KINDS[i][1];
+  return kind;
+}
+
+function _isOn(tag) {
+  var v = xmlAttr(tag, "w:val");
+  return v === null || !(v === "0" || v === "false" || v === "off" || v === "none");
+}
+
+// <w:rPr> の中の1つのタグを読んで fmt に反映する
+function readRunProp(name, tag, fmt) {
+  var v;
+  if (name === "w:i") { if (_isOn(tag)) fmt.italic = true; else delete fmt.italic; }
+  else if (name === "w:b") { if (_isOn(tag)) fmt.bold = true; else delete fmt.bold; }
+  else if (name === "w:u") { if (_isOn(tag)) fmt.underline = true; else delete fmt.underline; }
+  else if (name === "w:strike" || name === "w:dstrike") { if (_isOn(tag)) fmt.strike = true; else delete fmt.strike; }
+  else if (name === "w:em") { if (_isOn(tag)) fmt.kenten = true; else delete fmt.kenten; }
+  else if (name === "w:vertAlign") {
+    v = xmlAttr(tag, "w:val");
+    delete fmt.sup; delete fmt.sub;
+    if (v === "superscript") fmt.sup = true;
+    else if (v === "subscript") fmt.sub = true;
+  }
+}
+
+// Word の文字スタイル (基にしたスタイルも含む) の飾り。リンクや注番号のスタイルは飾りとして扱わない
+function docxStyleFmt(styles, id) {
+  var chain = [], s = styles[id], guard = 0, out = {}, i, k;
+  while (s && guard++ < 10) { chain.unshift(s); s = s.basedOn ? styles[s.basedOn] : null; }
+  if (chain.length === 0) return out;
+  if (/hyperlink|ハイパーリンク|footnote|endnote|脚注|文末/i.test(chain[chain.length - 1].name)) return out;
+  for (i = 0; i < chain.length; i++) for (k in chain[i].fmt) if (chain[i].fmt.hasOwnProperty(k)) out[k] = true;
+  return out;
+}
+
+function _fmtKey(f) {
+  var k, keys = [];
+  for (k in f) if (f.hasOwnProperty(k) && f[k] === true) keys.push(k);
+  keys.sort();
+  return keys.join("+");
+}
+
+// 原稿の飾りを種類ごとに数える (本文・注・脚注)
+function countFmtKinds(built) {
+  var cnt = {}, i, k, j, list = [];
+  for (i = 0; i < built.items.length; i++) if (built.items[i].fmt) list = list.concat(built.items[i].fmt);
+  if (built.footnotes) for (i = 0; i < built.footnotes.length; i++) if (built.footnotes[i].fmt) list = list.concat(built.footnotes[i].fmt);
+  for (j = 0; j < list.length; j++) {
+    if (list[j].ruby) { cnt.ruby = (cnt.ruby || 0) + 1; continue; }
+    for (k = 0; k < FMT_KINDS.length; k++) if (list[j][FMT_KINDS[k][0]]) cnt[FMT_KINDS[k][0]] = (cnt[FMT_KINDS[k][0]] || 0) + 1;
+  }
+  return cnt;
+}
+
+// InDesign の文字スタイルの設定から、どの飾り用かを推測する
+// descs: [{ name, fontStyle, underline, position ("sup"/"sub"/""), kenten, strike, ruby }]
+function guessFmtStyleNames(descs) {
+  var best = {}, score = {}, i, d, k, sc;
+  var tests = {
+    italic: function (x) { return (/Italic|Oblique|斜体|イタリック/i.test(x.fontStyle) ? 2 : 0) + (/イタリック|斜体|italic/i.test(x.name) ? 1 : 0); },
+    bold: function (x) { return (/Bold|Heavy|Black|太字/i.test(x.fontStyle) ? 2 : 0) + (/太字|ボールド|bold/i.test(x.name) ? 1 : 0); },
+    underline: function (x) { return (x.underline ? 2 : 0) + (/下線|アンダー|underline/i.test(x.name) ? 1 : 0); },
+    sup: function (x) { return (x.position === "sup" ? 2 : 0) + (/上付/.test(x.name) ? 1 : 0); },
+    sub: function (x) { return (x.position === "sub" ? 2 : 0) + (/下付/.test(x.name) ? 1 : 0); },
+    kenten: function (x) { return (x.kenten ? 2 : 0) + (/圏点|傍点/.test(x.name) ? 1 : 0); },
+    strike: function (x) { return (x.strike ? 2 : 0) + (/取り?消し|打ち?消し|strike/i.test(x.name) ? 1 : 0); },
+    ruby: function (x) { return (x.ruby ? 2 : 0) + (/ルビ|ruby/i.test(x.name) ? 1 : 0); }
+  };
+  for (i = 0; i < descs.length; i++) {
+    d = descs[i];
+    if (!d.name || d.name.charAt(0) === "[") continue;
+    for (k in tests) {
+      if (!tests.hasOwnProperty(k)) continue;
+      sc = tests[k](d);
+      if (sc > 0 && (!score[k] || sc > score[k])) { score[k] = sc; best[k] = d.name; }
+    }
+  }
+  return best;
+}
+
+// 1つの区間に当てる文字スタイル (飾りが重なっているときは、上付き・下付き → 斜体 → 太字 … の順で1つ)
+var FMT_PRIORITY = ["sup", "sub", "italic", "bold", "underline", "kenten", "strike"];
+function pickFmtKind(span, fmtMap) {
+  var i;
+  for (i = 0; i < FMT_PRIORITY.length; i++) if (span[FMT_PRIORITY[i]] && fmtMap[FMT_PRIORITY[i]]) return FMT_PRIORITY[i];
+  return null;
+}
+
+// ---- 飾りの区間の位置合わせ (文字の差し込み・削除に合わせてずらす) ----
+
+function _copySpan(sp) { var o = {}, k; for (k in sp) if (sp.hasOwnProperty(k)) o[k] = sp[k]; return o; }
+
+// [from, to) の部分だけを取り出し、offset を引いた位置にする
+function clipSpans(list, from, to, offset) {
+  var out = [], i, sp;
+  if (!list) return out;
+  for (i = 0; i < list.length; i++) {
+    if (list[i].end <= from || list[i].start >= to) continue;
+    sp = _copySpan(list[i]);
+    sp.start = Math.max(sp.start, from) - offset;
+    sp.end = Math.min(sp.end, to) - offset;
+    if (sp.end > sp.start) out.push(sp);
+  }
+  return out;
+}
+
+// 注番号などを差し込んだぶんずらす。marks: [{ pos (差し込む前の位置), len }]
+// 区間の始まりと同じ位置に差し込んだ文字は区間の前、終わりと同じ位置なら区間の後ろに来る
+function shiftSpansForMarks(list, marks) {
+  var i, j, sp, a, b;
+  for (i = 0; i < list.length; i++) {
+    sp = list[i]; a = 0; b = 0;
+    for (j = 0; j < marks.length; j++) {
+      if (marks[j].pos <= sp.start) a += marks[j].len;
+      if (marks[j].pos < sp.end) b += marks[j].len;
+    }
+    sp.start += a; sp.end += b;
+  }
+}
+
+function moveSpans(list, delta) {
+  var i;
+  if (!list || !delta) return;
+  for (i = 0; i < list.length; i++) { list[i].start += delta; list[i].end += delta; }
+}
+
+// 文字数の範囲に収め、空になった区間を除く
+function fitSpans(list, len) {
+  var out = [], i;
+  for (i = 0; i < list.length; i++) {
+    if (list[i].start < 0) list[i].start = 0;
+    if (list[i].end > len) list[i].end = len;
+    if (list[i].end > list[i].start) out.push(list[i]);
+  }
+  return out;
+}
+
+// 見出しなどの段落全体にかかった太字・斜体・下線は、段落スタイルの役目なので外す
+function dropWholeParaEmphasis(list, text) {
+  var out = [], i, sp, core = text.replace(/[\s　\t]/g, "").length;
+  for (i = 0; i < list.length; i++) {
+    sp = list[i];
+    if (!sp.ruby && core > 0) {
+      var covered = text.substring(sp.start, sp.end).replace(/[\s　\t]/g, "").length;
+      if (covered / core >= 0.9) {
+        delete sp.bold; delete sp.italic; delete sp.underline;
+        sp.key = _fmtKey(sp);
+        if (sp.key === "") continue;
+      }
+    }
+    out.push(sp);
+  }
+  return out;
+}
+
+// 飾りの区間を足す (直前と同じ飾りで続いていればつなげる)
+function addFmtSpan(list, start, end, f) {
+  if (end <= start) return;
+  var key = _fmtKey(f);
+  if (key === "") return;
+  var last = list.length > 0 ? list[list.length - 1] : null;
+  if (last && !last.ruby && last.key === key && last.end === start) { last.end = end; return; }
+  var span = { start: start, end: end, key: key }, k;
+  for (k in f) if (f.hasOwnProperty(k) && f[k] === true) span[k] = true;
+  list.push(span);
 }
 
 // Word スタイルから見出しレベル (1〜) を求める。見出しでなければ 0
@@ -374,6 +556,7 @@ function parseRels(xml) {
 function parseDocxBody(xml, styles, collectNotes, onProgress) {
   var blocks = [], pos = 0, n = xml.length, lt, gt, tag, name, selfClose, closeIdx;
   var para = null, skip = 0, inTabs = 0, fallback = 0, txbx = 0;
+  var inPPr = 0, runFmt = null, inRPr = false, ruby = null, inRt = 0;
   var tblStack = [], tbl = null, row = null, cell = null, grid = null;
   var notes = {}, noteId = null, noteParas = null;
 
@@ -383,7 +566,7 @@ function parseDocxBody(xml, styles, collectNotes, onProgress) {
       cell.paras.push(para.text);
       if (para.refs.length > 0 && tbl !== null) tbl.lostRefs = (tbl.lostRefs || 0) + para.refs.length;
     } else if (collectNotes) {
-      if (noteParas !== null) noteParas.push(para.text);
+      if (noteParas !== null) { noteParas.push(para.text); noteParas.fmt.push(para.fmt); }
     } else {
       para.level = docxHeadingLevel(styles, para.styleId);
       blocks.push(para);
@@ -403,6 +586,17 @@ function parseDocxBody(xml, styles, collectNotes, onProgress) {
       name = tag.substring(1);
       if (name === "w:instrText" || name === "w:delText") { if (skip > 0) skip--; }
       else if (name === "w:tabs") { if (inTabs > 0) inTabs--; }
+      else if (name === "w:pPr") { if (inPPr > 0) inPPr--; }
+      else if (name === "w:rPr") { inRPr = false; }
+      else if (name === "w:r") { runFmt = null; }
+      else if (name === "w:rt") { if (inRt > 0) inRt--; }
+      else if (name === "w:rubyBase") { if (ruby !== null && para !== null) ruby.end = para.text.length; }
+      else if (name === "w:ruby") {
+        if (ruby !== null && para !== null && ruby.start >= 0 && ruby.end > ruby.start && ruby.text !== "") {
+          para.fmt.push({ start: ruby.start, end: ruby.end, key: "ruby", ruby: ruby.text });
+        }
+        ruby = null;
+      }
       else if (name === "mc:Fallback") { if (fallback > 0) fallback--; }
       else if (name === "w:txbxContent") { if (txbx > 0) txbx--; }
       else if (fallback > 0 || txbx > 0) continue;
@@ -440,6 +634,7 @@ function parseDocxBody(xml, styles, collectNotes, onProgress) {
       var tp = xmlAttr(tag, "w:type");
       noteId = xmlAttr(tag, "w:id");
       noteParas = (tp === "separator" || tp === "continuationSeparator" || tp === "continuationNotice") ? null : [];
+      if (noteParas !== null) noteParas.fmt = [];
       continue;
     }
     if (name === "w:tbl") { if (tbl !== null) tblStack.push(tbl); tbl = { rows: [], widths: [] }; grid = tbl.widths; continue; }
@@ -447,16 +642,43 @@ function parseDocxBody(xml, styles, collectNotes, onProgress) {
     if (name === "w:tr") { row = []; continue; }
     if (name === "w:tc") { cell = { paras: [] }; continue; }
     if (name === "w:p") {
-      para = { type: "p", text: "", styleId: "", level: 0, refs: [], image: null };
+      para = { type: "p", text: "", styleId: "", level: 0, refs: [], image: null, fmt: [] };
       if (selfClose) flushPara();
       continue;
     }
     if (para === null) continue;
-    if (name === "w:pStyle") { para.styleId = xmlAttr(tag, "w:val") || ""; continue; }
+    // 段落記号の書式 (<w:pPr> の中の <w:rPr>) は文字の飾りではない
+    if (name === "w:pPr") { if (!selfClose) inPPr++; continue; }
+    if (inPPr > 0) {
+      if (name === "w:pStyle") para.styleId = xmlAttr(tag, "w:val") || "";
+      continue;
+    }
+    if (name === "w:r") { runFmt = {}; continue; }
+    if (name === "w:rPr") { inRPr = !selfClose; continue; }
+    if (inRPr && runFmt !== null) {
+      if (name === "w:rStyle") {
+        var sf = docxStyleFmt(styles, xmlAttr(tag, "w:val")), sk;
+        for (sk in sf) if (sf.hasOwnProperty(sk)) runFmt[sk] = true;
+      } else {
+        readRunProp(name, tag, runFmt);
+      }
+      continue;
+    }
+    if (name === "w:ruby") { ruby = { text: "", start: -1, end: -1 }; continue; }
+    if (name === "w:rt") { if (!selfClose) inRt++; continue; }
+    if (name === "w:rubyBase") { if (ruby !== null) ruby.start = para.text.length; continue; }
     if (name === "w:t" && !selfClose) {
       closeIdx = xml.indexOf("</w:t>", pos);
       if (closeIdx < 0) break;
-      if (skip === 0) para.text += decodeXmlEntities(xml.substring(pos, closeIdx));
+      if (skip === 0) {
+        var tt = decodeXmlEntities(xml.substring(pos, closeIdx));
+        if (inRt > 0) { if (ruby !== null) ruby.text += tt; }
+        else {
+          var t0 = para.text.length;
+          para.text += tt;
+          if (runFmt !== null) addFmtSpan(para.fmt, t0, para.text.length, runFmt);
+        }
+      }
       pos = closeIdx + 6;
       continue;
     }
@@ -881,8 +1103,10 @@ function buildItems(ms, p) {
   for (i = 0; i < seq.length; i++) if (!seq[i].isTable && trimWS(seq[i].text) !== "") { firstIdx = i; break; }
   if (firstIdx >= 0 && seq[firstIdx].text.indexOf("\n") > 0) {
     var tb = seq[firstIdx].block, cut = tb.text.indexOf("\n");
-    var head = { type: "p", text: tb.text.substring(0, cut), styleId: tb.styleId, level: 0, refs: [], image: null };
-    var tail = { type: "p", text: tb.text.substring(cut + 1).replace(/\n/g, ""), styleId: tb.styleId, level: 0, refs: [], image: null };
+    var head = { type: "p", text: tb.text.substring(0, cut), styleId: tb.styleId, level: 0, refs: [], image: null,
+                 fmt: clipSpans(tb.fmt, 0, cut, 0) };
+    var tail = { type: "p", text: tb.text.substring(cut + 1).replace(/\n/g, ""), styleId: tb.styleId, level: 0, refs: [], image: null,
+                 fmt: clipSpans(tb.fmt, cut + 1, tb.text.length, cut + 1) };
     var r;
     for (r = 0; r < tb.refs.length; r++) {
       if (tb.refs[r].pos <= cut) head.refs.push(tb.refs[r]);
@@ -905,11 +1129,21 @@ function buildItems(ms, p) {
       var key = b.refs[q].kind + ":" + b.refs[q].id;
       if (b.refs[q].kind === "footnote") {
         if (fnNo[key] === undefined) {
-          var fpar = ms.footnotes[b.refs[q].id], ftxt = [], fq;
+          var fpar = ms.footnotes[b.refs[q].id], ftxt = [], fq, ffmt = [], flen = 0;
           if (!fpar) { warnings.push("脚注 " + (footnotes.length + 1) + " の本文が見つかりませんでした"); fpar = [""]; }
-          for (fq = 0; fq < fpar.length; fq++) { var ft = trimWS(fpar[fq]); if (ft !== "" || fq === 0) ftxt.push(ft); }
+          for (fq = 0; fq < fpar.length; fq++) {
+            var ft = trimWS(fpar[fq]);
+            if (ft === "" && fq !== 0) continue;
+            if (ftxt.length > 0) flen += 1;   // 段落の区切り "\r"
+            var fl = /^[\s　]*/.exec(fpar[fq])[0].length;
+            var fsp = fpar.fmt && fpar.fmt[fq] ? clipSpans(fpar.fmt[fq], fl, fl + ft.length, fl) : [];
+            moveSpans(fsp, flen);
+            ffmt = ffmt.concat(fsp);
+            ftxt.push(ft);
+            flen += ft.length;
+          }
           fnNo[key] = footnotes.length;
-          footnotes.push({ text: ftxt.join("\r") });
+          footnotes.push({ text: ftxt.join("\r"), fmt: ffmt });
         }
       } else if (!noteNo[key]) { noteOrder.push(b.refs[q]); noteNo[key] = noteOrder.length; }
     }
@@ -931,7 +1165,8 @@ function buildItems(ms, p) {
     sorted.sort(function (x, y) { return x.pos - y.pos; });
     // 注番号を差し込む
     var out = "";
-    var last = 0;
+    var last = 0, marks = [], fm = [], fi;
+    if (b.fmt) for (fi = 0; fi < b.fmt.length; fi++) fm.push(_copySpan(b.fmt[fi]));
     for (k = 0; k < sorted.length; k++) {
       out += text.substring(last, sorted[k].pos);
       last = sorted[k].pos;
@@ -943,42 +1178,52 @@ function buildItems(ms, p) {
       var n = noteNo[sorted[k].kind + ":" + sorted[k].id];
       var mark = _noteRef(n, p);
       refs.push({ start: out.length, len: mark.length });
+      marks.push({ pos: sorted[k].pos, len: mark.length });
       out += mark;
     }
     out += text.substring(last);
+    shiftSpansForMarks(fm, marks);
     // 体裁の調整
     var lead = /^[ \t]*/.exec(out)[0].length;
-    if (lead > 0) { out = out.substring(lead); for (k = 0; k < refs.length; k++) refs[k].start = Math.max(0, refs[k].start - lead); }
+    if (lead > 0) { out = out.substring(lead); for (k = 0; k < refs.length; k++) refs[k].start = Math.max(0, refs[k].start - lead); moveSpans(fm, -lead); }
     var tr = /[\s　]+$/.exec(out); if (tr) out = out.substring(0, out.length - tr[0].length);
     for (k = 0; k < refs.length; k++) if (refs[k].start > out.length) refs[k].start = out.length;
+    fm = fitSpans(fm, out.length);
     var shift = 0;
     if (role === "h1" || role === "h2" || role === "h3") {
       var before = out;
       out = _normHeading(trimWS(out), role, p);
-      if (refs.length > 0 && out.length !== before.length) {
-        // 見出しに注番号がある場合は末尾側の位置を保つ
+      if (out.length !== before.length) {
+        // 見出しの番号の書き方を変えたぶん、後ろの注番号・飾りの位置をずらす
         for (k = 0; k < refs.length; k++) refs[k].start += out.length - before.length;
+        moveSpans(fm, out.length - before.length);
       }
     } else if (role === "body") {
       if (p.bodyIndent && out.charAt(0) !== "　") { out = "　" + out; shift = 1; }
     } else if (role === "abstract") {
       if (p.abstractIndent && out.charAt(0) !== "　") { out = "　" + out; shift = 1; }
     } else if (role === "abstractTitle" && p.labels.abstractTitle) {
-      out = p.labels.abstractTitle;
+      out = p.labels.abstractTitle; fm = [];
     } else if (role === "refTitle" && p.labels.refTitle && !/注/.test(out) && !/注/.test(p.labels.refTitle)) {
       // 「引用文献」「文献」などの言い換えは前回号の表記にそろえる (「注・参考文献」はそのまま)
-      out = p.labels.refTitle;
+      out = p.labels.refTitle; fm = [];
     } else if (role === "noteTitle" && p.labels.noteTitle) {
-      out = p.labels.noteTitle;
+      out = p.labels.noteTitle; fm = [];
     } else if (role === "keywords" && p.labels.keywords) {
+      var kb = out.length;
       out = out.replace(RE_KEYWORDS, p.labels.keywords);
+      moveSpans(fm, out.length - kb);
     } else if (role === "ref" && p.refUrlTab && /^https?:/.test(out)) {
       out = "\t" + out; shift = 1;
     } else {
+      var ob = out.length;
       out = out.replace(/^[　]+/, "");
+      moveSpans(fm, out.length - ob);
     }
-    if (shift) for (k = 0; k < refs.length; k++) refs[k].start += shift;
-    var item = { role: role, text: out, refs: refs };
+    if (shift) { for (k = 0; k < refs.length; k++) refs[k].start += shift; moveSpans(fm, shift); }
+    fm = fitSpans(fm, out.length);
+    if (HEADINGISH[role] || role === "keywords") fm = dropWholeParaEmphasis(fm, out);
+    var item = { role: role, text: out, refs: refs, fmt: fm };
     if (role === "keywords") { var km = RE_KEYWORDS.exec(out); if (km) item.label = { start: 0, len: km[0].length }; }
     if (role === "figSource") { var sm = RE_FIG_SOURCE.exec(out); if (sm) item.label = { start: 0, len: sm[0].length }; }
     if (role === "title" || role === "subtitle") {
@@ -999,7 +1244,11 @@ function buildItems(ms, p) {
       for (pi = 0; pi < paras.length; pi++) {
         var nt = trimWS(paras[pi]);
         if (nt === "" && !first) continue;
-        noteItems.push({ role: "note", text: first ? _noteNum(nn + 1, p) + p.noteNumSep + nt : p.noteCont + nt, refs: [] });
+        var pre = first ? _noteNum(nn + 1, p) + p.noteNumSep : p.noteCont;
+        var nl = /^[\s　]*/.exec(paras[pi])[0].length;
+        var nfm = paras.fmt && paras.fmt[pi] ? clipSpans(paras.fmt[pi], nl, nl + nt.length, nl) : [];
+        moveSpans(nfm, pre.length);
+        noteItems.push({ role: "note", text: pre + nt, refs: [], fmt: nfm });
         first = false;
       }
     }
@@ -1030,6 +1279,9 @@ function buildStoryText(items) {
     }
     if (it.dash) for (k = 0; k < it.dash.length; k++) chars.push({ kind: "dash", start: pos + it.dash[k].start, len: it.dash[k].len });
     if (it.label) chars.push({ kind: it.role === "keywords" ? "keywordsLabel" : "figSourceLabel", start: pos + it.label.start, len: it.label.len });
+    if (it.fmt) for (k = 0; k < it.fmt.length; k++) {
+      chars.push({ kind: "fmt", start: pos + it.fmt[k].start, len: it.fmt[k].end - it.fmt[k].start, span: it.fmt[k] });
+    }
     parts.push(it.text);
     pos += it.text.length + 1;
   }
@@ -1108,6 +1360,7 @@ function changeRole(item, role, p) {
   if ((role === "body" && p.bodyIndent) || (role === "abstract" && p.abstractIndent)) t = "　" + t;
   if (role === "h1" || role === "h2" || role === "h3") t = _normHeading(t, role, p);
   if (item.refs) for (k = 0; k < item.refs.length; k++) item.refs[k].start += t.length - before;
+  if (item.fmt) { moveSpans(item.fmt, t.length - before); item.fmt = fitSpans(item.fmt, t.length); }
   if (item.dash) item.dash = [];
   item.label = null;
   if (role === "keywords") { var km = RE_KEYWORDS.exec(t); if (km) item.label = { start: 0, len: km[0].length }; }
@@ -1308,6 +1561,56 @@ function findStylesByName(doc) {
   return { map: map, names: names };
 }
 
+// 文字スタイルの設定を、推測用の単純な値にする
+function describeCharStyles(doc) {
+  var all = doc.allCharacterStyles, out = [], i, cs, d, v;
+  for (i = 0; i < all.length; i++) {
+    cs = all[i];
+    d = { name: cs.name, fontStyle: "", underline: false, position: "", kenten: false, strike: false, ruby: false };
+    try { v = cs.fontStyle; if (typeof v === "string") d.fontStyle = v; } catch (e1) {}
+    try { d.underline = cs.underline === true; } catch (e2) {}
+    try {
+      v = cs.position;
+      if (v === Position.SUPERSCRIPT || v === Position.OT_SUPERSCRIPT) d.position = "sup";
+      else if (v === Position.SUBSCRIPT || v === Position.OT_SUBSCRIPT) d.position = "sub";
+    } catch (e3) {}
+    try { v = cs.kentenKind; d.kenten = !!v && v !== KentenCharacter.NONE && v !== NothingEnum.NOTHING; } catch (e4) {}
+    try { d.strike = cs.strikeThru === true; } catch (e5) {}
+    try { d.ruby = cs.rubyFlag === true; } catch (e6) {}
+    out.push(d);
+  }
+  return out;
+}
+
+// 飾りの区間を当てる (文字スタイル + ルビ)。base は区間の位置に足す値、target は文字を持つもの (ストーリーや脚注)
+function applyFmtSpans(target, spans, base, mapIdx, fmtStyles, stat) {
+  var i, sp, s0, s1, rng, kind;
+  for (i = 0; i < spans.length; i++) {
+    sp = spans[i];
+    s0 = base + mapIdx(sp.start); s1 = base + mapIdx(sp.end) - 1;
+    if (s1 < s0) continue;
+    try { rng = target.characters.itemByRange(s0, s1).texts[0]; } catch (e0) { continue; }
+    if (sp.ruby) {
+      try {
+        if (fmtStyles.ruby) rng.appliedCharacterStyle = fmtStyles.ruby;
+        rng.rubyFlag = true;
+        rng.rubyString = sp.ruby;
+        try { rng.rubyType = RubyTypes.GROUP_RUBY; } catch (e1) {}
+        stat.ruby = (stat.ruby || 0) + 1;
+      } catch (e2) { stat.failed = (stat.failed || 0) + 1; }
+      continue;
+    }
+    kind = pickFmtKind(sp, fmtStyles);
+    if (kind === null) {
+      var k;
+      for (k = 0; k < FMT_PRIORITY.length; k++) if (sp[FMT_PRIORITY[k]]) stat["skip_" + FMT_PRIORITY[k]] = (stat["skip_" + FMT_PRIORITY[k]] || 0) + 1;
+      continue;
+    }
+    try { rng.appliedCharacterStyle = fmtStyles[kind]; stat[kind] = (stat[kind] || 0) + 1; }
+    catch (e3) { stat.failed = (stat.failed || 0) + 1; }
+  }
+}
+
 function findCharStyle(doc, name) {
   if (!name) return null;
   var all = doc.allCharacterStyles, i;
@@ -1403,6 +1706,27 @@ function confirmDialog(built, p, styleMap, styleNames, info) {
       cb.value = true;
       punctBoxes.push({ box: cb, change: pm });
     }
+  }
+  // 文字の飾り (イタリック・ルビなど) → 文字スタイル
+  var fmtText = null;
+  function fmtSummary() {
+    var f = info.fmt, parts = [], q, kd;
+    for (q = 0; q < FMT_KINDS.length; q++) {
+      kd = FMT_KINDS[q][0];
+      if (!f.counts[kd]) continue;
+      parts.push(FMT_KINDS[q][1] + " " + f.counts[kd] + "か所→" +
+                 (f.map[kd] ? f.map[kd] : (kd === "ruby" ? "(ルビだけ付ける)" : "(当てない)")));
+    }
+    return parts.join(" / ");
+  }
+  if (info.fmt && fmtSummary() !== "") {
+    var fp = w.add("panel", undefined, "文字の飾り (Word のイタリック・ルビなど → InDesign の文字スタイル)");
+    fp.alignChildren = "fill";
+    fmtText = fp.add("statictext", undefined, fmtSummary(), { multiline: true });
+    fmtText.preferredSize = [740, 32];
+    var bFmt = fp.add("button", undefined, "文字の飾りに使う文字スタイルを確認・変更…");
+    bFmt.alignment = "left";
+    bFmt.onClick = function () { if (fmtMapDialog(info.fmt)) fmtText.text = fmtSummary(); };
   }
   var showAll = w.add("checkbox", undefined, "本文・注・参考文献の段落もすべて表示する");
   var lb = w.add("listbox", undefined, undefined, {
@@ -1523,6 +1847,38 @@ function confirmDialog(built, p, styleMap, styleNames, info) {
   fill();
   w.center();
   return w.show() === 1;
+}
+
+function fmtMapDialog(f) {
+  var w = new Window("dialog", "文字の飾りに使う文字スタイル");
+  w.orientation = "column";
+  w.alignChildren = "fill";
+  w.add("statictext", undefined, "文字スタイルの設定 (書体・下線・圏点など) から自動で選んであります。違うものだけ直してください。");
+  var pnl = w.add("panel");
+  pnl.alignChildren = "left";
+  var list = ["(当てない)"].concat(f.names), dds = [], i, kd, row, dd, k;
+  for (i = 0; i < FMT_KINDS.length; i++) {
+    kd = FMT_KINDS[i][0];
+    if (!f.counts[kd]) continue;
+    row = pnl.add("group");
+    row.add("statictext", undefined, FMT_KINDS[i][1] + " (" + f.counts[kd] + "か所)").preferredSize = [150, 20];
+    dd = row.add("dropdownlist", undefined, list);
+    dd.preferredSize = [320, 22];
+    dd.selection = 0;
+    for (k = 0; k < f.names.length; k++) if (f.names[k] === f.map[kd]) { dd.selection = k + 1; break; }
+    dds.push({ kind: kd, dd: dd });
+  }
+  if (f.counts.ruby) w.add("statictext", undefined, "※ ルビの文字は、文字スタイルを当てなくても付きます。");
+  var btns = w.add("group");
+  btns.alignment = "right";
+  btns.add("button", undefined, "OK", { name: "ok" });
+  btns.add("button", undefined, "キャンセル", { name: "cancel" });
+  if (w.show() !== 1) return false;
+  for (i = 0; i < dds.length; i++) {
+    var sel = dds[i].dd.selection ? dds[i].dd.selection.index : 0;
+    f.map[dds[i].kind] = sel === 0 ? null : f.names[sel - 1];
+  }
+  return true;
 }
 
 function styleMapDialog(styleMap, styleNames, cnt) {
@@ -1869,11 +2225,21 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
     a = b + 1;
   }
 
-  // 3) 文字スタイル (注番号・ダーシ・「キーワード：」「出典：」)
+  // 3) 文字の飾り (イタリック・ルビなど)。注番号などの文字スタイルはこのあとで当てる
+  var fmtSpans = [];
+  for (i = 0; i < sb.chars.length; i++) {
+    if (sb.chars[i].kind !== "fmt") continue;
+    var sp0 = _copySpan(sb.chars[i].span);
+    sp0.start = sb.chars[i].start; sp0.end = sb.chars[i].start + sb.chars[i].len;
+    fmtSpans.push(sp0);
+  }
+  applyFmtSpans(story, fmtSpans, 0, mapIdx, ctx.fmtStyles, ctx.fmtStat);
+
+  // 3') 文字スタイル (注番号・ダーシ・「キーワード：」「出典：」)
   var cs, c, miss = {};
   for (i = 0; i < sb.chars.length; i++) {
     c = sb.chars[i];
-    if (c.kind === "footnote") continue;
+    if (c.kind === "footnote" || c.kind === "fmt") continue;
     cs = ctx.charStyles[c.kind];
     if (!cs) { miss[c.kind] = true; continue; }
     var s0 = mapIdx(c.start), s1 = mapIdx(c.start + c.len) - 1;
@@ -1887,8 +2253,13 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
   for (i = fns.length - 1; i >= 0; i--) {
     try {
       var fn = story.insertionPoints.item(mapIdx(fns[i].start)).footnotes.add();
-      var ftx = built.footnotes && built.footnotes[fns[i].footnote] ? built.footnotes[fns[i].footnote].text : "";
-      if (ftx !== "") fn.insertionPoints.item(-1).contents = ftx;
+      var fobj = built.footnotes && built.footnotes[fns[i].footnote] ? built.footnotes[fns[i].footnote] : null;
+      var ftx = fobj ? fobj.text : "";
+      if (ftx !== "") {
+        var fbase = fn.characters.length;
+        fn.insertionPoints.item(-1).contents = ftx;
+        if (fobj.fmt && fobj.fmt.length > 0) applyFmtSpans(fn, fobj.fmt, fbase, makeIndexMapper(ftx), ctx.fmtStyles, ctx.fmtStat);
+      }
       nFn++;
     } catch (e6) { fnFail++; }
   }
@@ -2041,7 +2412,10 @@ function main() {
   if (front) notes.push("※ 題目〜キーワードは、別のテキストボックス(前回号で題目があった所)に入れます。");
   if (tailStart >= 0) notes.push("※ 英文要旨の部分は原稿にないため、前回号のまま残します。");
   var punct = punctMismatches(built, profile);
-  if (!confirmDialog(built, profile, styleMap, sty.names, { docxName: docxName, notes: notes, punct: punct })) {
+  var charNames = [], cdescs = describeCharStyles(doc), cd;
+  for (cd = 0; cd < cdescs.length; cd++) if (cdescs[cd].name && cdescs[cd].name.charAt(0) !== "[") charNames.push(cdescs[cd].name);
+  var fmtInfo = { counts: countFmtKinds(built), map: guessFmtStyleNames(cdescs), names: charNames };
+  if (!confirmDialog(built, profile, styleMap, sty.names, { docxName: docxName, notes: notes, punct: punct, fmt: fmtInfo })) {
     if (ms.folder) removeFolder(ms.folder);
     return;
   }
@@ -2091,9 +2465,12 @@ function main() {
       keywordsLabel: findCharStyle(doc, profile.charStyles.keywordsLabel),
       figSourceLabel: findCharStyle(doc, profile.charStyles.figSourceLabel)
     },
+    fmtStyles: {}, fmtStat: {},
     tableTemplate: null, tableHeadStyle: null, tableBodyStyle: null,
     front: front ? { story: front.story, built: frontBuilt, styleNames: resolveStyleNames(frontBuilt.items, profile, styleMap) } : null
   };
+  var fk;
+  for (fk in fmtInfo.map) if (fmtInfo.map.hasOwnProperty(fk) && fmtInfo.map[fk]) _ctx.fmtStyles[fk] = findCharStyle(doc, fmtInfo.map[fk]);
   var tn;
   for (tn = 0; tn < sty.names.length; tn++) {
     if (!_ctx.tableHeadStyle && /表.*(ゴチ|見出し|ヘッダ)/.test(sty.names[tn])) _ctx.tableHeadStyle = sty.map[sty.names[tn]];
@@ -2115,6 +2492,17 @@ function main() {
   app.scriptPreferences.userInteractionLevel = oldUIL;
   hideProgress();
 
+  // 文字の飾りの結果
+  var st = _ctx.fmtStat, fq2, fparts = [], fskip = [];
+  for (fq2 = 0; fq2 < FMT_KINDS.length; fq2++) {
+    var fkd = FMT_KINDS[fq2][0];
+    if (st[fkd]) fparts.push(FMT_KINDS[fq2][1] + " " + st[fkd] + "か所");
+    if (st["skip_" + fkd]) fskip.push(FMT_KINDS[fq2][1] + " " + st["skip_" + fkd] + "か所");
+  }
+  if (fparts.length > 0) report.push("文字の飾りを当てました: " + fparts.join(" / "));
+  if (fskip.length > 0) report.push("[注意] 文字スタイルを選んでいないため当てなかった飾り: " + fskip.join(" / "));
+  if (st.failed) report.push("[注意] 文字の飾り " + st.failed + " か所を当てられませんでした。");
+
   // 空いたページの削除 (確認してから)
   var empties = emptyTrailingPages(story), undoCount = 1;
   if (empties.length > 0 && confirm("本文が前回より短くなったため、空のページが " + empties.length + " ページあります。削除しますか?")) {
@@ -2128,7 +2516,7 @@ function main() {
   report.push("仕上げに確認してください:");
   report.push("・見出し・表・図の位置と体裁");
   report.push("・偶数ページの柱 (号数など) と開始ページ番号");
-  report.push("・欧文の斜体など、Word 上の文字の飾り (取り込んでいません)");
+  report.push("・文字の飾り (表の中のイタリックなどは取り込んでいません)");
   report.push("・英文要旨のページ (Word 原稿に含まれていなければ前回号のままです)");
   alert("流し込みが終わりました。\n\n" + report.join("\n") +
         "\n\n元に戻すときは「編集 > 取り消し」を " + undoCount + " 回。");
