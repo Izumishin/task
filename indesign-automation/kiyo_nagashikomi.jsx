@@ -232,8 +232,8 @@ function unitsToString(units) {
 
 function decodeXmlEntities(s) {
   if (s.indexOf("&") < 0) return s;
-  s = s.replace(/&#x([0-9A-Fa-f]+);/g, function (m0, h) { return String.fromCharCode(parseInt(h, 16)); });
-  s = s.replace(/&#([0-9]+);/g, function (m0, d) { return String.fromCharCode(parseInt(d, 10)); });
+  s = s.replace(/&#x[0-9A-Fa-f]+;/g, function (m0) { return String.fromCharCode(parseInt(m0.substring(3, m0.length - 1), 16)); });
+  s = s.replace(/&#[0-9]+;/g, function (m0) { return String.fromCharCode(parseInt(m0.substring(2, m0.length - 1), 10)); });
   s = s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
   return s;
 }
@@ -602,8 +602,13 @@ function addFmtSpan(list, start, end, f) {
 function docxHeadingLevel(styles, styleId) {
   var guard = 0, s = styles[styleId], m;
   while (s && guard++ < 10) {
-    m = /^(heading|見出し)\s*([0-9]+)$/i.exec(s.name);
-    if (m) return parseInt(m[2], 10);
+    var nm = String(s.name), rest = null;
+    if (nm.toLowerCase().indexOf("heading") === 0) rest = nm.substring(7);
+    else if (nm.indexOf("見出し") === 0) rest = nm.substring(3);
+    if (rest !== null) {
+      rest = rest.replace(/^\s+/, "");
+      if (/^[0-9]+$/.test(rest)) return parseInt(rest, 10);
+    }
     if (s.outline !== null && !isNaN(s.outline) && s.outline < 9) return s.outline + 1;
     s = s.basedOn ? styles[s.basedOn] : null;
   }
@@ -863,6 +868,8 @@ function trimWS(s) {
 
 function toHanDigits(s) {
   var out = "", i, c;
+  if (s === null || s === undefined) return "";
+  s = String(s);
   for (i = 0; i < s.length; i++) {
     c = s.charCodeAt(i);
     out += (c >= 0xFF10 && c <= 0xFF19) ? String.fromCharCode(c - 0xFF10 + 0x30) : s.charAt(i);
@@ -872,6 +879,8 @@ function toHanDigits(s) {
 
 function toZenDigits(s) {
   var out = "", i, c;
+  if (s === null || s === undefined) return "";
+  s = String(s);
   for (i = 0; i < s.length; i++) {
     c = s.charCodeAt(i);
     out += (c >= 0x30 && c <= 0x39) ? String.fromCharCode(c - 0x30 + 0xFF10) : s.charAt(i);
@@ -1074,12 +1083,15 @@ function learnProfile(oldParas) {
     if (r === "body") { bodyN++; if (raw.charAt(0) === "　") bodyIndented++; }
     if (r === "abstract") { absN++; if (raw.charAt(0) === "　") absIndented++; }
     if (r === "h1") {
-      m = /^([0-9０-９]+)([\s　]*[．.、][\s　]*|[\s　]+)/.exec(t);
-      if (m) { p.headingDigits = /[０-９]/.test(m[1]) ? "zen" : "han"; p.h1Sep = m[2]; }
+      var hn1 = readHeadingNumber(t);
+      if (hn1 !== null && hn1.nums.length === 1 && hn1.sep !== "") {
+        p.headingDigits = /[０-９]/.test(hn1.numText) ? "zen" : "han";
+        p.h1Sep = hn1.sep;
+      }
     }
     if (r === "h2") {
-      m = /^[0-9０-９]+[.．][0-9０-９]+([\s　]*)/.exec(t);
-      if (m && m[1] !== "") p.h2Sep = m[1];
+      var hn2 = readHeadingNumber(t);
+      if (hn2 !== null && hn2.nums.length >= 2 && hn2.sep !== "") p.h2Sep = hn2.sep;
     }
     if (r === "abstractTitle") p.labels.abstractTitle = t;
     if (r === "noteTitle") p.labels.noteTitle = t;
@@ -1097,9 +1109,13 @@ function learnProfile(oldParas) {
       if (m) { var scs = _runAt(oldParas[i].runs, raw.indexOf(m[0]), raw.indexOf(m[0]) + m[0].length); if (scs) _inc(srcCs, scs); }
     }
     if (r === "note") {
-      m = /^[（(]([\s　\u2002-\u200A]*)[0-9０-９]([\s　\u2002-\u200A]*)[）)]([\s\u2002-\u200A]*)/.exec(raw);
-      if (m) { _inc(numPad, m[1] === "" ? "none" : m[1]); if (m[3] !== "") p.noteNumSep = m[3]; }
-      else if (!/^[（(][\s　\u2002-\u200A]*[0-9０-９]{2,}/.test(raw)) {
+      var pn = readParenNumber(raw, 0);
+      if (pn !== null) {
+        // 「（ 1 ）＋タブ」の番号の行: 1桁の番号の空白と、番号の後ろの区切りを覚える
+        if (pn.digits.length === 1) _inc(numPad, pn.pad === "" ? "none" : pn.pad);
+        if (pn.after !== "") p.noteNumSep = pn.after;
+      } else {
+        // 番号のない行は、前の注の続きの行 (先頭の字下げを覚える)
         m = /^[\t 　]*/.exec(raw);
         _inc(contPrefix, m[0]);
       }
@@ -1110,7 +1126,11 @@ function learnProfile(oldParas) {
       re = /[（(]([\s　\u2002-\u200A]*)[0-9０-９]{1,3}([\s　\u2002-\u200A]*)[）)]/g;
       while ((m = re.exec(raw)) !== null) {
         var ncs = _runAt(oldParas[i].runs, m.index, m.index + m[0].length);
-        if (ncs) { _inc(noteRefCs, ncs); if (m[0].replace(/[^0-9０-９]/g, "").length === 1) _inc(refPad, m[1] === "" ? "none" : m[1]); }
+        if (ncs) {
+          _inc(noteRefCs, ncs);
+          var rp = readParenNumber(m[0], 0);
+          if (rp !== null && rp.digits.length === 1) _inc(refPad, rp.pad === "" ? "none" : rp.pad);
+        }
       }
     }
     if (r === "subtitle" || r === "title") {
@@ -1191,22 +1211,62 @@ function _noteRef(n, p) {
   return p.noteRefOpen + (p.noteRefPad && s.length === 1 ? p.noteRefPad + s + p.noteRefPad : s) + p.noteRefClose;
 }
 
-function _normHeading(t, role, p) {
-  var m, num, rest;
-  // 番号の形 (「1．」か「1.1」か) で整える。種類 (大見出し/中見出し) とは限らず一致しないため
-  if (!/^[0-9０-９]+[.．][0-9０-９]/.test(t)) {
-    m = /^([0-9０-９]+)(?:[\s　]*[．.、][\s　]*|[\s　]+)/.exec(t);
-    if (!m) return t;
-    num = p.headingDigits === "zen" ? toZenDigits(m[1]) : toHanDigits(m[1]);
-    return num + p.h1Sep + t.substring(m[0].length);
+// 「（ 1 ）」のような括弧付きの番号を pos から読む
+// 戻り値: { pad: 括弧と数字の間の空白, digits: "1", after: 括弧の後ろの空白・タブ, end } / なければ null
+function readParenNumber(t, pos) {
+  var i = pos, n = t.length, pad = "", digits = "", after = "", ch = t.charAt(i);
+  if (ch !== "\uFF08" && ch !== "(") return null;
+  i++;
+  while (i < n && _isSpaceChar(t.charAt(i))) { pad += t.charAt(i); i++; }
+  while (i < n && _isDigitChar(t.charAt(i))) { digits += t.charAt(i); i++; }
+  if (digits === "") return null;
+  while (i < n && _isSpaceChar(t.charAt(i))) i++;
+  ch = t.charAt(i);
+  if (ch !== "\uFF09" && ch !== ")") return null;
+  i++;
+  while (i < n && (_isSpaceChar(t.charAt(i)) || t.charAt(i) === "\t")) { after += t.charAt(i); i++; }
+  return { pad: pad, digits: digits, after: after, end: i };
+}
+
+// ---- 見出しの先頭の番号を1文字ずつ読む ----
+// InDesign の JavaScript は、正規表現の「( )」で取り出した部分が空になる不具合があるため、
+// 番号の取り出しには正規表現を使わない。
+function _isDigitChar(ch) { return (ch >= "0" && ch <= "9") || (ch >= "\uFF10" && ch <= "\uFF19"); }
+function _isSpaceChar(ch) { return ch === " " || ch === "\t" || ch === "\u3000" || (ch >= "\u2002" && ch <= "\u200A"); }
+
+// 戻り値: { nums: ["2","1"], numText: "2.1", sep: 番号の後ろの区切り (空白・「．」など), punct: 区切りの記号, end: 本文の始まり }
+// 番号で始まらなければ null
+function readHeadingNumber(t) {
+  var i = 0, n = t.length, nums = [], cur = "", ch;
+  while (i < n && _isDigitChar(t.charAt(i))) { cur += t.charAt(i); i++; }
+  if (cur === "") return null;
+  nums.push(cur);
+  while (i + 1 < n && (t.charAt(i) === "." || t.charAt(i) === "\uFF0E") && _isDigitChar(t.charAt(i + 1))) {
+    i++; cur = "";
+    while (i < n && _isDigitChar(t.charAt(i))) { cur += t.charAt(i); i++; }
+    nums.push(cur);
   }
-  m = /^([0-9０-９]+(?:[.．][0-9０-９]+)+)[\s　]*/.exec(t);
-  if (!m) return t;
-  num = m[1];
-  if (p.headingDigits === "zen") num = toZenDigits(num).replace(/\./g, "．");
-  else num = toHanDigits(num).replace(/．/g, ".");
-  rest = t.substring(m[0].length);
-  return num + p.h2Sep + rest;
+  var numEnd = i, j = i, punct = "";
+  while (j < n && _isSpaceChar(t.charAt(j))) j++;
+  ch = j < n ? t.charAt(j) : "";
+  if (ch === "\uFF0E" || ch === "." || ch === "\u3001") { punct = ch; j++; }
+  while (j < n && _isSpaceChar(t.charAt(j))) j++;
+  return { nums: nums, numText: t.substring(0, numEnd), sep: t.substring(numEnd, j), punct: punct, end: j };
+}
+
+function _normHeading(t, role, p) {
+  var h = readHeadingNumber(t), num;
+  if (h === null) return t;
+  // 番号の形 (「1．」か「1.1」か) で整える。種類 (大見出し/中見出し) とは限らず一致しないため
+  if (h.nums.length === 1) {
+    // 「1．はじめに」「1 はじめに」の形だけ (「2020年…」のような数字始まりの文は変えない)
+    if (h.punct === "" && h.sep === "") return t;
+    num = p.headingDigits === "zen" ? toZenDigits(h.numText) : toHanDigits(h.numText);
+    return num + p.h1Sep + t.substring(h.end);
+  }
+  num = h.nums.join(p.headingDigits === "zen" ? "\uFF0E" : ".");
+  num = p.headingDigits === "zen" ? toZenDigits(num) : toHanDigits(num);
+  return num + p.h2Sep + t.substring(h.end);
 }
 
 // 原稿 (readDocxManuscript の結果) を役割付きの段落列にする
@@ -1611,7 +1671,7 @@ function unifyPunct(built, change) {
     if (change.kind === "comma") return t.split(change.from).join(change.to);
     if (change.to === "．") return t.split("。").join("．");
     RE_JP_PERIOD.lastIndex = 0;
-    return t.replace(RE_JP_PERIOD, "$1。");
+    return t.replace(RE_JP_PERIOD, function (all) { return all.charAt(0) + "。"; });
   });
 }
 

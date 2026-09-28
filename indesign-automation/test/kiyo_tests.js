@@ -527,6 +527,46 @@ let notZip = '';
 try { readDocxManuscript('これは docx ではありません'.repeat(10)); } catch (e) { notZip = e.message; }
 check('docx でないファイルは分かるエラーにする', /ZIP|docx/.test(notZip), notZip);
 
+// ---- InDesign の正規表現の不具合 (「( )」で取り出した部分が空になる) でも動くか ----
+console.log('regexp capture bug:');
+function runPipeline() {
+  const out = {};
+  const m1 = readDocxParts(n => (files[n] !== undefined ? files[n] : null));
+  const pr = learnProfile(oldParas);
+  const b1 = buildItems(m1, pr);
+  const fm = buildItems(readDocxParts(n => (fmtFiles[n] !== undefined ? fmtFiles[n] : null)), pr);
+  const fnb = buildItems(readDocxParts(n => (fnFiles[n] !== undefined ? fnFiles[n] : null)), pr);
+  textConversions(b1, pr).forEach(c => applyTextConversion(b1, c, pr));
+  punctMismatches(b1, commaProf).forEach(c => unifyPunct(b1, c));
+  out.profile = JSON.stringify([pr.styles, pr.variants, pr.headingDigits, pr.h1Sep, pr.h2Sep, pr.noteNumPad, pr.noteNumSep, pr.noteCont, pr.labels, pr.charPref]);
+  out.items = JSON.stringify(b1.items.map(x => [x.role, x.text]));
+  out.fmt = JSON.stringify(fm.items.map(x => [x.role, x.text, x.fmt]));
+  out.fn = JSON.stringify([fnb.items.map(x => [x.role, x.text]), fnb.footnotes]);
+  out.levels = JSON.stringify(m1.blocks.map(b => b.level));
+  if (process.env.KIYO_DOCX) out.real = JSON.stringify(buildItems(readDocxManuscript(fs.readFileSync(process.env.KIYO_DOCX).toString('latin1')), pr).items.map(x => [x.role, x.text]));
+  return out;
+}
+const normalRun = runPipeline();
+const origExec = RegExp.prototype.exec;
+let buggyRun = null, buggyErr = null;
+RegExp.prototype.exec = function (str) {
+  const m = origExec.call(this, str);
+  if (m) for (let q = 1; q < m.length; q++) m[q] = undefined;   // 取り出した部分をわざと空にする
+  return m;
+};
+try { buggyRun = runPipeline(); } catch (e) { buggyErr = e; } finally { RegExp.prototype.exec = origExec; }
+check('不具合のある環境でも止まらない', buggyErr === null, buggyErr && (buggyErr.stack || buggyErr.message));
+if (buggyRun) {
+  Object.keys(normalRun).forEach(k => check('不具合のある環境でも同じ結果: ' + k, buggyRun[k] === normalRun[k],
+    k + ' が違う: ' + String(buggyRun[k]).slice(0, 200)));
+}
+check('見出しの番号の読み取り', JSON.stringify(readHeadingNumber('２．１　概観')) === JSON.stringify({ nums: ['２', '１'], numText: '２．１', sep: '　', punct: '', end: 4 }) &&
+      readHeadingNumber('2020年の状況').sep === '' && readHeadingNumber('はじめに') === null && readHeadingNumber('1 . はじめに').end === 4,
+      JSON.stringify(readHeadingNumber('２．１　概観')));
+check('「2020年…」のような数字始まりの文は見出し番号として変えない', _normHeading('2020年の状況', 'h1', prof) === '2020年の状況');
+check('括弧付きの番号の読み取り', JSON.stringify(readParenNumber('（\u20051\u2005）\t注', 0)) === JSON.stringify({ pad: '\u2005', digits: '1', after: '\t', end: 6 }) &&
+      readParenNumber('（注）', 0) === null);
+
 // ---- InDesign の古い JavaScript で使えない予約語 ----
 console.log('ExtendScript:');
 const reservedHits = require('./es3_reserved')(src);
