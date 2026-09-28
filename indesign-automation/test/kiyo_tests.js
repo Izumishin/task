@@ -434,18 +434,72 @@ check('脚注の中のイタリック (2段落目) も位置が合う', ff.text 
 const fsb = buildStoryText(fmtBuilt.items);
 check('流し込み用テキストでも飾りの位置が合う', fsb.chars.filter(c => c.kind === 'fmt').map(c => fsb.text.substr(c.start, c.len)).join(',') ===
       'Nature Medicine,強調,2,大事,下線,経済,Cell', fsb.chars.filter(c => c.kind === 'fmt').map(c => fsb.text.substr(c.start, c.len)).join(','));
-const fcnt = countFmtKinds(fmtBuilt);
-check('飾りの数 (本文・注・脚注)', fcnt.italic === 4 && fcnt.ruby === 1 && fcnt.sub === 1 && fcnt.kenten === 1 && fcnt.underline === 1, JSON.stringify(fcnt));
+const fcnt = countFmtCombos(fmtBuilt);
+check('飾りの数 (本文・注・脚注)', fcnt.italic === 3 && fcnt['italic+ja'] === 1 && fcnt.ruby === 1 && fcnt.sub === 1 && fcnt.kenten === 1 && fcnt.underline === 1,
+      JSON.stringify(fcnt));
 const descs = [
   { name: '[なし]' }, { name: '【太ゴB101】', fontStyle: 'B101' }, { name: '欧文イタリック', fontStyle: 'Italic' },
-  { name: '上付き', position: 'sup' }, { name: '圏点', kenten: true }, { name: '【ルビ】', ruby: true }, { name: 'アンダーライン', underline: true },
-  { name: 'Bold', fontStyle: 'Bold' }
-].map(d => Object.assign({ fontStyle: '', underline: false, position: '', kenten: false, strike: false, ruby: false }, d));
-const gm = guessFmtStyleNames(descs);
-check('文字スタイルの設定から飾り用を選ぶ', gm.italic === '欧文イタリック' && gm.sup === '上付き' && gm.kenten === '圏点' && gm.ruby === '【ルビ】' &&
-      gm.underline === 'アンダーライン' && gm.bold === 'Bold' && !gm.sub, JSON.stringify(gm));
-check('飾りが重なったら上付き・下付き → 斜体 → 太字の順', pickFmtKind({ italic: true, bold: true }, { italic: 'x', bold: 'y' }) === 'italic' &&
-      pickFmtKind({ italic: true, sup: true }, { italic: 'x', sup: 'z' }) === 'sup' && pickFmtKind({ italic: true }, { bold: 'y' }) === null);
+  { name: '欧文ボールドイタリック', fontStyle: 'Bold Italic' }, { name: 'イタリック下線', fontStyle: 'Italic', underline: true },
+  { name: '和文斜体', skew: 12 }, { name: '上付き', position: 'sup' }, { name: '圏点', kenten: true }, { name: '【ルビ】', ruby: true },
+  { name: 'アンダーライン', underline: true }, { name: 'Bold', fontStyle: 'Bold' }
+].map(d => Object.assign({ fontStyle: '', underline: false, position: '', kenten: false, strike: false, ruby: false, skew: 0 }, d));
+const gm = guessComboStyleNames(['italic', 'italic+bold', 'italic+underline', 'italic+ja', 'sup', 'kenten', 'ruby', 'underline', 'bold', 'sub', 'italic+bold+ja'], descs);
+check('組み合わせに合う文字スタイルを選ぶ', gm.italic === '欧文イタリック' && gm['italic+bold'] === '欧文ボールドイタリック' &&
+      gm['italic+underline'] === 'イタリック下線' && gm['italic+ja'] === '和文斜体' && gm.sup === '上付き' && gm.kenten === '圏点' &&
+      gm.ruby === '【ルビ】' && gm.underline === 'アンダーライン' && gm.bold === 'Bold', JSON.stringify(gm));
+check('合うスタイルがない組み合わせは選ばない (和文の斜体＋太字・下付き)', !gm.sub && !gm['italic+bold+ja'], JSON.stringify(gm));
+check('組み合わせの指定がなければ単独の飾りで代用 (上付き・下付き → 斜体 → 太字の順)',
+      pickFmtStyleKey({ italic: true, bold: true }, { italic: 'x', bold: 'y' }) === 'italic' &&
+      pickFmtStyleKey({ italic: true, sup: true }, { italic: 'x', sup: 'z' }) === 'sup' &&
+      pickFmtStyleKey({ italic: true }, { bold: 'y' }) === null);
+check('組み合わせの指定があればそれを使う', pickFmtStyleKey({ italic: true, bold: true }, { italic: 'x', 'italic+bold': 'xb' }) === 'italic+bold');
+check('和文の斜体は欧文のイタリックで代用しない', pickFmtStyleKey({ italic: true, ja: true }, { italic: 'x' }) === null &&
+      pickFmtStyleKey({ italic: true, bold: true, ja: true }, { 'italic+ja': 'ja' }) === 'italic+ja');
+
+// ---- 斜体の和文・欧文の分け方 ----
+console.log('japanese italic:');
+const jt = 'Journal of 日本経済 Studies と';
+const js = splitJaItalic([{ start: 0, end: jt.length - 2, italic: true, key: 'italic' }], jt);
+check('斜体を欧文と和文に分ける (空白は前の部分に含める)',
+      js.map(x => (x.ja ? 'ja:' : 'lat:') + jt.substring(x.start, x.end)).join('|') === 'lat:Journal of |ja:日本経済 |lat:Studies',
+      js.map(x => (x.ja ? 'ja:' : 'lat:') + jt.substring(x.start, x.end)).join('|'));
+check('和文の斜体の組み合わせ名', comboKey(js[1]) === 'italic+ja' && comboLabel('italic+ja') === '和文の斜体' &&
+      comboLabel('italic+bold+ja') === '和文の斜体＋太字' && comboLabel('italic+underline') === 'イタリック＋下線');
+check('斜体でない飾りは分けない', splitJaItalic([{ start: 0, end: 5, bold: true, key: 'bold' }], 'ab日本c').length === 1);
+
+// ---- 全角英数字 → 半角、半角括弧 → 全角 ----
+console.log('character conversions:');
+const cvBuilt = { items: [
+  { role: 'body', text: '　ＡＢＣ社の２０２０年(令和2年)[注]の報告 https://x.jp/a(1)b と mail@ex.jp(担当)' },
+  { role: 'h1', text: '１．はじめに' },
+  { role: 'table', table: { rows: [['Ｈ２Ｏ(水)']] } }
+], footnotes: [{ text: '脚注の２件目(参考)' }] };
+const hanProf = defaultProfile(); hanProf.charPref = { alnum: 'han', bracket: 'full' };
+const convs0 = textConversions(cvBuilt, hanProf);
+check('原稿の全角英数字・半角括弧を数える (URL・メールの中は数えない)',
+      convs0.length === 2 && convs0[0].kind === 'zenAlnum' && convs0[0].count === 12 && convs0[1].kind === 'hanBracket' && convs0[1].count === 10 &&
+      convs0[0].apply === true && convs0[1].apply === true, JSON.stringify(convs0));
+convs0.forEach(c => applyTextConversion(cvBuilt, c, hanProf));
+check('本文の置き換え (URL・メールアドレスの中はそのまま)',
+      cvBuilt.items[0].text === '　ABC社の2020年（令和2年）［注］の報告 https://x.jp/a(1)b と mail@ex.jp（担当）', cvBuilt.items[0].text);
+check('表のセル・脚注・見出しも置き換える', cvBuilt.items[2].table.rows[0][0] === 'H2O（水）' && cvBuilt.footnotes[0].text === '脚注の2件目（参考）' &&
+      cvBuilt.items[1].text === '1．はじめに', JSON.stringify([cvBuilt.items[2].table.rows[0][0], cvBuilt.footnotes[0].text, cvBuilt.items[1].text]));
+const zenProf = defaultProfile(); zenProf.headingDigits = 'zen'; zenProf.charPref = { alnum: 'zen', bracket: 'half' };
+const zb = { items: [{ role: 'h1', text: '１．２０２０年の状況' }, { role: 'body', text: '２０２０年(x)' }], footnotes: [] };
+const zc = textConversions(zb, zenProf);
+check('前回号が全角英数字・半角括弧なら、初期値はチェックなし', zc.every(c => c.apply === false), JSON.stringify(zc));
+applyTextConversion(zb, { kind: 'zenAlnum' }, zenProf);
+check('見出し番号を全角で書く紀要では、見出しの番号は変えない', zb.items[0].text === '１．2020年の状況', zb.items[0].text);
+const learnC = learnProfile([{ text: '題目' }, { text: '1．はじめに' }, { text: '　本文（注）はABCの2020年（x）と［y］である。https://a.jp/(1)' }]
+  .map(x => Object.assign({ level: 0, style: 'S', runs: null }, x)));
+check('前回号の英数字・括弧の書き方を学習する', learnC.charPref.alnum === 'han' && learnC.charPref.bracket === 'full', JSON.stringify(learnC.charPref));
+
+// ---- 文字の飾りの対応表の記録 (次号のために InDesign ファイルに保存) ----
+eval(src.match(/var FMT_LABEL[\s\S]*?\nfunction serializeSavedMap[\s\S]*?\n}\n/)[0]);
+const savedStr = serializeSavedMap(parseSavedMap('italic\t欧文イタリック\nbold\t太字'), { italic: 'イタリック2', 'italic+ja': null }, { italic: 3, 'italic+ja': 1 });
+const savedBack = parseSavedMap(savedStr);
+check('選んだ内容を記録し、今回出なかった組み合わせの記録も残す', savedBack.italic === 'イタリック2' && savedBack['italic+ja'] === '' && savedBack.bold === '太字',
+      JSON.stringify(savedBack));
 
 // ---- InDesign の古い JavaScript で使えない予約語 ----
 console.log('ExtendScript:');

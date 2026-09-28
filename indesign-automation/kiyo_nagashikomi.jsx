@@ -399,49 +399,121 @@ function _fmtKey(f) {
   return keys.join("+");
 }
 
-// 原稿の飾りを種類ごとに数える (本文・注・脚注)
-function countFmtKinds(built) {
-  var cnt = {}, i, k, j, list = [];
+// 1つの区間に当てる文字スタイル (飾りが重なっているときは、上付き・下付き → 斜体 → 太字 … の順で1つ)
+var FMT_PRIORITY = ["sup", "sub", "italic", "bold", "underline", "kenten", "strike"];
+
+// 和文の文字 (かな・漢字・全角の記号)
+var RE_JA_CHAR = /[\u3000-\u30FF\u3400-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/;
+
+// 斜体の区間を、和文の部分と欧文の部分に分ける (和文の部分には ja を付ける)。
+// 和文の書体にはイタリックがないので、和文は「和文の斜体」用の文字スタイルを当てるため
+function splitJaItalic(spans, text) {
+  var out = [], i, j, sp, cur, segStart, ch, cls;
+  function push(a, b, c) {
+    if (b <= a) return;
+    var seg = _copySpan(sp);
+    seg.start = a; seg.end = b;
+    if (c === "ja") seg.ja = true; else delete seg.ja;
+    seg.key = comboKey(seg);
+    out.push(seg);
+  }
+  for (i = 0; i < spans.length; i++) {
+    sp = spans[i];
+    if (!sp.italic || sp.ruby) { out.push(sp); continue; }
+    cur = null; segStart = sp.start;
+    for (j = sp.start; j < sp.end; j++) {
+      ch = text.charAt(j);
+      cls = RE_JA_CHAR.test(ch) && ch !== "\u3000" ? "ja" : (/\s/.test(ch) || ch === "\u3000" ? null : "lat");
+      if (cls === null) continue;          // 空白は前の部分に含める
+      if (cur === null) cur = cls;
+      else if (cls !== cur) { push(segStart, j, cur); segStart = j; cur = cls; }
+    }
+    push(segStart, sp.end, cur || "lat");
+  }
+  return out;
+}
+
+// 飾りの組み合わせの名前 ("italic+bold" / "italic+ja" / "ruby" など)。対応表の見出しになる
+function comboKey(sp) {
+  if (sp.ruby) return "ruby";
+  var parts = [], i;
+  for (i = 0; i < FMT_PRIORITY.length; i++) if (sp[FMT_PRIORITY[i]]) parts.push(FMT_PRIORITY[i]);
+  if (sp.ja && sp.italic) parts.push("ja");
+  return parts.join("+");
+}
+
+function comboLabel(key) {
+  if (key === "ruby") return "ルビ";
+  var parts = key.split("+"), out = [], i, ja = false;
+  for (i = 0; i < parts.length; i++) if (parts[i] === "ja") ja = true;
+  for (i = 0; i < parts.length; i++) {
+    if (parts[i] === "ja") continue;
+    out.push(parts[i] === "italic" && ja ? "和文の斜体" : fmtLabel(parts[i]));
+  }
+  return out.join("＋");
+}
+
+// 原稿に出てくる組み合わせごとの数
+function countFmtCombos(built) {
+  var cnt = {}, i, j, list = [], k;
   for (i = 0; i < built.items.length; i++) if (built.items[i].fmt) list = list.concat(built.items[i].fmt);
   if (built.footnotes) for (i = 0; i < built.footnotes.length; i++) if (built.footnotes[i].fmt) list = list.concat(built.footnotes[i].fmt);
-  for (j = 0; j < list.length; j++) {
-    if (list[j].ruby) { cnt.ruby = (cnt.ruby || 0) + 1; continue; }
-    for (k = 0; k < FMT_KINDS.length; k++) if (list[j][FMT_KINDS[k][0]]) cnt[FMT_KINDS[k][0]] = (cnt[FMT_KINDS[k][0]] || 0) + 1;
-  }
+  for (j = 0; j < list.length; j++) { k = comboKey(list[j]); if (k !== "") cnt[k] = (cnt[k] || 0) + 1; }
   return cnt;
 }
 
-// InDesign の文字スタイルの設定から、どの飾り用かを推測する
-// descs: [{ name, fontStyle, underline, position ("sup"/"sub"/""), kenten, strike, ruby }]
-function guessFmtStyleNames(descs) {
-  var best = {}, score = {}, i, d, k, sc;
-  var tests = {
-    italic: function (x) { return (/Italic|Oblique|斜体|イタリック/i.test(x.fontStyle) ? 2 : 0) + (/イタリック|斜体|italic/i.test(x.name) ? 1 : 0); },
-    bold: function (x) { return (/Bold|Heavy|Black|太字/i.test(x.fontStyle) ? 2 : 0) + (/太字|ボールド|bold/i.test(x.name) ? 1 : 0); },
-    underline: function (x) { return (x.underline ? 2 : 0) + (/下線|アンダー|underline/i.test(x.name) ? 1 : 0); },
-    sup: function (x) { return (x.position === "sup" ? 2 : 0) + (/上付/.test(x.name) ? 1 : 0); },
-    sub: function (x) { return (x.position === "sub" ? 2 : 0) + (/下付/.test(x.name) ? 1 : 0); },
-    kenten: function (x) { return (x.kenten ? 2 : 0) + (/圏点|傍点/.test(x.name) ? 1 : 0); },
-    strike: function (x) { return (x.strike ? 2 : 0) + (/取り?消し|打ち?消し|strike/i.test(x.name) ? 1 : 0); },
-    ruby: function (x) { return (x.ruby ? 2 : 0) + (/ルビ|ruby/i.test(x.name) ? 1 : 0); }
-  };
-  for (i = 0; i < descs.length; i++) {
-    d = descs[i];
-    if (!d.name || d.name.charAt(0) === "[") continue;
-    for (k in tests) {
-      if (!tests.hasOwnProperty(k)) continue;
-      sc = tests[k](d);
-      if (sc > 0 && (!score[k] || sc > score[k])) { score[k] = sc; best[k] = d.name; }
+// 組み合わせに合う文字スタイルを、文字スタイルの設定から選ぶ。
+// 組み合わせのすべてを満たすスタイルだけが候補。余分な設定が少ないものを優先する
+function guessComboStyleNames(keys, descs) {
+  var out = {}, i, j, d, key, parts, ja, ok, sc, best, bestSc;
+  function has(dd, part, isJa) {
+    if (part === "italic") {
+      if (isJa) return (dd.skew ? 2 : 0) + (/斜体/.test(dd.name) && !/イタリック|italic/i.test(dd.name) ? 1 : 0);
+      return (/Italic|Oblique/i.test(dd.fontStyle) ? 2 : 0) + (/イタリック|italic/i.test(dd.name) ? 1 : 0);
     }
+    if (part === "bold") return (/Bold|Heavy|Black/i.test(dd.fontStyle) ? 2 : 0) + (/太字|ボールド|bold/i.test(dd.name) ? 1 : 0);
+    if (part === "underline") return (dd.underline ? 2 : 0) + (/下線|アンダー|underline/i.test(dd.name) ? 1 : 0);
+    if (part === "sup") return (dd.position === "sup" ? 2 : 0) + (/上付/.test(dd.name) ? 1 : 0);
+    if (part === "sub") return (dd.position === "sub" ? 2 : 0) + (/下付/.test(dd.name) ? 1 : 0);
+    if (part === "kenten") return (dd.kenten ? 2 : 0) + (/圏点|傍点/.test(dd.name) ? 1 : 0);
+    if (part === "strike") return (dd.strike ? 2 : 0) + (/取り?消し|打ち?消し|strike/i.test(dd.name) ? 1 : 0);
+    if (part === "ruby") return (dd.ruby ? 2 : 0) + (/ルビ|ruby/i.test(dd.name) ? 1 : 0);
+    return 0;
   }
-  return best;
+  var ALL = ["italic", "bold", "underline", "sup", "sub", "kenten", "strike"];
+  for (i = 0; i < keys.length; i++) {
+    key = keys[i]; parts = key.split("+"); ja = false; best = null; bestSc = 0;
+    for (j = 0; j < parts.length; j++) if (parts[j] === "ja") ja = true;
+    for (var n = 0; n < descs.length; n++) {
+      d = descs[n];
+      if (!d.name || d.name.charAt(0) === "[") continue;
+      ok = true; sc = 0;
+      for (j = 0; j < parts.length; j++) {
+        if (parts[j] === "ja") continue;
+        var h = has(d, parts[j], ja);
+        if (h === 0) { ok = false; break; }
+        sc += h;
+      }
+      if (!ok) continue;
+      // 組み合わせにない飾りを持つスタイルは減点 (イタリックに「太字のイタリック」を選ばないように)
+      for (j = 0; j < ALL.length; j++) {
+        if (("+" + key + "+").indexOf("+" + ALL[j] + "+") >= 0) continue;
+        if (has(d, ALL[j], false) >= 2 || (ALL[j] === "italic" && d.skew)) sc -= 2;
+      }
+      if (sc > bestSc) { bestSc = sc; best = d.name; }
+    }
+    if (best !== null) out[key] = best;
+  }
+  return out;
 }
 
-// 1つの区間に当てる文字スタイル (飾りが重なっているときは、上付き・下付き → 斜体 → 太字 … の順で1つ)
-var FMT_PRIORITY = ["sup", "sub", "italic", "bold", "underline", "kenten", "strike"];
-function pickFmtKind(span, fmtMap) {
-  var i;
-  for (i = 0; i < FMT_PRIORITY.length; i++) if (span[FMT_PRIORITY[i]] && fmtMap[FMT_PRIORITY[i]]) return FMT_PRIORITY[i];
+// 1つの区間に使う対応表の見出し。組み合わせの指定がなければ、欧文は単独の飾りで代用する
+// (和文の斜体は、欧文のイタリックで代用すると字形がなくなることがあるので代用しない)
+function pickFmtStyleKey(span, map) {
+  var key = comboKey(span), i;
+  if (map[key]) return key;
+  if (span.ja && span.italic) return map["italic+ja"] ? "italic+ja" : null;
+  for (i = 0; i < FMT_PRIORITY.length; i++) if (span[FMT_PRIORITY[i]] && map[FMT_PRIORITY[i]]) return FMT_PRIORITY[i];
   return null;
 }
 
@@ -1051,6 +1123,18 @@ function learnProfile(oldParas) {
     countPunctInto(oldParas[i].text, pc);
   }
   p.punct = { counts: pc, comma: _dominant(pc["、"], pc["，"], "、", "，"), period: _dominant(pc["。"], pc["．"], "。", "．") };
+  // 英数字 (全角か半角か)・括弧 (全角か半角か)
+  var cc = { zenAlnum: 0, hanAlnum: 0, hanBracket: 0, zenBracket: 0 };
+  for (i = 0; i < oldParas.length; i++) {
+    r = roles[i];
+    if (r !== "body" && r !== "abstract" && r !== "note" && r !== "ref") continue;
+    countCharClassesInto(oldParas[i].text, cc);
+  }
+  p.charPref = {
+    alnum: _dominant(cc.hanAlnum, cc.zenAlnum, "han", "zen"),
+    bracket: _dominant(cc.zenBracket, cc.hanBracket, "full", "half"),
+    counts: cc
+  };
   p.learnedFrom = oldParas.length;
   p.oldRoles = roles;
   return p;
@@ -1143,7 +1227,7 @@ function buildItems(ms, p) {
             flen += ft.length;
           }
           fnNo[key] = footnotes.length;
-          footnotes.push({ text: ftxt.join("\r"), fmt: ffmt });
+          footnotes.push({ text: ftxt.join("\r"), fmt: splitJaItalic(ffmt, ftxt.join("\r")) });
         }
       } else if (!noteNo[key]) { noteOrder.push(b.refs[q]); noteNo[key] = noteOrder.length; }
     }
@@ -1223,6 +1307,7 @@ function buildItems(ms, p) {
     if (shift) { for (k = 0; k < refs.length; k++) refs[k].start += shift; moveSpans(fm, shift); }
     fm = fitSpans(fm, out.length);
     if (HEADINGISH[role] || role === "keywords") fm = dropWholeParaEmphasis(fm, out);
+    fm = splitJaItalic(fm, out);
     var item = { role: role, text: out, refs: refs, fmt: fm };
     if (role === "keywords") { var km = RE_KEYWORDS.exec(out); if (km) item.label = { start: 0, len: km[0].length }; }
     if (role === "figSource") { var sm = RE_FIG_SOURCE.exec(out); if (sm) item.label = { start: 0, len: sm[0].length }; }
@@ -1248,7 +1333,7 @@ function buildItems(ms, p) {
         var nl = /^[\s　]*/.exec(paras[pi])[0].length;
         var nfm = paras.fmt && paras.fmt[pi] ? clipSpans(paras.fmt[pi], nl, nl + nt.length, nl) : [];
         moveSpans(nfm, pre.length);
-        noteItems.push({ role: "note", text: pre + nt, refs: [], fmt: nfm });
+        noteItems.push({ role: "note", text: pre + nt, refs: [], fmt: splitJaItalic(nfm, pre + nt) });
         first = false;
       }
     }
@@ -1397,13 +1482,75 @@ function _eachBuiltText(built, fn) {
     it = built.items[i];
     if (it.role === "table" && it.table) {
       for (r = 0; r < it.table.rows.length; r++) for (c = 0; c < it.table.rows[r].length; c++) {
-        it.table.rows[r][c] = fn(it.table.rows[r][c]);
+        it.table.rows[r][c] = fn(it.table.rows[r][c], "table");
       }
     } else if (it.role !== "figure") {
-      it.text = fn(it.text);
+      it.text = fn(it.text, it.role);
     }
   }
-  if (built.footnotes) for (i = 0; i < built.footnotes.length; i++) built.footnotes[i].text = fn(built.footnotes[i].text);
+  if (built.footnotes) for (i = 0; i < built.footnotes.length; i++) built.footnotes[i].text = fn(built.footnotes[i].text, "footnote");
+}
+
+// ---- 全角英数字 → 半角、半角括弧 → 全角 ----
+
+var RE_URLISH = /(https?:\/\/|www\.|doi:)[^\s　、。，．「」『』]+|[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/g;
+var HAN_TO_ZEN_BRACKET = { "(": "（", ")": "）", "[": "［", "]": "］", "{": "｛", "}": "｝", "\uFF62": "「", "\uFF63": "」" };
+
+// URL・メールアドレスの部分は変えずに、それ以外に fn を当てる
+function _outsideUrls(text, fn) {
+  var out = "", last = 0, m;
+  RE_URLISH.lastIndex = 0;
+  while ((m = RE_URLISH.exec(text)) !== null) {
+    out += fn(text.substring(last, m.index)) + m[0];
+    last = m.index + m[0].length;
+  }
+  return out + fn(text.substring(last));
+}
+
+function _zenAlnumToHan(t) {
+  return t.replace(/[Ａ-Ｚａ-ｚ０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); });
+}
+function _hanBracketToZen(t) {
+  return t.replace(/[()\[\]{}\uFF62\uFF63]/g, function (c) { return HAN_TO_ZEN_BRACKET[c]; });
+}
+
+function countCharClassesInto(text, cc) {
+  _outsideUrls(text, function (t) {
+    cc.zenAlnum += (t.match(/[Ａ-Ｚａ-ｚ０-９]/g) || []).length;
+    cc.hanAlnum += (t.match(/[A-Za-z0-9]/g) || []).length;
+    cc.hanBracket += (t.match(/[()\[\]{}\uFF62\uFF63]/g) || []).length;
+    cc.zenBracket += (t.match(/[（）［］｛｝]/g) || []).length;
+    return t;
+  });
+}
+
+// 見出し番号を全角で書く紀要 (前回号が「１．」など) では、見出しの番号は変えない
+function _convZenAlnum(t, role, p) {
+  if ((role === "h1" || role === "h2" || role === "h3") && p.headingDigits === "zen") {
+    // 番号の部分は段ごとに決める (大見出し「１．」・中見出し「１．２」・小見出し「１．２．３」)
+    var m = (role === "h1" ? /^[０-９]+[．.]/ : role === "h2" ? /^[０-９]+[．.][０-９]+/ : /^[０-９]+[．.][０-９]+[．.][０-９]+/).exec(t);
+    if (m) return m[0] + _outsideUrls(t.substring(m[0].length), _zenAlnumToHan);
+  }
+  return _outsideUrls(t, _zenAlnumToHan);
+}
+
+// 流し込むときに聞く文字の統一 (前回号の書き方を初期値にする)
+function textConversions(built, p) {
+  var cc = { zenAlnum: 0, hanAlnum: 0, hanBracket: 0, zenBracket: 0 }, out = [], pref = p.charPref || {};
+  _eachBuiltText(built, function (t) { countCharClassesInto(t, cc); return t; });
+  if (cc.zenAlnum > 0) {
+    out.push({ kind: "zenAlnum", label: "全角英数字を半角にする", count: cc.zenAlnum, apply: pref.alnum !== "zen" });
+  }
+  if (cc.hanBracket > 0) {
+    out.push({ kind: "hanBracket", label: "半角括弧 ( ) [ ] { } を全角にする (URL の中は変えません)", count: cc.hanBracket, apply: pref.bracket !== "half" });
+  }
+  return out;
+}
+
+// 1文字を1文字に置き換えるので、注番号・飾りの位置はずれない
+function applyTextConversion(built, conv, p) {
+  if (conv.kind === "zenAlnum") _eachBuiltText(built, function (t, role) { return _convZenAlnum(t, role, p); });
+  else if (conv.kind === "hanBracket") _eachBuiltText(built, function (t) { return _outsideUrls(t, _hanBracketToZen); });
 }
 
 // 原稿のうち、前回号と違う句読点の数 → [{ kind, from, to, count }]
@@ -1561,12 +1708,31 @@ function findStylesByName(doc) {
   return { map: map, names: names };
 }
 
+// 文字の飾りの対応表をファイルに記録するためのラベル名と、読み書き
+var FMT_LABEL = "kiyo_nagashikomi_fmt";
+function parseSavedMap(s) {
+  var out = {}, lines = String(s || "").split("\n"), i, t;
+  for (i = 0; i < lines.length; i++) {
+    t = lines[i].split("\t");
+    if (t.length === 2 && t[0] !== "") out[t[0]] = t[1];
+  }
+  return out;
+}
+function serializeSavedMap(saved, map, counts) {
+  var merged = {}, k, lines = [];
+  for (k in saved) if (saved.hasOwnProperty(k)) merged[k] = saved[k];
+  for (k in counts) if (counts.hasOwnProperty(k)) merged[k] = map[k] || "";
+  for (k in merged) if (merged.hasOwnProperty(k)) lines.push(k + "\t" + merged[k]);
+  return lines.join("\n");
+}
+
 // 文字スタイルの設定を、推測用の単純な値にする
 function describeCharStyles(doc) {
   var all = doc.allCharacterStyles, out = [], i, cs, d, v;
   for (i = 0; i < all.length; i++) {
     cs = all[i];
-    d = { name: cs.name, fontStyle: "", underline: false, position: "", kenten: false, strike: false, ruby: false };
+    d = { name: cs.name, fontStyle: "", underline: false, position: "", kenten: false, strike: false, ruby: false, skew: 0 };
+    try { v = cs.skew; if (typeof v === "number") d.skew = v; } catch (e0) {}
     try { v = cs.fontStyle; if (typeof v === "string") d.fontStyle = v; } catch (e1) {}
     try { d.underline = cs.underline === true; } catch (e2) {}
     try {
@@ -1600,13 +1766,13 @@ function applyFmtSpans(target, spans, base, mapIdx, fmtStyles, stat) {
       } catch (e2) { stat.failed = (stat.failed || 0) + 1; }
       continue;
     }
-    kind = pickFmtKind(sp, fmtStyles);
+    kind = pickFmtStyleKey(sp, fmtStyles);
     if (kind === null) {
-      var k;
-      for (k = 0; k < FMT_PRIORITY.length; k++) if (sp[FMT_PRIORITY[k]]) stat["skip_" + FMT_PRIORITY[k]] = (stat["skip_" + FMT_PRIORITY[k]] || 0) + 1;
+      var sk = "skip_" + comboKey(sp);
+      stat[sk] = (stat[sk] || 0) + 1;
       continue;
     }
-    try { rng.appliedCharacterStyle = fmtStyles[kind]; stat[kind] = (stat[kind] || 0) + 1; }
+    try { rng.appliedCharacterStyle = fmtStyles[kind]; stat[comboKey(sp)] = (stat[comboKey(sp)] || 0) + 1; }
     catch (e3) { stat.failed = (stat.failed || 0) + 1; }
   }
 }
@@ -1695,26 +1861,32 @@ function confirmDialog(built, p, styleMap, styleNames, info) {
     w.add("statictext", undefined, info.notes.join("\n"), { multiline: true }).preferredSize = [760, 16 * info.notes.length + 4];
   }
 
-  // 句読点が前回号と違うときは、統一するか聞く
+  // 文字の統一 (句読点・全角英数字・半角括弧)。初期値は前回号の書き方に合わせてある
   var punctBoxes = [], pq;
-  if (info.punct && info.punct.length > 0) {
-    var pp = w.add("panel", undefined, "句読点");
+  var nPunct = info.punct ? info.punct.length : 0, nConv = info.conv ? info.conv.length : 0;
+  if (nPunct + nConv > 0) {
+    var pp = w.add("panel", undefined, "文字の統一 (チェックしたものだけ置き換えます)");
     pp.alignChildren = "left";
-    for (pq = 0; pq < info.punct.length; pq++) {
+    for (pq = 0; pq < nPunct; pq++) {
       var pm = info.punct[pq];
       var cb = pp.add("checkbox", undefined, "前回号に合わせて「" + pm.to + "」に統一する (原稿の「" + pm.from + "」" + pm.count + " か所を置き換え)");
       cb.value = true;
       punctBoxes.push({ box: cb, change: pm });
     }
+    for (pq = 0; pq < nConv; pq++) {
+      var cv = info.conv[pq];
+      var cb2 = pp.add("checkbox", undefined, cv.label + " (原稿に " + cv.count + " か所)");
+      cb2.value = cv.apply;
+      punctBoxes.push({ box: cb2, change: cv });
+    }
   }
   // 文字の飾り (イタリック・ルビなど) → 文字スタイル
   var fmtText = null;
   function fmtSummary() {
-    var f = info.fmt, parts = [], q, kd;
-    for (q = 0; q < FMT_KINDS.length; q++) {
-      kd = FMT_KINDS[q][0];
-      if (!f.counts[kd]) continue;
-      parts.push(FMT_KINDS[q][1] + " " + f.counts[kd] + "か所→" +
+    var f = info.fmt, parts = [], kd;
+    for (kd in f.counts) {
+      if (!f.counts.hasOwnProperty(kd)) continue;
+      parts.push(comboLabel(kd) + " " + f.counts[kd] + "か所→" +
                  (f.map[kd] ? f.map[kd] : (kd === "ruby" ? "(ルビだけ付ける)" : "(当てない)")));
     }
     return parts.join(" / ");
@@ -1856,19 +2028,21 @@ function fmtMapDialog(f) {
   w.add("statictext", undefined, "文字スタイルの設定 (書体・下線・圏点など) から自動で選んであります。違うものだけ直してください。");
   var pnl = w.add("panel");
   pnl.alignChildren = "left";
-  var list = ["(当てない)"].concat(f.names), dds = [], i, kd, row, dd, k;
-  for (i = 0; i < FMT_KINDS.length; i++) {
-    kd = FMT_KINDS[i][0];
-    if (!f.counts[kd]) continue;
+  var list = ["(当てない)"].concat(f.names), dds = [], kd, row, dd, k, i;
+  for (kd in f.counts) {
+    if (!f.counts.hasOwnProperty(kd)) continue;
     row = pnl.add("group");
-    row.add("statictext", undefined, FMT_KINDS[i][1] + " (" + f.counts[kd] + "か所)").preferredSize = [150, 20];
+    row.add("statictext", undefined, comboLabel(kd) + " (" + f.counts[kd] + "か所)").preferredSize = [190, 20];
     dd = row.add("dropdownlist", undefined, list);
     dd.preferredSize = [320, 22];
     dd.selection = 0;
     for (k = 0; k < f.names.length; k++) if (f.names[k] === f.map[kd]) { dd.selection = k + 1; break; }
     dds.push({ kind: kd, dd: dd });
   }
+  w.add("statictext", undefined, "※ 組み合わせ (イタリック＋太字 など) は、原稿に出てきたものだけ表示しています。", { multiline: true });
+  w.add("statictext", undefined, "※ 和文の斜体は、欧文のイタリックでは代用しません (和文の書体にイタリックがないため)。");
   if (f.counts.ruby) w.add("statictext", undefined, "※ ルビの文字は、文字スタイルを当てなくても付きます。");
+  w.add("statictext", undefined, "※ ここで選んだ内容はこの InDesign ファイルに記録され、次号でも使われます。");
   var btns = w.add("group");
   btns.alignment = "right";
   btns.add("button", undefined, "OK", { name: "ok" });
@@ -2353,6 +2527,8 @@ function runApply() {
     } catch (e) {}
   }
   if (c.tableTemplate) { try { c.tableTemplate.frame.remove(); } catch (e2) {} }
+  // 文字の飾りに選んだ文字スタイルを、次号のためにファイルに記録する
+  try { c.doc.insertLabel(FMT_LABEL, c.fmtSave); } catch (e3) {}
 }
 
 function main() {
@@ -2414,8 +2590,19 @@ function main() {
   var punct = punctMismatches(built, profile);
   var charNames = [], cdescs = describeCharStyles(doc), cd;
   for (cd = 0; cd < cdescs.length; cd++) if (cdescs[cd].name && cdescs[cd].name.charAt(0) !== "[") charNames.push(cdescs[cd].name);
-  var fmtInfo = { counts: countFmtKinds(built), map: guessFmtStyleNames(cdescs), names: charNames };
-  if (!confirmDialog(built, profile, styleMap, sty.names, { docxName: docxName, notes: notes, punct: punct, fmt: fmtInfo })) {
+  var fcounts = countFmtCombos(built), fkeys = [], fkk;
+  for (fkk in fcounts) if (fcounts.hasOwnProperty(fkk)) fkeys.push(fkk);
+  var fmtInfo = { counts: fcounts, map: guessComboStyleNames(fkeys, cdescs), names: charNames };
+  // 前回までに選んだ文字スタイルがファイルに記録されていれば、それを優先する
+  var saved = parseSavedMap(doc.extractLabel(FMT_LABEL)), sk2, known = {};
+  for (cd = 0; cd < charNames.length; cd++) known[charNames[cd]] = true;
+  for (sk2 in saved) {
+    if (!saved.hasOwnProperty(sk2) || !fcounts[sk2]) continue;
+    if (saved[sk2] === "") fmtInfo.map[sk2] = null;
+    else if (known[saved[sk2]]) fmtInfo.map[sk2] = saved[sk2];
+  }
+  var convs = textConversions(built, profile);
+  if (!confirmDialog(built, profile, styleMap, sty.names, { docxName: docxName, notes: notes, punct: punct, conv: convs, fmt: fmtInfo })) {
     if (ms.folder) removeFolder(ms.folder);
     return;
   }
@@ -2424,6 +2611,11 @@ function main() {
     if (!punct[pu].apply) continue;
     unifyPunct(built, punct[pu]);
     punctReport.push("「" + punct[pu].from + "」→「" + punct[pu].to + "」を " + punct[pu].count + " か所置き換えました。");
+  }
+  for (pu = 0; pu < convs.length; pu++) {
+    if (!convs[pu].apply) continue;
+    applyTextConversion(built, convs[pu], profile);
+    punctReport.push(convs[pu].label.replace(/ \(.*\)$/, "") + ": " + convs[pu].count + " か所を置き換えました。");
   }
 
   // 前付けを別ストーリーに分ける
@@ -2471,6 +2663,7 @@ function main() {
   };
   var fk;
   for (fk in fmtInfo.map) if (fmtInfo.map.hasOwnProperty(fk) && fmtInfo.map[fk]) _ctx.fmtStyles[fk] = findCharStyle(doc, fmtInfo.map[fk]);
+  _ctx.fmtSave = serializeSavedMap(saved, fmtInfo.map, fcounts);
   var tn;
   for (tn = 0; tn < sty.names.length; tn++) {
     if (!_ctx.tableHeadStyle && /表.*(ゴチ|見出し|ヘッダ)/.test(sty.names[tn])) _ctx.tableHeadStyle = sty.map[sty.names[tn]];
@@ -2494,10 +2687,10 @@ function main() {
 
   // 文字の飾りの結果
   var st = _ctx.fmtStat, fq2, fparts = [], fskip = [];
-  for (fq2 = 0; fq2 < FMT_KINDS.length; fq2++) {
-    var fkd = FMT_KINDS[fq2][0];
-    if (st[fkd]) fparts.push(FMT_KINDS[fq2][1] + " " + st[fkd] + "か所");
-    if (st["skip_" + fkd]) fskip.push(FMT_KINDS[fq2][1] + " " + st["skip_" + fkd] + "か所");
+  for (fq2 in st) {
+    if (!st.hasOwnProperty(fq2) || fq2 === "failed") continue;
+    if (fq2.indexOf("skip_") === 0) fskip.push(comboLabel(fq2.substring(5)) + " " + st[fq2] + "か所");
+    else fparts.push(comboLabel(fq2) + " " + st[fq2] + "か所");
   }
   if (fparts.length > 0) report.push("文字の飾りを当てました: " + fparts.join(" / "));
   if (fskip.length > 0) report.push("[注意] 文字スタイルを選んでいないため当てなかった飾り: " + fskip.join(" / "));
