@@ -21,7 +21,7 @@ const setRow = (row, cells) => Object.keys(cells).forEach(col => prod.set(row, C
 setRow(3, { M: '受注番号' });
 setRow(4, { D: '深澤', E: '★', K: 2275, M: '22962-000', N: '学校法人 明治大学', O: '文芸研究 第158号', S: 'CTP', T: '篠原', W: '2026/09/30', Z: '2026/08/20', AA: '2026/08/28', AB: '2026/09/04', AI: '冊子' });
 setRow(5, { D: '田邉', F: 120, M: '22970-000', N: '台東区', O: '決算書', S: 'オンデマンド', W: D(10), Z: D(-5), AG: D(2), AI: '冊子' });
-setRow(6, { D: '中澤', G: '★', M: '22950-000', N: '東洋音楽学会', O: '東洋音楽研究', S: 'CTP', T: '小森', Z: D(-20), AG: today, AI: '冊子' });
+setRow(6, { A: '済', D: '中澤', G: '★', M: '22950-000', N: '東洋音楽学会', O: '東洋音楽研究', S: 'CTP', T: '小森', Z: D(-20), AG: today, AI: '冊子' });
 setRow(7, { D: '佐藤', M: '？？？', N: '港製作所', O: '暑中見舞', S: 'PDF', W: D(30), AI: '冊子' });
 const kiyo = kss.insertSheet('進行中');
 kiyo.set(2, 1, '文芸研究158号\n【22962-000】'); kiyo.set(2, 2, '3本'); kiyo.setBg(2, 1, '#e69138');   // 掲載本数 確定 3本
@@ -201,6 +201,40 @@ check('shortStamp は途中の日付も複数でも短縮', ui.shortStamp('初�
 const sorted = ui.sortRows(ui.state.data.rows).map(r => r.key);
 // 22950-000=完了(今日) / 22970-000=下版予定(+2) / 22962-000=下版予定(手動 +20日) / 仮:港製作所=納期(+30)
 check('大きい日付の順に並ぶ', sorted[0] === '22950-000' && sorted[1] === '22970-000' && sorted[sorted.length - 1] === '仮:港製作所|暑中見舞', sorted);
+
+console.log('--- 予定日の目立たせ方（過ぎた＝赤／今日＝オレンジ／前営業日＝黄） ---');
+const base = ui.state.data.rows.find(r => r.key === '22970-000');
+const mk = (patch) => Object.assign({}, base, { next: '', gehan: '', due: '', recent: '', isDone: false, papers: [] }, patch);
+const overCard = ui.cardHtml(mk({ gehan: D(-3) }), 'DTP');
+check('下版予定日を過ぎた＝赤＋「3日超過」', overCard.indexOf('dateline over') >= 0 && overCard.indexOf('<span class="urg over">3日超過</span>') >= 0, overCard.match(/dateline[^>]*>.*?<\/div>/g));
+check('超過カードは左端に赤線（card over）', overCard.indexOf('card clickable over') >= 0);
+const todayCard = ui.cardHtml(mk({ next: '初校提出予定 ' + today }), 'DTP');
+check('今日の予定＝オレンジ＋「今日」', todayCard.indexOf('dateline today') >= 0 && todayCard.indexOf('<span class="urg today">今日</span>') >= 0 && todayCard.indexOf('card clickable over') < 0);
+// 次の営業日（金曜なら月曜）を計算して、その日の予定が黄色になるか
+const nb = (() => { let d = new Date(Number(today.slice(0,4)), Number(today.slice(5,7)) - 1, Number(today.slice(8,10))); do { d.setDate(d.getDate() + 1); } while (d.getDay() === 0 || d.getDay() === 6); return api.addDays_(today, Math.round((d - new Date(Number(today.slice(0,4)), Number(today.slice(5,7)) - 1, Number(today.slice(8,10)))) / 86400000)); })();
+const soonCard = ui.cardHtml(mk({ next: '入稿予定 ' + nb }), 'DTP');
+const expectLabel = nb === D(1) ? '明日' : ['日','月','火','水','木','金','土'][new Date(Number(nb.slice(0,4)), Number(nb.slice(5,7)) - 1, Number(nb.slice(8,10))).getDay()] + '曜';
+check('前営業日（次の営業日が予定日）＝黄＋「' + expectLabel + '」', soonCard.indexOf('dateline soon') >= 0 && soonCard.indexOf('<span class="urg soon">' + expectLabel + '</span>') >= 0, soonCard.match(/dateline[^>]*>.*?<\/div>/g));
+const laterCard = ui.cardHtml(mk({ next: '入稿予定 ' + api.addDays_(nb, 1) }), 'DTP');
+check('それより先の予定は色なし', laterCard.indexOf('class="urg') < 0);
+const dueOver = ui.cardHtml(mk({ next: '再校提出予定 ' + D(5), due: D(-2) }), 'DTP');
+check('納期を過ぎた＝状態の横の納期が赤、カードも赤線', dueOver.indexOf('when over') >= 0 && dueOver.indexOf('card clickable over') >= 0);
+const doneCard = ui.cardHtml(mk({ isDone: true, doneDate: D(-3), gehan: D(-3), due: D(-2) }), 'DTP');
+check('下版済には色を付けない', doneCard.indexOf('class="urg') < 0 && doneCard.indexOf(' over') < 0);
+const pastRecent = ui.cardHtml(mk({ recent: '初校戻り ' + D(-5) }), 'DTP');
+check('実績の日付（予定がもう無い）には色を付けない', pastRecent.indexOf('class="urg') < 0 && pastRecent.indexOf('card clickable over') < 0);
+
+console.log('--- 上部の帯 ---');
+const saveRows = ui.state.data.rows;
+ui.state.data.rows = saveRows.concat([mk({ key: 'X1', item: '遅れた号', gehan: D(-1) })]);
+ui.render();
+check('超過があれば上部に件数の帯', el('overNotice').textContent.indexOf('1 件') >= 0 && el('overNotice').textContent.indexOf('遅れた号') >= 0 && !el('overNotice').classes.hidden, el('overNotice').textContent);
+ui.state.data.rows = saveRows.filter(r => !isOverdueRow(r));
+function isOverdueRow(r) { return !r.isDone && ((r.gehan && r.gehan < today && !r.next) || (r.due && r.due < today)); }
+ui.render();
+check('超過が無ければ帯は出ない', !!el('overNotice').classes.hidden, el('overNotice').textContent);
+ui.state.data.rows = saveRows;
+ui.render();
 
 console.log('--- 紀要の案件は「●校提出／●校戻り」の工程名を出さない ---');
 const kiyoRow = Object.assign({}, ui.state.data.rows.find(r => r.key === '22962-000'), { next: '再校戻り予定 ' + D(3), isDone: false });

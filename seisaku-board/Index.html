@@ -23,6 +23,8 @@
       --out-strong-bg: #f2f2f4; --out-strong-fg: #111114;
       --out-light-bg: #26262d; --out-light-fg: #b9b9c2;
       --warn-bg: #3b1b1f; --warn-fg: #ff909a;
+      --today-bg: #3a2614; --today-fg: #ffac5c;
+      --soon-bg: #35301a; --soon-fg: #f2d65c;
       --manual: #e8b04b;
       --memo: #e8b04b;
       --ok: #4fc98a;
@@ -48,6 +50,8 @@
       --out-strong-bg: #1b1d21; --out-strong-fg: #ffffff;
       --out-light-bg: #eceff3; --out-light-fg: #5a6069;
       --warn-bg: #fdecec; --warn-fg: #b3261e;
+      --today-bg: #ffeddc; --today-fg: #a84f00;
+      --soon-bg: #fff6cc; --soon-fg: #7a6000;
       --manual: #a06b12;
       --memo: #a06b12;
       --ok: #1f7a4d;
@@ -151,6 +155,19 @@
     .dateline .evt { font-size: 13.5px; font-weight: 700; }
     .dateline.past .date, .dateline.past .evt { color: var(--muted); font-weight: 500; }
     .dateline .none { font-size: 13px; color: var(--faint); }
+    /* 予定日の目立たせ方：過ぎた＝赤／今日＝オレンジ／前営業日（明日が予定）＝黄 */
+    .dateline.over .date, .dateline.over .evt { color: var(--warn-fg); }
+    .dateline.today .date, .dateline.today .evt { color: var(--today-fg); }
+    .dateline.soon .date, .dateline.soon .evt { color: var(--soon-fg); }
+    .urg { font-size: 12px; font-weight: 700; border-radius: 6px; padding: 0 8px; white-space: nowrap; align-self: center; }
+    .urg.over { background: var(--warn-bg); color: var(--warn-fg); }
+    .urg.today { background: var(--today-bg); color: var(--today-fg); }
+    .urg.soon { background: var(--soon-bg); color: var(--soon-fg); }
+    .when.over b { color: var(--warn-fg); }
+    .when.today b { color: var(--today-fg); }
+    .when.soon b { color: var(--soon-fg); }
+    .card.over { border-left: 4px solid var(--warn-fg); }
+    .notice.over { cursor: pointer; }
     .conflict { font-size: 11.5px; color: var(--manual); }
     .order-no { font-family: "SFMono-Regular", Consolas, "Courier New", monospace; font-size: 12.5px; color: var(--faint); letter-spacing: .02em; }
     .temp-mark { margin-left: 6px; font-size: 11px; color: var(--faint); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; font-family: inherit; }
@@ -245,6 +262,7 @@
     <button class="linkbtn hidden" id="pinOffBtn" style="font-size:12.5px;padding:2px 8px;">編集モードを抜ける</button>
   </div>
   <div class="notice hidden" id="notice"></div>
+  <div class="notice over hidden" id="overNotice" title="クリックすると最初の案件へ移動します"></div>
   <div class="notice soft hidden" id="kiyoNotice"></div>
 </header>
 
@@ -346,6 +364,45 @@ function fixWaitingCount(r) {
     return p.kind !== '表回り' && /校戻り$/.test(String(p.status || ''));
   }).length;
 }
+/** 今日から見た次の営業日（金曜なら月曜）。土日をはさむときは、その間の日付も「前日」扱いにする。 */
+function nextBusinessDay(ymd) {
+  let d = parseYmd(ymd);
+  do { d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1); } while (d.getDay() === 0 || d.getDay() === 6);
+  return d.getFullYear() + '/' + pad2(d.getMonth() + 1) + '/' + pad2(d.getDate());
+}
+
+/**
+ * 予定日の急ぎ具合。済になっていない案件の予定日だけに付ける。
+ *  over  … 予定日を過ぎた（赤。「◯日超過」）
+ *  today … 今日（オレンジ）
+ *  soon  … 前営業日＝次の営業日までに来る（黄。平日は「明日」、金曜なら月曜の分に「月曜」）
+ */
+function urgencyOf(ymd) {
+  const d = state.data;
+  if (!ymd || !d) return null;
+  const t = d.today;
+  if (ymd < t) return { cls: 'over', text: daysBetween(t, ymd) + '日超過' };
+  if (ymd === t) return { cls: 'today', text: '今日' };
+  if (ymd <= nextBusinessDay(t)) {
+    const days = daysBetween(ymd, t);
+    const dt = parseYmd(ymd);
+    return { cls: 'soon', text: days === 1 ? '明日' : ['日', '月', '火', '水', '木', '金', '土'][dt.getDay()] + '曜' };
+  }
+  return null;
+}
+function daysBetween(a, b) {
+  const da = parseYmd(a), db = parseYmd(b);
+  return Math.round((da.getTime() - db.getTime()) / 86400000);
+}
+
+/** その案件が「予定を過ぎたまま済になっていない」か（大きい日付か納期が過ぎている）。 */
+function isOverdue(r) {
+  if (r.isDone) return false;
+  const big = cardDate(r);
+  if (!big.past && big.date && big.date < state.data.today) return true;
+  return !!(r.due && r.due < state.data.today);
+}
+
 function isThisWeek(r) {
   const d = state.data;
   return !!r.gehan && r.gehan >= d.weekStart && r.gehan <= d.weekEnd;
@@ -475,6 +532,16 @@ function render() {
   } else {
     notice.classList.add('hidden');
   }
+  // 予定日（下版予定日・納期）を過ぎたまま済になっていない案件の件数
+  const overRows = d.rows.filter(isOverdue);
+  const on = document.getElementById('overNotice');
+  on.textContent = overRows.length
+    ? '予定日を過ぎたまま下版済になっていない案件が ' + overRows.length + ' 件あります（' +
+      overRows.slice(0, 3).map(function (r) { return r.item; }).join('、') + (overRows.length > 3 ? ' ほか' : '') +
+      '）。生産表の予定日の見直しか、A列の「済」を確認してください。'
+    : '';
+  on.classList.toggle('hidden', overRows.length === 0);
+
   const kn = document.getElementById('kiyoNotice');
   const kparts = [];
   if (d.kiyoError) kparts.push('紀要「進行中」シートの取込に失敗しています：' + d.kiyoError);
@@ -561,14 +628,18 @@ function cardHtml(r, group) {
   const manual = r.manualFields.length > 0;
   // 大きい日付：次の予定 → 下版予定日 → 納期 → 直近の実績
   const big = cardDate(r);
+  // 済になっていない案件の予定日だけ色を付ける（実績の日付・下版済には付けない）
+  const bigUrg = (!r.isDone && !big.past) ? urgencyOf(big.date) : null;
   const dateHtml = big.date
-    ? '<span class="date">' + shortDate(big.date) + '</span><span class="evt">' + esc(big.name) + '</span>'
+    ? '<span class="date">' + shortDate(big.date) + '</span><span class="evt">' + esc(big.name) + '</span>' +
+      (bigUrg ? '<span class="urg ' + bigUrg.cls + '">' + esc(bigUrg.text) + '</span>' : '')
     : '<span class="none">生産表に日付なし</span>';
 
   // 状態の横：大きい日付に使っていない方の情報を添える（納期 → 直近の実績）
   let whenHtml = '';
   if (r.due && big.date !== r.due && !r.isDone) {
-    whenHtml = '<span class="when" title="納期">納期 <b>' + shortDate(r.due) + '</b></span>';
+    const dueUrg = urgencyOf(r.due);
+    whenHtml = '<span class="when' + (dueUrg ? ' ' + dueUrg.cls : '') + '" title="納期' + (dueUrg ? '（' + esc(dueUrg.text) + '）' : '') + '">納期 <b>' + shortDate(r.due) + '</b></span>';
   } else if (r.recent) {
     const ev = splitEvent(r.recent);
     whenHtml = '<span class="when" title="直近の実績">' + esc(isProofStage(r, ev.name) ? '直近の動き' : ev.name) + ' <b>' + shortDate(ev.ymd) + '</b></span>';
@@ -579,7 +650,7 @@ function cardHtml(r, group) {
   if (r.manualFields.indexOf('date') >= 0 && r.gehanAuto !== r.gehan) conflicts.push('下版 生産表 ' + (r.gehanAuto ? shortDate(r.gehanAuto) : '—') + ' ／ ボード ' + (r.gehan ? shortDate(r.gehan) : '—'));
   if (r.manualFields.indexOf('output') >= 0 && r.outputAuto !== r.output) conflicts.push('出力 生産表 ' + esc(r.outputAuto || '—') + ' ／ ボード ' + esc(r.output || '—'));
 
-  return '<div class="card clickable' + (r.isDone ? ' done' : '') + '" data-key="' + esc(r.key) + '" data-search="' + esc((r.orderNo + ' ' + r.customer + ' ' + r.item).toLowerCase()) + '">' +
+  return '<div class="card clickable' + (r.isDone ? ' done' : '') + (isOverdue(r) ? ' over' : '') + '" data-key="' + esc(r.key) + '" data-search="' + esc((r.orderNo + ' ' + r.customer + ' ' + r.item).toLowerCase()) + '">' +
     '<div class="card-top">' +
       '<span class="status-badge ' + cls + '">' + esc(r.status) + '</span>' +
       whenHtml +
@@ -588,7 +659,7 @@ function cardHtml(r, group) {
         (r.output ? '<span class="out-badge' + (r.output === 'オフ' ? ' strong' : '') + '">' + esc(r.output) + '</span>' : '') +
       '</span>' +
     '</div>' +
-    '<div class="dateline' + (big.past ? ' past' : '') + '">' + dateHtml + '</div>' +
+    '<div class="dateline' + (big.past ? ' past' : '') + (bigUrg ? ' ' + bigUrg.cls : '') + '">' + dateHtml + '</div>' +
     (conflicts.length ? '<div class="conflict">' + conflicts.join('　') + '</div>' : '') +
     '<div class="order-no">' + esc(r.orderNo) + (r.isTemp ? '<span class="temp-mark">未採番</span>' : '') + '</div>' +
     '<div class="customer">' + esc(r.customer) + '</div>' +
@@ -836,6 +907,10 @@ document.addEventListener('click', function (ev) {
 });
 
 document.getElementById('q').addEventListener('input', function () { state.search = this.value; applySearch(); });
+document.getElementById('overNotice').addEventListener('click', function () {
+  const first = document.querySelector('.card.over');
+  if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+});
 document.getElementById('tabStaff').addEventListener('click', function () { state.view = 'staff'; lsSet('seisaku-view', 'staff'); render(); });
 document.getElementById('tabStatus').addEventListener('click', function () { state.view = 'status'; lsSet('seisaku-view', 'status'); render(); });
 

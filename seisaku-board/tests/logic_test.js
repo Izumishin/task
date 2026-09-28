@@ -34,11 +34,13 @@ setRow(10, { A: '', D: '深澤', E: '★', M: '22985-000', N: '入稿予定の�
 setRow(11, { A: '', D: '深澤', E: '★', M: '22986-000', N: '初校予定の学会', O: '今月号', S: 'CTP', T: '篠原', W: D(30), Z: D(-3), AA: D(4), AI: '冊子' });
 setRow(13, { A: '済', D: '中澤', F: 400, M: '22930-000', N: '済の学会', O: '済の紀要', S: 'CTP', T: '篠原', W: D(5), Z: D(-15), AA: D(-9), AB: D(-4), AI: '冊子' });
 setRow(14, { A: '', D: '深澤', E: '★', K: '★', M: '22990-000', N: '政経学会', O: '政経論叢 第95号', S: 'CTP', T: '篠原', W: D(45), Z: D(-2), AI: '冊子' });
+setRow(15, { A: '', D: '田邉', F: '★', M: '22991-000', N: '遅れ学会', O: '下版予定を過ぎた号', S: 'CTP', T: '篠原', W: D(-1), Z: D(-20), AA: D(-12), AB: D(-8), AG: D(-3), AI: '冊子' });
+setRow(16, { A: '', D: '田邉', F: '★', M: '22992-000', N: '今日学会', O: '今日入稿の号', S: 'CTP', T: '篠原', W: D(40), Z: today, AA: D(7), AI: '冊子' });
 
 console.log('--- 1回目の取込（生産表）---');
 let r1 = api.importFromProductionSheet();
 console.log(r1);
-check('冊子9件が新規、端物1件は対象外', r1.added === 9 && r1.skipped === 1, r1);
+check('冊子11件が新規、端物1件は対象外', r1.added === 11 && r1.skipped === 1, r1);
 const board = ss.getSheetByName('制作進行');
 check('制作進行シートは左端に作られる（印刷進行ボードの取込先を奪わない）', ss.getSheets()[0].getName() === '制作進行');
 check('案件は2行目から入る', board.cell(2, api.COL.KEY) === '22962-000', board.cell(2, 1));
@@ -55,6 +57,10 @@ check('AGが当日以前なら下版済＋完了日', board.cell(4, api.COL.STAT
 check('入稿日が空なら未入稿', board.cell(5, api.COL.STATUS) === '未入稿', board.cell(5, 8));
 check('出力区分：S列 PDF → データ', board.cell(5, api.COL.OUTPUT) === 'データ', board.cell(5, 12));
 check('派遣・磯網は編集', board.cell(6, api.COL.EDIT) === '派遣,磯網', board.cell(6, 7));
+check('下版日を過ぎても「済」が無ければ下版済にしない', board.cell(11, api.COL.STATUS) === '校正中' && board.cell(11, api.COL.DONE_DATE) === '', [board.cell(11, 8), board.cell(11, 19)]);
+check('過ぎた下版日は下版予定日として残る（画面で超過と出す）', board.cell(11, api.COL.GEHAN) === D(-3) && board.cell(11, api.COL.NEXT) === '', [board.cell(11, 10), board.cell(11, 24)]);
+check('今日が入稿予定日なら今日いっぱいは未入稿', board.cell(12, api.COL.STATUS) === '未入稿', board.cell(12, 8));
+check('今日の予定は「次の予定」に入る', board.cell(12, api.COL.NEXT) === '入稿予定 ' + today, board.cell(12, 24));
 check('Z列が未来日（入稿予定）なら未入稿', board.cell(7, api.COL.STATUS) === '未入稿', board.cell(7, 8));
 check('未入稿の次の予定は入稿予定', board.cell(7, api.COL.RECENT) === '' && board.cell(7, api.COL.NEXT) === '入稿予定 ' + D(7), [board.cell(7, 14), board.cell(7, 24)]);
 check('入稿済でAA列が未来日（初校提出予定）なら作業中', board.cell(8, api.COL.STATUS) === '作業中', board.cell(8, 8));
@@ -85,7 +91,7 @@ check('更新権限あり（合言葉）', data.canEdit === true);
 check('合言葉なしは閲覧のみ', api.getBoardData({}).canEdit === false);
 check('直近の月曜より前に下版済の案件は出ない', !data.rows.find(r => r.key === '22940-000'), data.rows.map(r => r.key));
 check('今日下版済の案件は完了として出る', data.rows.find(r => r.key === '22950-000').isDone === true);
-check('8件表示（下版済の古い1件は出ない）', data.rows.length === 8, data.rows.length);
+check('10件表示（下版済の古い1件は出ない。下版日を過ぎた未済の号は出る）', data.rows.length === 10 && !!data.rows.find(r => r.key === '22991-000'), data.rows.length);
 check('担当者の一覧と区分', data.staff.length === 8 && data.staff[0].name === '和泉' && data.staff[0].group === 'DTP' && data.staff[7].group === '編集');
 check('編集者の名前候補は8名', data.editorNames.length === 8 && data.editorNames.indexOf('菅井') >= 0, data.editorNames);
 check('週の範囲は月〜金', api.mondayOf_(today) === data.weekStart && api.addDays_(data.weekStart, 4) === data.weekEnd, [data.weekStart, data.weekEnd]);

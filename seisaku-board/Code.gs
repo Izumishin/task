@@ -663,29 +663,34 @@ function autoFromRow_(r, cols, staff, rules, todayStr) {
   const doneFlag = !!flagValue && toText_(pick_(r, cols.DONE_FLAG)).indexOf(flagValue) >= 0;
 
   // 生産表には予定日が先に入る（入稿予定・初校提出予定など）。
-  // 今日以前の日付だけを実績として数え、未来の日付は「次の予定」として別に持つ。
+  // 昨日までの日付を実績として数え、今日と未来の日付は「次の予定」として別に持つ
+  // （今日が予定日のものは、今日いっぱいは予定として「今日」と目立たせる）。
   let lastIdx = -1;
   for (let i = 0; i < STAGES.length - 1; i++) {
     const d = dates[STAGES[i].key];
-    if (d && d <= todayStr) lastIdx = i;
+    if (d && d < todayStr) lastIdx = i;
   }
   const lastText = lastIdx >= 0 ? STAGES[lastIdx].name + ' ' + dates[STAGES[lastIdx].key] : '';
-  // 次の予定：Z〜AG列の未来の日付のうち一番近いもの（下版予定も含む）
+  // 次の予定：Z〜AG列の今日以降の日付のうち一番近いもの（下版予定も含む）
   let next = '';
   STAGES.forEach(function (st) {
     const d = dates[st.key];
-    if (d && d > todayStr && (!next || d < next.split(' ').pop())) next = st.name + '予定 ' + d;
+    if (d && d >= todayStr && (!next || d < next.split(' ').pop())) next = st.name + '予定 ' + d;
   });
 
+  // 下版済は A列（電算）の「済」だけで判定する。AG列（下版日）は予定として先に入るため、
+  // 日付が過ぎただけで下版済にすると、遅れている案件がボードから消えてしまう。
+  // 済が付かないまま下版日を過ぎた案件はボードに残り、画面で「◯日超過」と赤く出る。
   let status, recent = '', doneDate = '';
-  if (gehan && gehan <= todayStr) {
+  if (doneFlag) {
     status = STATUS.DONE;
-    recent = '下版 ' + gehan;
-    doneDate = gehan;
-  } else if (doneFlag) {
-    // A列（電算）が「済」＝完了。下版日が無ければ完了日は取込側で決める（最初に済を検知した日）
-    status = STATUS.DONE;
-    recent = '電算 ' + flagValue + (lastText ? '（' + lastText + '）' : '');
+    if (gehan && gehan <= todayStr) {
+      recent = '下版 ' + gehan;
+      doneDate = gehan;
+    } else {
+      // 下版日が無い（か未来の）済。完了日は取込側で決める（最初に済を検知した日）
+      recent = '電算 ' + flagValue + (lastText ? '（' + lastText + '）' : '');
+    }
   } else {
     if (lastIdx < 0) status = STATUS.NOT_YET;
     else if (lastIdx === 0) status = STATUS.WORKING;
