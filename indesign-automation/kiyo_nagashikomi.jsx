@@ -264,7 +264,9 @@ function zipIndex(bin) {
     localOfs = u32at(bin, ofs + 42);
     name = bin.substring(ofs + 46, ofs + 46 + nameLen);
     dataOfs = localOfs + 30 + u16at(bin, localOfs + 26) + u16at(bin, localOfs + 28);
+    name = name.replace(/\\/g, "/").replace(/^\//, "");
     idx[name] = { method: method, csize: csize, usize: usize, dataOfs: dataOfs };
+    if (!idx["\u0001" + name.toLowerCase()]) idx["\u0001" + name.toLowerCase()] = idx[name];
     ofs += 46 + nameLen + extraLen + cmtLen;
   }
   return idx;
@@ -272,7 +274,7 @@ function zipIndex(bin) {
 
 // エントリをバイナリ文字列 (1文字=1バイト) で取り出す
 function zipEntryBinary(bin, idx, name) {
-  var ent = idx[name];
+  var ent = idx[name] || idx["\u0001" + name.toLowerCase()];
   if (!ent) return null;
   var raw = bin.substring(ent.dataOfs, ent.dataOfs + ent.csize);
   if (ent.method === 0) return raw;
@@ -288,7 +290,7 @@ function zipEntryBinary(bin, idx, name) {
 
 // エントリを UTF-8 テキストとして取り出す
 function zipEntryText(bin, idx, name) {
-  var ent = idx[name];
+  var ent = idx[name] || idx["\u0001" + name.toLowerCase()];
   if (!ent) return null;
   var raw = bin.substring(ent.dataOfs, ent.dataOfs + ent.csize), bytes, k;
   if (ent.method === 8) bytes = inflateRaw(raw);
@@ -608,19 +610,6 @@ function docxHeadingLevel(styles, styleId) {
   return 0;
 }
 
-// document.xml.rels → { rId: target }
-function parseRels(xml) {
-  var rels = {}, pos = 0, lt, gt, tag;
-  if (!xml) return rels;
-  while (true) {
-    lt = xml.indexOf("<Relationship", pos); if (lt < 0) break;
-    gt = xml.indexOf(">", lt); if (gt < 0) break;
-    tag = xml.substring(lt + 1, gt); pos = gt + 1;
-    rels[xmlAttr(tag, "Id")] = xmlAttr(tag, "Target");
-  }
-  return rels;
-}
-
 // 本文 XML をブロック列に変換する。
 // 段落: { type:"p", text, styleId, level, refs:[{pos, kind, id}], image:rId|null }
 // 表  : { type:"table", rows:[[cellText, ...]], widths:[twips...] }
@@ -774,18 +763,65 @@ function parseDocxBody(xml, styles, collectNotes, onProgress) {
 
 // docx の中身を読む。getText(名前) は docx 内のファイルを文字列で返す関数
 // (展開済みのフォルダから読む場合と、スクリプト内蔵の展開で読む場合で共通)
+// docx 内のパスをつなぐ ("word" と "../media/a.png" → "media/a.png")
+function joinZipPath(dir, target) {
+  if (!target) return "";
+  if (target.charAt(0) === "/") return target.substring(1);
+  var parts = dir ? dir.split("/") : [], t = target.split("/"), i;
+  for (i = 0; i < t.length; i++) {
+    if (t[i] === "..") parts.pop();
+    else if (t[i] !== "." && t[i] !== "") parts.push(t[i]);
+  }
+  return parts.join("/");
+}
+
+// .rels → [{ id, type, target }]
+function parseRelsTyped(xml) {
+  var out = [], pos = 0, lt, gt, tag;
+  if (!xml) return out;
+  while (true) {
+    lt = xml.indexOf("<Relationship ", pos); if (lt < 0) break;
+    gt = xml.indexOf(">", lt); if (gt < 0) break;
+    tag = xml.substring(lt + 1, gt); pos = gt + 1;
+    out.push({ id: xmlAttr(tag, "Id"), type: xmlAttr(tag, "Type") || "", target: xmlAttr(tag, "Target") || "" });
+  }
+  return out;
+}
+
+function _relOfType(list, suffix) {
+  var i;
+  for (i = 0; i < list.length; i++) if (list[i].type.length >= suffix.length &&
+      list[i].type.substring(list[i].type.length - suffix.length) === suffix) return list[i];
+  return null;
+}
+
 function readDocxParts(getText, onProgress) {
-  var docXml = getText("word/document.xml");
-  if (docXml === null) throw new Error("word/document.xml が見つかりません");
-  var styles = parseDocxStyles(getText("word/styles.xml"));
-  var rels = parseRels(getText("word/_rels/document.xml.rels"));
-  var endXml = getText("word/endnotes.xml");
-  var footXml = getText("word/footnotes.xml");
+  // 本文のファイル名は docx の目次 (_rels/.rels) で決まる。ふつうは word/document.xml だが、
+  // 作ったソフトによっては word/document2.xml などになる
+  var mainPath = "word/document.xml";
+  var office = _relOfType(parseRelsTyped(getText("_rels/.rels")), "/officeDocument");
+  if (office) mainPath = joinZipPath("", office.target);
+  var docXml = getText(mainPath);
+  if (docXml === null && mainPath !== "word/document.xml") { mainPath = "word/document.xml"; docXml = getText(mainPath); }
+  if (docXml === null) throw new Error("docx の中に本文 (" + mainPath + ") が見つかりません");
+  var cut = mainPath.lastIndexOf("/");
+  var dir = cut >= 0 ? mainPath.substring(0, cut) : "";
+  var relsPath = (dir ? dir + "/" : "") + "_rels/" + mainPath.substring(cut + 1) + ".rels";
+  var relList = parseRelsTyped(getText(relsPath)), rels = {}, r;
+  for (r = 0; r < relList.length; r++) rels[relList[r].id] = relList[r].target;
+  function partOf(suffix, fallback) {
+    var rel = _relOfType(relList, suffix);
+    return rel ? joinZipPath(dir, rel.target) : joinZipPath(dir, fallback);
+  }
+  var styles = parseDocxStyles(getText(partOf("/styles", "styles.xml")));
+  var endXml = getText(partOf("/endnotes", "endnotes.xml"));
+  var footXml = getText(partOf("/footnotes", "footnotes.xml"));
   return {
     blocks: parseDocxBody(docXml, styles, false, onProgress),
     endnotes: endXml ? parseDocxBody(endXml, styles, true) : {},
     footnotes: footXml ? parseDocxBody(footXml, styles, true) : {},
     rels: rels,
+    docDir: dir,
     styles: styles
   };
 }
@@ -2168,11 +2204,49 @@ function removeFolder(folder) {
 }
 
 // Word 原稿を読む。まずパソコンの展開機能、だめなら内蔵の展開
-function loadDocx(src, docxName) {
+var _loadStep = "";
+
+// 読み込めなかった理由を、原因ごとの対処と一緒に伝える
+function explainLoadError(e, docxName) {
+  var m = String(e.message || e), hint;
+  if (/ZIP|壊れて|docx ファイルではない|Word\(\.docx\)ファイルではない/.test(m)) {
+    hint = "ファイルが .docx の形式になっていないようです。\n" +
+           "・パスワード (保護) が付いた原稿は読めません。Word で保護を外して保存してください。\n" +
+           "・Word で開き、「名前を付けて保存」で「Word 文書 (*.docx)」を選んで保存し直すと直ることがあります。";
+  } else if (/開けません|コピー|見つかりません: /.test(m)) {
+    hint = "・原稿を Word で開いたままの場合は、Word を閉じてからもう一度実行してください。\n" +
+           "・OneDrive などにある原稿は、パソコンにダウンロードされているか確認してください。";
+  } else {
+    hint = "スクリプトの不具合の可能性があります。お手数ですが、この画面の内容を知らせてください。";
+  }
+  return "Word 原稿を読み込めませんでした。\n\n" +
+         "原稿: " + docxName + "\n" +
+         "止まった所: " + (_loadStep || "不明") + "\n" +
+         "原因: " + m + (e.line ? " (スクリプトの " + e.line + " 行目)" : "") + "\n\n" + hint;
+}
+
+function loadDocx(src0, docxName) {
   var onProgress = function (r) { showProgress("Word 原稿を解析しています… " + Math.round(r * 100) + "%"); };
+  // Word で開いたままの原稿でも読めるよう、まず一時フォルダにコピーしてから読む
+  _loadStep = "原稿ファイルのコピー";
+  var src = new File(Folder.temp + "/kiyo_genko_" + (new Date()).getTime() + ".docx");
+  if (!src0.exists) throw new Error("原稿ファイルが見つかりません: " + src0.fsName);
+  if (!src0.copy(src)) {
+    src = src0;   // コピーできなければ元のファイルを直接読む
+  }
+  try {
+    return loadDocxFrom(src, docxName, onProgress);
+  } finally {
+    if (src !== src0) { try { src.remove(); } catch (e) {} }
+  }
+}
+
+function loadDocxFrom(src, docxName, onProgress) {
+  _loadStep = "原稿の展開";
   showProgress("Word 原稿を展開しています… (" + docxName + ")");
   var folder = unzipDocxWithOS(src), ms;
   if (folder !== null) {
+    _loadStep = "原稿の解析";
     showProgress("Word 原稿を解析しています…");
     try {
       ms = readDocxParts(function (name) { return readUtf8File(folder.fsName + "/" + name); }, onProgress);
@@ -2185,9 +2259,10 @@ function loadDocx(src, docxName) {
   }
   showProgress("Word 原稿を展開しています… (内蔵の方法のため、数分かかることがあります)");
   src.encoding = "BINARY";
-  if (!src.open("r")) throw new Error("ファイルを開けませんでした");
+  if (!src.open("r")) throw new Error("原稿ファイルを開けませんでした");
   var bin = src.read();
   src.close();
+  _loadStep = "原稿の解析";
   ms = readDocxManuscript(bin, onProgress);
   ms.bin = bin;
   return ms;
@@ -2205,7 +2280,7 @@ function extractImages(doc, ms, items, docxName) {
     if (out[rid]) continue;
     target = ms.rels[rid];
     if (!target) continue;
-    var path = target.indexOf("/") === 0 ? target.substring(1) : "word/" + target;
+    var path = joinZipPath(ms.docDir === undefined ? "word" : ms.docDir, target);
     try {
       f = new File(folder + "/" + base + "_" + target.replace(/^.*\//, ""));
       if (ms.folder) {
@@ -2571,12 +2646,13 @@ function main() {
   var ms, built;
   try {
     ms = loadDocx(src, docxName);
+    _loadStep = "段落の種類の判定";
     showProgress("段落の種類を判定しています…");
     built = buildItems(ms, profile);
   } catch (e2) {
     hideProgress();
     if (ms && ms.folder) removeFolder(ms.folder);
-    alert("Word 原稿を読み込めませんでした:\n" + e2.message + "\n\n.docx 形式で保存し直してから選んでください。");
+    alert(explainLoadError(e2, docxName));
     return;
   }
   hideProgress();

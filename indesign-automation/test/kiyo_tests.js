@@ -501,10 +501,43 @@ const savedBack = parseSavedMap(savedStr);
 check('選んだ内容を記録し、今回出なかった組み合わせの記録も残す', savedBack.italic === 'イタリック2' && savedBack['italic+ja'] === '' && savedBack.bold === '太字',
       JSON.stringify(savedBack));
 
+// ---- 本文のファイル名が document.xml でない docx ----
+console.log('docx variants:');
+const rootRels = `<?xml version="1.0"?><Relationships xmlns="x"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document2.xml"/></Relationships>`;
+const doc2Rels = `<?xml version="1.0"?><Relationships xmlns="x"><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles2.xml"/><Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes" Target="endnotes.xml"/><Relationship Id="rId9" Type="image" Target="../media/pic.png"/></Relationships>`;
+const v2 = makeZip([
+  ['_rels/.rels', rootRels], ['word\\document2.xml', docXml], ['word/_rels/document2.xml.rels', doc2Rels],
+  ['word/styles2.xml', stylesXml], ['word/endnotes.xml', endXml], ['media/pic.png', png, true]
+]);
+let v2ms = null;
+try { v2ms = readDocxManuscript(v2.toString('latin1')); } catch (e) { check('本文が document2.xml の docx を読む', false, e.message); }
+if (v2ms) {
+  check('本文が document2.xml の docx を読む (目次 _rels/.rels から探す)', v2ms.blocks.length === ms.blocks.length && Object.keys(v2ms.endnotes).length === 2);
+  check('見出しスタイル (styles2.xml) も読む', v2ms.blocks.find(b => b.text === '１．はじめに').level === 1);
+  check('画像の場所を本文からの相対パスで求める', joinZipPath(v2ms.docDir, v2ms.rels.rId9) === 'media/pic.png' &&
+        zipEntryBinary(v2.toString('latin1'), v2ms.zipIndex, joinZipPath(v2ms.docDir, v2ms.rels.rId9)) === png.toString('latin1'));
+}
+check('パスのつなぎ方', joinZipPath('word', 'media/a.png') === 'word/media/a.png' && joinZipPath('word', '/x/y.png') === 'x/y.png' &&
+      joinZipPath('', 'word/document.xml') === 'word/document.xml');
+const upper = makeZip([['WORD/DOCUMENT.XML', docXml], ['word/styles.xml', stylesXml]]);
+let upOk = false;
+try { upOk = readDocxManuscript(upper.toString('latin1')).blocks.length === ms.blocks.length; } catch (e) {}
+check('ファイル名の大文字・小文字の違いにも対応', upOk);
+let notZip = '';
+try { readDocxManuscript('これは docx ではありません'.repeat(10)); } catch (e) { notZip = e.message; }
+check('docx でないファイルは分かるエラーにする', /ZIP|docx/.test(notZip), notZip);
+
 // ---- InDesign の古い JavaScript で使えない予約語 ----
 console.log('ExtendScript:');
 const reservedHits = require('./es3_reserved')(src);
 check('予約語 (abstract など) を名前に使っていない', reservedHits.length === 0, reservedHits.join(' / '));
+
+// 開発用: テスト用の原稿を .docx として書き出す (別の JavaScript エンジンでの確認用)
+if (process.env.KIYO_DUMP) {
+  fs.writeFileSync(path.join(process.env.KIYO_DUMP, 'sample.docx'), docxBuf);
+  fs.writeFileSync(path.join(process.env.KIYO_DUMP, 'fmt.docx'), makeZip(Object.keys(fmtFiles).map(n => [n, fmtFiles[n]])));
+  fs.writeFileSync(path.join(process.env.KIYO_DUMP, 'footnote.docx'), makeZip(Object.keys(fnFiles).map(n => [n, fnFiles[n]])));
+}
 
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
 process.exit(failures === 0 ? 0 : 1);
