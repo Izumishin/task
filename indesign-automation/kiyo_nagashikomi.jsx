@@ -337,17 +337,204 @@ function parseDocxStyles(xml) {
     }
     name = _tagName(tag);
     if (name === "w:style") {
-      cur = { id: xmlAttr(tag, "w:styleId") || "", type: xmlAttr(tag, "w:type") || "", name: "", basedOn: null, outline: null, fmt: {} };
+      cur = { id: xmlAttr(tag, "w:styleId") || "", type: xmlAttr(tag, "w:type") || "", name: "", basedOn: null, outline: null, fmt: {},
+              numId: null, ilvl: null };
       styles[cur.id] = cur;
     } else if (cur !== null) {
       if (name === "w:name") cur.name = xmlAttr(tag, "w:val") || "";
       else if (name === "w:basedOn") cur.basedOn = xmlAttr(tag, "w:val");
       else if (name === "w:outlineLvl") cur.outline = parseInt(xmlAttr(tag, "w:val"), 10);
+      else if (name === "w:numId") cur.numId = xmlAttr(tag, "w:val");
+      else if (name === "w:ilvl") cur.ilvl = xmlAttr(tag, "w:val");
       else if (name === "w:rPr" && tag.charAt(tag.length - 1) !== "/") inRPr++;
       else if (inRPr > 0) readRunProp(name, tag, cur.fmt);
     }
   }
   return styles;
+}
+
+// ---- Word の自動の箇条書き・段落番号 ----
+// Word の「・」や「1.」は本文の文字ではなく、番号の設定 (numbering.xml) から Word が表示している。
+// その設定を読んで、Word と同じ記号・番号を文字として段落の頭に入れる。
+
+// numbering.xml → { abs: { 抽象番号ID: { lvls: { 段: 設定 } } }, nums: { 番号ID: { abs, ov: { 段: { start, lvl } } } } }
+function parseNumbering(xml) {
+  var res = { abs: {}, nums: {} }, pos = 0, lt, gt, tag, name, curAbs = null, curLvl = null, curNum = null, curOv = null, fallback = 0;
+  if (!xml) return res;
+  while (true) {
+    lt = xml.indexOf("<", pos); if (lt < 0) break;
+    gt = xml.indexOf(">", lt); if (gt < 0) break;
+    tag = xml.substring(lt + 1, gt); pos = gt + 1;
+    if (tag.charAt(0) === "/") {
+      name = tag.substring(1);
+      if (name === "w:abstractNum") curAbs = null;
+      else if (name === "w:lvl") curLvl = null;
+      else if (name === "w:num") curNum = null;
+      else if (name === "w:lvlOverride") curOv = null;
+      else if (name === "mc:Fallback") { if (fallback > 0) fallback--; }
+      continue;
+    }
+    if (tag.charAt(0) === "?" || tag.charAt(0) === "!") continue;
+    name = _tagName(tag);
+    // Word 2010 以降の独自形式 (mc:Choice) と、その代わりの形式 (mc:Fallback) がある場合は、代わりの形式を使う
+    if (name === "mc:Fallback") { if (tag.charAt(tag.length - 1) !== "/") fallback++; continue; }
+    if (name === "w:abstractNum") { curAbs = { lvls: {} }; res.abs[xmlAttr(tag, "w:abstractNumId")] = curAbs; }
+    else if (name === "w:num") { curNum = { abs: null, ov: {} }; res.nums[xmlAttr(tag, "w:numId")] = curNum; }
+    else if (name === "w:abstractNumId" && curNum !== null) curNum.abs = xmlAttr(tag, "w:val");
+    else if (name === "w:lvlOverride" && curNum !== null) { curOv = { start: null, lvl: null }; curNum.ov[xmlAttr(tag, "w:ilvl")] = curOv; }
+    else if (name === "w:startOverride" && curOv !== null) curOv.start = parseInt(xmlAttr(tag, "w:val"), 10);
+    else if (name === "w:lvl") {
+      curLvl = { start: 1, fmt: "decimal", text: "", suff: "tab", restart: null, isLgl: false };
+      if (curOv !== null) curOv.lvl = curLvl;
+      else if (curAbs !== null) curAbs.lvls[xmlAttr(tag, "w:ilvl")] = curLvl;
+    } else if (curLvl !== null) {
+      if (name === "w:start") curLvl.start = parseInt(xmlAttr(tag, "w:val"), 10) || 0;
+      else if (name === "w:numFmt") {
+        var nf = xmlAttr(tag, "w:val");
+        if (nf && (nf !== "custom" || fallback > 0)) curLvl.fmt = nf;
+      }
+      else if (name === "w:lvlText") curLvl.text = xmlAttr(tag, "w:val") || "";
+      else if (name === "w:suff") curLvl.suff = xmlAttr(tag, "w:val") || "tab";
+      else if (name === "w:lvlRestart") curLvl.restart = parseInt(xmlAttr(tag, "w:val"), 10);
+      else if (name === "w:isLgl") curLvl.isLgl = _isOn(tag);
+    }
+  }
+  return res;
+}
+
+var KANA_AIUEO = "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン";
+var KANA_IROHA = "イロハニホヘトチリヌルヲワカヨタレソツネナラムウヰノオクヤマケフコエテアサキユメミシヱヒモセス";
+var KANJI_DIGITS = "〇一二三四五六七八九";
+
+function _roman(n) {
+  var vals = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1];
+  var syms = ["M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"], out = "", i;
+  for (i = 0; i < vals.length; i++) while (n >= vals[i]) { out += syms[i]; n -= vals[i]; }
+  return out;
+}
+
+function _kanjiCount(n) {
+  if (n <= 0) return String(n);
+  if (n >= 10000) return String(n);
+  var units = ["", "十", "百", "千"], out = "", i, d, s = String(n);
+  for (i = 0; i < s.length; i++) {
+    d = parseInt(s.charAt(i), 10);
+    var u = units[s.length - 1 - i];
+    if (d === 0) continue;
+    out += (d === 1 && u !== "" ? "" : KANJI_DIGITS.charAt(d)) + u;
+  }
+  return out;
+}
+
+// Word の番号の形式 (numFmt) で数を文字にする
+function formatListNumber(n, fmt) {
+  var s, i;
+  if (fmt === "none" || fmt === "bullet") return "";
+  if (fmt === "decimalFullWidth" || fmt === "decimalFullWidth2") return toZenDigits(String(n));
+  if (fmt === "decimalZero") return n < 10 ? "0" + n : String(n);
+  if (fmt === "upperLetter" || fmt === "lowerLetter") {
+    var ch = String.fromCharCode(65 + ((n - 1) % 26)), rep2 = Math.floor((n - 1) / 26) + 1;
+    s = ""; for (i = 0; i < rep2; i++) s += ch;
+    return fmt === "lowerLetter" ? s.toLowerCase() : s;
+  }
+  if (fmt === "upperRoman") return _roman(n);
+  if (fmt === "lowerRoman") return _roman(n).toLowerCase();
+  if (fmt === "decimalEnclosedCircle" || fmt === "decimalEnclosedCircleChinese" || fmt === "ideographEnclosedCircle") {
+    if (n >= 1 && n <= 20) return String.fromCharCode(0x2460 + n - 1);
+    if (n >= 21 && n <= 35) return String.fromCharCode(0x3251 + n - 21);
+    if (n >= 36 && n <= 50) return String.fromCharCode(0x32B1 + n - 36);
+    return "(" + n + ")";
+  }
+  if (fmt === "decimalEnclosedParen") return n >= 1 && n <= 20 ? String.fromCharCode(0x2474 + n - 1) : "(" + n + ")";
+  if (fmt === "decimalEnclosedFullstop") return n >= 1 && n <= 20 ? String.fromCharCode(0x2488 + n - 1) : n + ".";
+  if (fmt === "aiueo" || fmt === "aiueoFullWidth") return KANA_AIUEO.charAt((n - 1) % KANA_AIUEO.length);
+  if (fmt === "iroha" || fmt === "irohaFullWidth") return KANA_IROHA.charAt((n - 1) % KANA_IROHA.length);
+  if (fmt === "ideographTraditional") return "甲乙丙丁戊己庚辛壬癸".charAt((n - 1) % 10);
+  if (fmt === "ideographZodiac") return "子丑寅卯辰巳午未申酉戌亥".charAt((n - 1) % 12);
+  if (fmt === "japaneseCounting" || fmt === "chineseCounting" || fmt === "chineseCountingThousand" ||
+      fmt === "taiwaneseCounting" || fmt === "taiwaneseCountingThousand" || fmt === "koreanCounting") return _kanjiCount(n);
+  if (fmt === "japaneseLegal") return _kanjiCount(n).split("一").join("壱").split("二").join("弐").split("三").join("参").split("十").join("拾");
+  if (fmt === "ideographDigital" || fmt === "japaneseDigitalTenThousand" || fmt === "taiwaneseDigital") {
+    s = String(n); var out = "";
+    for (i = 0; i < s.length; i++) out += KANJI_DIGITS.charAt(parseInt(s.charAt(i), 10));
+    return out;
+  }
+  if (fmt === "ordinal") {
+    var t = n % 100, e = n % 10;
+    return n + (t >= 11 && t <= 13 ? "th" : e === 1 ? "st" : e === 2 ? "nd" : e === 3 ? "rd" : "th");
+  }
+  return String(n);
+}
+
+// Word の記号の箇条書きは Symbol / Wingdings 書体の特別な文字コードのことが多いので、ふつうの記号にする
+var BULLET_MAP = {
+  "\uF0B7": "•", "\uF06C": "●", "\uF0A7": "▪", "\uF06E": "■", "\uF0A8": "□", "\uF06F": "□", "\uF071": "❑",
+  "\uF076": "◆", "\uF075": "◆", "\uF0D8": "➢", "\uF0FC": "✓", "\uF0E0": "→", "\uF0DC": "▶", "\uF0B2": "◇",
+  "\uF09F": "•", "\uF0A1": "○", "\uF0FB": "✗"
+};
+function _mapBulletChars(t) {
+  var out = "", i, ch;
+  for (i = 0; i < t.length; i++) {
+    ch = t.charAt(i);
+    if (BULLET_MAP.hasOwnProperty(ch)) out += BULLET_MAP[ch];
+    else if (ch >= "\uF000" && ch <= "\uF0FF") out += "・";
+    else out += ch;
+  }
+  return out;
+}
+
+function createNumState(numbering) { return { nb: numbering, counters: {}, used: {} }; }
+
+// 段落の番号・記号を1つ進めて、表示する文字を返す。番号がない段落は null
+function nextListLabel(state, numId, ilvl) {
+  if (!state || numId === null || numId === undefined || numId === "0") return null;
+  var nb = state.nb, num = nb.nums[numId];
+  if (!num) return null;
+  var abs = nb.abs[num.abs];
+  if (!abs) return null;
+  function lvlDef(L) {
+    var ov = num.ov[String(L)];
+    if (ov && ov.lvl) return ov.lvl;
+    return abs.lvls[String(L)] || null;
+  }
+  var L = parseInt(ilvl, 10) || 0, def = lvlDef(L), d;
+  if (def === null) return null;
+  // 番号は、同じ抽象番号を使う段落どうしで続く (Word の「番号を振り直す」は開始番号の上書きになる)
+  var c = state.counters[num.abs];
+  if (!c) { c = {}; state.counters[num.abs] = c; }
+  var ov = num.ov[String(L)], ukey = numId + ":" + L;
+  if (ov && ov.start !== null && !isNaN(ov.start) && !state.used[ukey]) c[L] = ov.start;
+  else if (c[L] === undefined) c[L] = def.start;
+  else c[L] = c[L] + 1;
+  state.used[ukey] = true;
+  // 下の段の番号は、上の段が進んだら振り直す (「振り直さない」設定の段は除く)
+  for (d = L + 1; d < 9; d++) {
+    var dd = lvlDef(d);
+    if (dd && dd.restart === 0) continue;
+    if (dd && dd.restart !== null && !isNaN(dd.restart) && L > dd.restart - 1) continue;
+    c[d] = undefined;
+  }
+  // 番号の文字 (%1 など) を、各段の番号に置き換える (正規表現を使わずに1文字ずつ)
+  var text = def.text, out = "", i, ch, lv, ldef, val;
+  if (def.fmt === "bullet") return { label: _mapBulletChars(text), suff: def.suff, bullet: true };
+  for (i = 0; i < text.length; i++) {
+    ch = text.charAt(i);
+    if (ch === "%" && i + 1 < text.length && text.charAt(i + 1) >= "1" && text.charAt(i + 1) <= "9") {
+      lv = parseInt(text.charAt(i + 1), 10) - 1;
+      ldef = lvlDef(lv) || def;
+      val = c[lv] !== undefined ? c[lv] : ldef.start;
+      out += formatListNumber(val, def.isLgl ? "decimal" : ldef.fmt);
+      i++;
+    } else out += ch;
+  }
+  return { label: out, suff: def.suff, bullet: false };
+}
+
+// 番号と本文の間: Word の「タブ」「スペース」は、全角の記号・番号の後なら詰め、半角の後なら半角スペース
+function listSeparator(label, suff) {
+  if (suff === "nothing" || label === "") return "";
+  var last = label.charCodeAt(label.length - 1);
+  return last >= 0x2460 ? "" : " ";
 }
 
 // ---- 文字の飾り (イタリック・太字・下線・上付き・下付き・圏点・取り消し線・ルビ) ----
@@ -382,6 +569,17 @@ function readRunProp(name, tag, fmt) {
     if (v === "superscript") fmt.sup = true;
     else if (v === "subscript") fmt.sub = true;
   }
+}
+
+// 段落スタイルに付いた番号の設定 (基にしたスタイルも含む) → { numId, ilvl } / なければ null
+function docxStyleNum(styles, id) {
+  var s = styles[id], guard = 0, numId = null, ilvl = null;
+  while (s && guard++ < 10) {
+    if (numId === null && s.numId !== null) numId = s.numId;
+    if (ilvl === null && s.ilvl !== null) ilvl = s.ilvl;
+    s = s.basedOn ? styles[s.basedOn] : null;
+  }
+  return numId === null ? null : { numId: numId, ilvl: ilvl };
 }
 
 // Word の文字スタイル (基にしたスタイルも含む) の飾り。リンクや注番号のスタイルは飾りとして扱わない
@@ -619,15 +817,36 @@ function docxHeadingLevel(styles, styleId) {
 // 段落: { type:"p", text, styleId, level, refs:[{pos, kind, id}], image:rId|null }
 // 表  : { type:"table", rows:[[cellText, ...]], widths:[twips...] }
 // 注の本文 XML (endnotes/footnotes) にも使う (collectNotes)
-function parseDocxBody(xml, styles, collectNotes, onProgress) {
+function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
   var blocks = [], pos = 0, n = xml.length, lt, gt, tag, name, selfClose, closeIdx;
   var para = null, skip = 0, inTabs = 0, fallback = 0, txbx = 0;
-  var inPPr = 0, runFmt = null, inRPr = false, ruby = null, inRt = 0;
+  var inPPr = 0, runFmt = null, inRPr = false, ruby = null, inRt = 0, pprChange = 0;
+  var numState = numbering ? createNumState(numbering) : null;
+
+  // 自動の番号・記号を段落の頭に文字として入れ、注番号・飾りの位置をずらす
+  function addListLabel(pa) {
+    var numId = pa.numId, ilvl = pa.ilvl;
+    if (numId === null || numId === undefined) {
+      var sn = docxStyleNum(styles, pa.styleId);
+      if (sn === null) return;
+      numId = sn.numId;
+      if (ilvl === null || ilvl === undefined) ilvl = sn.ilvl;
+    }
+    var lab = nextListLabel(numState, numId, ilvl === null || ilvl === undefined ? "0" : ilvl);
+    if (lab === null || lab.label === "") return;
+    var pre = lab.label + listSeparator(lab.label, lab.suff), k;
+    pa.text = pre + pa.text;
+    for (k = 0; k < pa.refs.length; k++) pa.refs[k].pos += pre.length;
+    for (k = 0; k < pa.fmt.length; k++) { pa.fmt[k].start += pre.length; pa.fmt[k].end += pre.length; }
+    pa.listLabel = lab.label;
+    pa.isList = true;
+  }
   var tblStack = [], tbl = null, row = null, cell = null, grid = null;
   var notes = {}, noteId = null, noteParas = null;
 
   function flushPara() {
     if (para === null) return;
+    if (numState !== null) addListLabel(para);
     if (cell !== null) {
       cell.paras.push(para.text);
       if (para.refs.length > 0 && tbl !== null) tbl.lostRefs = (tbl.lostRefs || 0) + para.refs.length;
@@ -652,6 +871,7 @@ function parseDocxBody(xml, styles, collectNotes, onProgress) {
       name = tag.substring(1);
       if (name === "w:instrText" || name === "w:delText") { if (skip > 0) skip--; }
       else if (name === "w:tabs") { if (inTabs > 0) inTabs--; }
+      else if (name === "w:pPrChange") { if (pprChange > 0) pprChange--; }
       else if (name === "w:pPr") { if (inPPr > 0) inPPr--; }
       else if (name === "w:rPr") { inRPr = false; }
       else if (name === "w:r") { runFmt = null; }
@@ -708,7 +928,7 @@ function parseDocxBody(xml, styles, collectNotes, onProgress) {
     if (name === "w:tr") { row = []; continue; }
     if (name === "w:tc") { cell = { paras: [] }; continue; }
     if (name === "w:p") {
-      para = { type: "p", text: "", styleId: "", level: 0, refs: [], image: null, fmt: [] };
+      para = { type: "p", text: "", styleId: "", level: 0, refs: [], image: null, fmt: [], numId: null, ilvl: null };
       if (selfClose) flushPara();
       continue;
     }
@@ -716,7 +936,12 @@ function parseDocxBody(xml, styles, collectNotes, onProgress) {
     // 段落記号の書式 (<w:pPr> の中の <w:rPr>) は文字の飾りではない
     if (name === "w:pPr") { if (!selfClose) inPPr++; continue; }
     if (inPPr > 0) {
+      // 変更履歴の「変更前の書式」(w:pPrChange) は読まない
+      if (name === "w:pPrChange") { if (!selfClose) pprChange++; continue; }
+      if (pprChange > 0) continue;
       if (name === "w:pStyle") para.styleId = xmlAttr(tag, "w:val") || "";
+      else if (name === "w:numId") para.numId = xmlAttr(tag, "w:val");
+      else if (name === "w:ilvl") para.ilvl = xmlAttr(tag, "w:val");
       continue;
     }
     if (name === "w:r") { runFmt = {}; continue; }
@@ -821,10 +1046,11 @@ function readDocxParts(getText, onProgress) {
   var styles = parseDocxStyles(getText(partOf("/styles", "styles.xml")));
   var endXml = getText(partOf("/endnotes", "endnotes.xml"));
   var footXml = getText(partOf("/footnotes", "footnotes.xml"));
+  var numbering = parseNumbering(getText(partOf("/numbering", "numbering.xml")));
   return {
-    blocks: parseDocxBody(docXml, styles, false, onProgress),
-    endnotes: endXml ? parseDocxBody(endXml, styles, true) : {},
-    footnotes: footXml ? parseDocxBody(footXml, styles, true) : {},
+    blocks: parseDocxBody(docXml, styles, false, onProgress, numbering),
+    endnotes: endXml ? parseDocxBody(endXml, styles, true, null, numbering) : {},
+    footnotes: footXml ? parseDocxBody(footXml, styles, true, null, numbering) : {},
     rels: rels,
     docDir: dir,
     styles: styles
@@ -846,7 +1072,7 @@ function readDocxManuscript(bin, onProgress) {
 var ROLES = [
   ["title", "題目"], ["subtitle", "副題"], ["author", "著者名"], ["affiliation", "所属"],
   ["abstractTitle", "要旨の見出し"], ["abstract", "要旨"], ["keywords", "キーワード"],
-  ["h1", "大見出し"], ["h2", "中見出し"], ["h3", "小見出し"], ["body", "本文"],
+  ["h1", "大見出し"], ["h2", "中見出し"], ["h3", "小見出し"], ["body", "本文"], ["list", "箇条書き"],
   ["figCaption", "図表のタイトル"], ["table", "表"], ["figure", "図(画像)"], ["figSource", "図表の出典・注"],
   ["noteTitle", "注の見出し"], ["note", "注"],
   ["refTitle", "参考文献の見出し"], ["refSub", "参考文献の小見出し"], ["ref", "参考文献"]
@@ -946,6 +1172,8 @@ function classifySequence(items) {
     depth = headingDepthByText(t);
     // 全角スペースで字下げした長めの段落は本文
     if (depth > 0 && it.text.charAt(0) === "　" && t.length > 15) depth = 0;
+    // Word の箇条書き (「1. データの収集」など) は、見出しスタイルでなければ見出しにしない
+    if (it.isList && !(it.level > 0)) depth = 0;
     if (it.level > 0 && t.length <= 80) depth = depth > 0 ? depth : Math.min(it.level, 3);
     // 前回号の段落はスタイル名 (大見出し・中見出し…) をいちばん信用する
     var sd = headingDepthByStyle(it.style);
@@ -980,6 +1208,7 @@ function classifySequence(items) {
     }
     if (mode === "ref") { roles.push(RE_REF_SUB.test(t) ? "refSub" : "ref"); continue; }
     if (mode === "note") { roles.push("note"); continue; }
+    if (it.isList) { roles.push("list"); continue; }
     if (RE_FIG_CAPTION.test(t) && t.length < 100) { roles.push("figCaption"); lastFig = i; continue; }
     if (RE_FIG_SOURCE.test(t) && (i - lastFig <= 3 || /^(出典|出所)/.test(t))) { roles.push("figSource"); lastFig = i; continue; }
     roles.push("body");
@@ -1276,7 +1505,7 @@ function buildItems(ms, p) {
   for (i = 0; i < blocks.length; i++) {
     b = blocks[i];
     if (b.type === "table") seq.push({ text: "", level: 0, isTable: true, isImage: false, block: b });
-    else seq.push({ text: b.text, level: b.level, isTable: false, isImage: !!b.image, block: b });
+    else seq.push({ text: b.text, level: b.level, isTable: false, isImage: !!b.image, isList: !!b.isList, block: b });
   }
   // 題目の段落に改行があれば、題目と副題に分ける
   var firstIdx = -1;
@@ -1482,6 +1711,7 @@ var STYLE_GUESS = {
   h2: [[/中見出し|見出し\s*[2２]/], /Abstract|大見出し|下中見出し/i],
   h3: [[/小見出し|見出し\s*[3３]/], /Abstract|中見出し|大見出し/i],
   body: [[/本文/], /Abstract|注|要旨|表/i],
+  list: [[/箇条|リスト|list/i], /Abstract/i],
   figCaption: [[/図表タイトル|表タイトル|図タイトル|キャプション/], /Abstract/i],
   figSource: [[/図表注|出典|図注|表注/], /Abstract/i],
   table: [[/^図表$/, /図表[^タ注]*$/], /Abstract/i],
@@ -1495,7 +1725,7 @@ var STYLE_GUESS = {
 var STYLE_FALLBACK = {
   subtitle: "title", affiliation: "author", abstractTitle: "abstract", keywords: "abstract",
   h3: "h2", figSource: "note", table: "figCaption", figure: "table", refTitle: "noteTitle",
-  refSub: "ref", ref: "note", noteTitle: "h2", note: "body", figCaption: "body"
+  refSub: "ref", ref: "note", noteTitle: "h2", note: "body", figCaption: "body", list: "body"
 };
 
 function guessStyleName(role, names) {

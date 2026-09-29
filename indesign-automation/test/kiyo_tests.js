@@ -527,6 +527,66 @@ let notZip = '';
 try { readDocxManuscript('これは docx ではありません'.repeat(10)); } catch (e) { notZip = e.message; }
 check('docx でないファイルは分かるエラーにする', /ZIP|docx/.test(notZip), notZip);
 
+// ---- Word の自動の箇条書き・段落番号 ----
+console.log('word lists:');
+const LV = (ilvl, fmt, text, extra) => `<w:lvl w:ilvl="${ilvl}"><w:start w:val="1"/><w:numFmt w:val="${fmt}"/><w:lvlText w:val="${text}"/>${extra || ''}</w:lvl>`;
+const numXml = `<?xml version="1.0"?><w:numbering ${W} xmlns:mc="mc">
+<w:abstractNum w:abstractNumId="0">${LV(0, 'bullet', '\uF0B7')}${LV(1, 'bullet', 'o')}</w:abstractNum>
+<w:abstractNum w:abstractNumId="1">${LV(0, 'decimal', '%1.')}${LV(1, 'decimal', '%1.%2', '<w:suff w:val="space"/>')}${LV(2, 'decimalFullWidth', '（%3）')}</w:abstractNum>
+<w:abstractNum w:abstractNumId="2">${LV(0, 'aiueoFullWidth', '%1．')}</w:abstractNum>
+<w:abstractNum w:abstractNumId="3">${LV(0, 'decimalEnclosedCircle', '%1', '<w:suff w:val="nothing"/>')}</w:abstractNum>
+<w:abstractNum w:abstractNumId="4"><w:lvl w:ilvl="0"><w:start w:val="1"/><mc:AlternateContent><mc:Choice Requires="w14"><w:numFmt w:val="custom" w:format="001"/></mc:Choice><mc:Fallback><w:numFmt w:val="decimal"/></mc:Fallback></mc:AlternateContent><w:lvlText w:val="%1."/></w:lvl></w:abstractNum>
+<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+<w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>
+<w:num w:numId="3"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num>
+<w:num w:numId="4"><w:abstractNumId w:val="2"/></w:num>
+<w:num w:numId="5"><w:abstractNumId w:val="4"/></w:num>
+<w:num w:numId="6"><w:abstractNumId w:val="3"/></w:num>
+<w:num w:numId="7"><w:abstractNumId w:val="1"/></w:num>
+</w:numbering>`;
+const listStyles = `<?xml version="1.0"?><w:styles ${W}>
+<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:pPr><w:numPr><w:numId w:val="5"/></w:numPr></w:pPr></w:style>
+<w:style w:type="paragraph" w:styleId="ListP"><w:name w:val="List Paragraph"/></w:style>
+</w:styles>`;
+const LI = (numId, ilvl, body) => `<w:p><w:pPr><w:pStyle w:val="ListP"/><w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="${numId}"/></w:numPr></w:pPr>${body}</w:p>`;
+const listDoc = `<?xml version="1.0"?><w:document ${W}><w:body>
+${P('箇条書きのある論文')}${P('はじめに', 'Heading1')}${P('本文です。')}
+${LI(1, 0, T('りんご'))}${LI(1, 0, T('みかん'))}${LI(1, 1, T('品種'))}
+${LI(2, 0, T('データの収集'))}${LI(2, 0, T('分析') + R('手法', '<w:i/>') + EN(1))}${LI(2, 1, T('前処理'))}${LI(2, 2, T('詳細'))}
+${LI(2, 0, T('考察'))}${LI(2, 1, T('要点'))}
+${LI(3, 0, T('再開'))}${LI(7, 0, T('続き'))}
+${LI(4, 0, T('一つ目'))}${LI(4, 0, T('二つ目'))}
+${LI(6, 0, T('項目'))}${LI(6, 0, T('項目'))}
+<w:p><w:pPr><w:pPrChange><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="6"/></w:numPr></w:pPr></w:pPrChange></w:pPr>${T('変更履歴の中の番号は付けない段落。')}</w:p>
+<w:tbl><w:tblGrid><w:gridCol w:w="1000"/></w:tblGrid><w:tr><w:tc>${LI(6, 0, T('セル'))}</w:tc></w:tr></w:tbl>
+${P('結論', 'Heading1')}${P('まとめです。')}
+<w:sectPr/></w:body></w:document>`;
+const listFiles = { 'word/document.xml': listDoc, 'word/styles.xml': listStyles, 'word/numbering.xml': numXml, 'word/endnotes.xml': fmtEnd };
+const listMs = readDocxParts(n => (listFiles[n] !== undefined ? listFiles[n] : null));
+const lb = listMs.blocks.filter(b => b.type === 'p').map(b => b.text);
+const expectLabels = ['• りんご', '• みかん', 'o 品種', '1. データの収集', '2. 分析手法', '2.1 前処理', '（１）詳細', '3. 考察', '3.1 要点',
+  '1. 再開', '2. 続き', 'ア．一つ目', 'イ．二つ目', '①項目', '②項目', '変更履歴の中の番号は付けない段落。'];
+check('記号・番号を文字として入れる (入れ子・振り直し・続き・カナ・丸数字・記号の置き換え)',
+      JSON.stringify(lb.slice(3, 3 + expectLabels.length)) === JSON.stringify(expectLabels), JSON.stringify(lb.slice(3, 3 + expectLabels.length)));
+check('見出しスタイルに付いた自動番号も入れる', lb[1] === '1. はじめに' && lb.indexOf('2. 結論') >= 0, JSON.stringify([lb[1], lb[lb.length - 2]]));
+check('表の中の番号も続きで入れる', JSON.stringify(listMs.blocks.find(b => b.type === 'table').rows) === JSON.stringify([['③セル']]),
+      JSON.stringify(listMs.blocks.find(b => b.type === 'table').rows));
+const bunseki = listMs.blocks.find(b => b.text === '2. 分析手法');
+check('番号を入れても注番号・飾りの位置が合う', bunseki.refs[0].pos === '2. 分析手法'.length && bunseki.text.substring(bunseki.fmt[0].start, bunseki.fmt[0].end) === '手法',
+      JSON.stringify([bunseki.refs, bunseki.fmt]));
+const listBuilt = buildItems(listMs, prof);
+const lr = x => listBuilt.items.find(it => it.text.indexOf(x) >= 0);
+check('箇条書きは「箇条書き」の種類 (番号付きでも見出しにしない)', lr('データの収集').role === 'list' && lr('りんご').role === 'list' && lr('①項目').role === 'list',
+      JSON.stringify(listBuilt.items.map(it => it.role + ':' + it.text)));
+check('箇条書きには段落頭の全角スペースを付けない', lr('りんご').text === '• りんご' && lr('データの収集').text === '1. データの収集');
+check('番号付きの見出しは見出しとして整える', lr('はじめに').role === 'h1' && lr('はじめに').text === '1．はじめに' && lr('結論').text === '2．結論',
+      JSON.stringify([lr('はじめに'), lr('結論')].map(x => x.role + ':' + x.text)));
+check('箇条書きのスタイルは名前から推測、なければ本文', initialStyleMap(prof, names.concat(['【11_箇条書き】9pt'])).list === '【11_箇条書き】9pt' &&
+      initialStyleMap(prof, names).list === initialStyleMap(prof, names).body);
+check('番号の形式', formatListNumber(3, 'upperRoman') === 'III' && formatListNumber(28, 'lowerLetter') === 'bb' && formatListNumber(21, 'decimalEnclosedCircle') === '㉑' &&
+      formatListNumber(12, 'japaneseCounting') === '十二' && formatListNumber(2, 'iroha') === 'ロ' && formatListNumber(5, 'decimalZero') === '05' &&
+      formatListNumber(3, 'ideographTraditional') === '丙' && formatListNumber(102, 'ideographDigital') === '一〇二' && formatListNumber(22, 'ordinal') === '22nd');
+
 // ---- InDesign の正規表現の不具合 (「( )」で取り出した部分が空になる) でも動くか ----
 console.log('regexp capture bug:');
 function runPipeline() {
@@ -543,6 +603,7 @@ function runPipeline() {
   out.fmt = JSON.stringify(fm.items.map(x => [x.role, x.text, x.fmt]));
   out.fn = JSON.stringify([fnb.items.map(x => [x.role, x.text]), fnb.footnotes]);
   out.levels = JSON.stringify(m1.blocks.map(b => b.level));
+  out.lists = JSON.stringify(buildItems(readDocxParts(n => (listFiles[n] !== undefined ? listFiles[n] : null)), pr).items.map(x => [x.role, x.text]));
   if (process.env.KIYO_DOCX) out.real = JSON.stringify(buildItems(readDocxManuscript(fs.readFileSync(process.env.KIYO_DOCX).toString('latin1')), pr).items.map(x => [x.role, x.text]));
   return out;
 }
