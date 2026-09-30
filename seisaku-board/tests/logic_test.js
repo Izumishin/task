@@ -46,7 +46,7 @@ check('制作進行シートは左端に作られる（印刷進行ボードの�
 check('案件は2行目から入る', board.cell(2, api.COL.KEY) === '22962-000', board.cell(2, 1));
 check('未採番は仮キー', board.cell(5, api.COL.KEY) === '仮:港製作所|暑中見舞 冊子', board.cell(5, 1));
 check('担当者：★も数値も担当（E=和泉→DTP, K=橋本→編集）', board.cell(2, api.COL.DTP) === '和泉' && board.cell(2, api.COL.EDIT) === '橋本', [board.cell(2, 6), board.cell(2, 7)]);
-check('状態：初校戻りまで入っていれば校正中', board.cell(2, api.COL.STATUS) === '校正中', board.cell(2, 8));
+check('状態：直近が初校戻り＝赤字修正中（こちらの番）', board.cell(2, api.COL.STATUS) === '赤字修正中', board.cell(2, 8));
 check('直近の動き', board.cell(2, api.COL.RECENT) === '初校戻り 2026/09/04', board.cell(2, 14));
 check('出力区分：T列 篠原 → オフ', board.cell(2, api.COL.OUTPUT) === 'オフ', board.cell(2, 12));
 check('納期はT列に入る', board.cell(2, api.COL.DUE) === '2026/09/30', board.cell(2, 20));
@@ -57,7 +57,7 @@ check('AGが当日以前なら下版済＋完了日', board.cell(4, api.COL.STAT
 check('入稿日が空なら未入稿', board.cell(5, api.COL.STATUS) === '未入稿', board.cell(5, 8));
 check('出力区分：S列 PDF → データ', board.cell(5, api.COL.OUTPUT) === 'データ', board.cell(5, 12));
 check('派遣・磯網は編集', board.cell(6, api.COL.EDIT) === '派遣,磯網', board.cell(6, 7));
-check('下版日を過ぎても「済」が無ければ下版済にしない', board.cell(11, api.COL.STATUS) === '校正中' && board.cell(11, api.COL.DONE_DATE) === '', [board.cell(11, 8), board.cell(11, 19)]);
+check('下版日を過ぎても「済」が無ければ下版済にしない', board.cell(11, api.COL.STATUS) === '赤字修正中' && board.cell(11, api.COL.DONE_DATE) === '', [board.cell(11, 8), board.cell(11, 19)]);
 check('過ぎた下版日は下版予定日として残る（画面で超過と出す）', board.cell(11, api.COL.GEHAN) === D(-3) && board.cell(11, api.COL.NEXT) === '', [board.cell(11, 10), board.cell(11, 24)]);
 check('今日が入稿予定日なら今日いっぱいは未入稿', board.cell(12, api.COL.STATUS) === '未入稿', board.cell(12, 8));
 check('今日の予定は「次の予定」に入る', board.cell(12, api.COL.NEXT) === '入稿予定 ' + today, board.cell(12, 24));
@@ -76,7 +76,7 @@ check('済の完了日は取込で上書きしない', board.cell(9, api.COL.DON
 check('古い完了日の済案件は画面に出ない', !api.getBoardData({}).rows.find(r => r.key === '22930-000'));
 setRow(13, { A: '' });
 api.importFromProductionSheet();
-check('済が消えたら通常の判定に戻る', board.cell(9, api.COL.STATUS) === '校正中' && board.cell(9, api.COL.DONE_DATE) === '', [board.cell(9, 8), board.cell(9, 19)]);
+check('済が消えたら通常の判定に戻る', board.cell(9, api.COL.STATUS) === '赤字修正中' && board.cell(9, api.COL.DONE_DATE) === '', [board.cell(9, 8), board.cell(9, 19)]);
 setRow(13, { A: '済' });
 api.importFromProductionSheet();
 check('済に戻すと完了日は今日から数え直す', board.cell(9, api.COL.STATUS) === '下版済' && board.cell(9, api.COL.DONE_DATE) === today);
@@ -109,7 +109,7 @@ check('間違った合言葉では書けない', threw.indexOf('権限') >= 0, t
 let saved = api.saveCase('22962-000', { status: '作業中', gehanDate: '2026-09-20', output: 'オンデ', dtp: ['和泉', '高橋'], edit: ['橋本'], memo: '著者校待ち' }, PIN);
 check('状態・日付・出力・担当が手動になる', saved.manualFields.join(',') === 'status,date,output,staff', saved.manualFields);
 check('有効値は手動の値', saved.status === '作業中' && saved.gehan === '2026/09/20' && saved.output === 'オンデ' && saved.dtp.join(',') === '和泉,高橋', saved);
-check('自動判定の値は残る（並べて表示できる）', saved.statusAuto === '校正中' && saved.gehanAuto === '' && saved.outputAuto === 'オフ' && saved.dtpAuto.join(',') === '和泉');
+check('自動判定の値は残る（並べて表示できる）', saved.statusAuto === '赤字修正中' && saved.gehanAuto === '' && saved.outputAuto === 'オフ' && saved.dtpAuto.join(',') === '和泉');
 check('手動更新者・日時', saved.manualBy === '和泉' && !!saved.manualAt, [saved.manualBy, saved.manualAt]);
 check('メモ', saved.memo === '著者校待ち');
 check('シートの手動列に入る', board.cell(2, api.COL.STATUS_MANUAL) === '作業中' && board.cell(2, api.COL.GEHAN_MANUAL) === '2026/09/20' && board.cell(2, api.COL.DTP_MANUAL) === '和泉,高橋' && board.cell(2, api.COL.MANUAL_FIELDS) === 'status,date,output,staff');
@@ -119,12 +119,12 @@ setRow(4, { AC: '2026/09/10' });
 const r3 = api.importFromProductionSheet();
 check('生産表の変更で更新1件', r3.updated === 1, r3);
 let a2 = api.getBoardData(PIN).rows.find(r => r.key === '22962-000');
-check('自動判定は追随する', a2.statusAuto === '校正中' && a2.recent === '再校提出 2026/09/10', [a2.statusAuto, a2.recent]);
+check('自動判定は追随する（再校提出まで進んだ＝先方校正中）', a2.statusAuto === '先方校正中' && a2.recent === '再校提出 2026/09/10', [a2.statusAuto, a2.recent]);
 check('手動の状態は残る', a2.status === '作業中' && a2.manualFields.indexOf('status') >= 0);
 check('メモも残る', a2.memo === '著者校待ち');
 
 // 自動と同じ値に戻すと手動が外れる
-api.saveCase('22962-000', { status: '校正中', name: '橋本' }, PIN);
+api.saveCase('22962-000', { status: '先方校正中', name: '橋本' }, PIN);
 a2 = api.getBoardData(PIN).rows.find(r => r.key === '22962-000');
 check('自動と同じ値にすると手動が解除される', a2.manualFields.indexOf('status') < 0 && a2.manualFields.indexOf('date') >= 0, a2.manualFields);
 check('更新者が変わる', a2.manualBy === '橋本');
@@ -211,6 +211,7 @@ check('論文明細は生産表側のスプレッドシートに作られる', !
 data = api.getBoardData(PIN);
 const bun = data.rows.find(r => r.key === '22962-000');
 check('カードに論文が紐づく（教養論集の分は入らない）', bun.papers.length === 6, bun.papers.map(p => p.title));
+check('紀要は論文明細で番を決める：直し待ち（念校戻り）が1本あれば赤字修正中', bun.statusAuto === '赤字修正中', [bun.statusAuto, bun.papers.map(p => p.status)]);
 const byTitle = {}; bun.papers.forEach(p => { byTitle[p.title] = p; });
 check('責了は完了扱い', byTitle['表紙'].status === '責了');
 check('校了が三校の列にあっても完了扱い', byTitle['【タテ】武蔵国防人歌再読'].status === '校了');
@@ -390,6 +391,25 @@ check('紀要 校了 は日付でない', api.parseKiyoDate_('校了') === '');
 console.log('--- チェックボックス事故の再発防止 ---');
 check('データの最終行はA列で判断する', api.boardLastDataRow_(board) === board.getLastRow());
 check('1000行目まで伸びていない', board.getLastRow() < 20, board.getLastRow());
+
+console.log('--- 先方校正中／赤字修正中（誰の番か） ---');
+const P = (status, kind) => ({ status: status, kind: kind || '本文' });
+check('直し待ちが1本でもあれば赤字修正中', api.kiyoTurnStatus_('先方校正中', [P('初校提出'), P('再校戻り'), P('校了')], ['校了', '責了']) === '赤字修正中');
+check('校了を除いて全部 ●校提出 なら先方校正中', api.kiyoTurnStatus_('赤字修正中', [P('初校提出'), P('三校提出'), P('責了')], ['校了', '責了']) === '先方校正中');
+check('生産表が作業中でも、全部先方待ちなら先方校正中', api.kiyoTurnStatus_('作業中', [P('初校提出'), P('初校提出')], ['校了', '責了']) === '先方校正中');
+check('組上がり・入稿が混ざるときは生産表の判定のまま', api.kiyoTurnStatus_('作業中', [P('初校提出'), P('組上がり')], ['校了', '責了']) === '作業中');
+check('表回りの直し待ちは数えない', api.kiyoTurnStatus_('先方校正中', [P('初校提出'), P('初校戻り', '表回り')], ['校了', '責了']) === '先方校正中');
+check('未入稿・下版済は変えない', api.kiyoTurnStatus_('未入稿', [P('初校戻り')], ['校了']) === '未入稿' && api.kiyoTurnStatus_('下版済', [P('初校戻り')], ['校了']) === '下版済');
+check('論文明細が無ければそのまま', api.kiyoTurnStatus_('先方校正中', [], ['校了']) === '先方校正中');
+const legacyRow = new Array(api.COL.ISSUE_NOTE).fill('');
+legacyRow[api.COL.STATUS - 1] = '校正中'; legacyRow[api.COL.RECENT - 1] = '初校戻り 2026/09/04';
+check('以前の「校正中」は直近の動きで振り分ける（戻り→赤字修正中）', api.autoStatus_(legacyRow) === '赤字修正中');
+legacyRow[api.COL.RECENT - 1] = '再校提出 2026/09/10';
+check('以前の「校正中」は直近の動きで振り分ける（提出→先方校正中）', api.autoStatus_(legacyRow) === '先方校正中');
+check('手で入れた「校正中」は自動判定の向きに合わせる', api.normalizeStatus_('校正中', '赤字修正中') === '赤字修正中' && api.normalizeStatus_('校正中', '作業中') === '先方校正中');
+let badThrew = '';
+try { api.saveCase('22970-000', { status: '校正中', name: '和泉' }, PIN); } catch (e) { badThrew = e.message; }
+check('新しく「校正中」は選べない（5つの状態のどれか）', badThrew.indexOf('不正') >= 0, badThrew);
 
 console.log(fails === 0 ? '\nすべて成功' : `\n失敗 ${fails} 件`);
 process.exit(fails === 0 ? 0 : 1);

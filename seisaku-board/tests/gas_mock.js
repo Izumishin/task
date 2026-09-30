@@ -78,7 +78,7 @@ const C = (letter) => { let n = 0; for (const ch of letter) n = n * 26 + (ch.cha
 // ---- Code.gs をロード ----
 const src = fs.readFileSync(path.join(__dirname, '..', 'Code.gs'), 'utf8');
 const ctx = { Utilities, PropertiesService, Session, LockService, SpreadsheetApp, ScriptApp, HtmlService, console };
-const fn = new Function(...Object.keys(ctx), src + '\nreturn {importFromProductionSheet,importFromKiyoSheet,importAll,getBoardData,saveCase,resetToProduction,mergeCases,setStaffNote,setupSheets,diagnoseImport,diagnoseKiyo,today_,addDays_,mondayOf_,boardLastDataRow_,latestProductionSheet_,runImportNow,parseKiyoDate_,toDateString_,COL,PCOL};');
+const fn = new Function(...Object.keys(ctx), src + '\nreturn {kiyoTurnStatus_,normalizeStatus_,autoStatus_,importFromProductionSheet,importFromKiyoSheet,importAll,getBoardData,saveCase,resetToProduction,mergeCases,setStaffNote,setupSheets,diagnoseImport,diagnoseKiyo,today_,addDays_,mondayOf_,boardLastDataRow_,latestProductionSheet_,runImportNow,parseKiyoDate_,toDateString_,COL,PCOL};');
 const api = fn(...Object.values(ctx));
 
 module.exports = { createEnv: () => ({ api, ss, kss, _props }), C };

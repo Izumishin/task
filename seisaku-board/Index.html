@@ -122,7 +122,7 @@
     .empty { color: var(--faint); font-size: 13px; padding: 2px 2px 6px; }
 
     /* ------- ステータスビュー ------- */
-    .board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; padding: 8px 20px 48px; align-items: start; }
+    .board { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; padding: 8px 20px 48px; align-items: start; }
     .col-head { display: flex; align-items: baseline; gap: 10px; padding: 4px 4px 8px; }
     .col-head .name { font-size: 15px; font-weight: 700; color: var(--muted); }
     .col-head .sub { font-size: 12.5px; color: var(--faint); }
@@ -143,6 +143,7 @@
     .status-badge { font-size: 12px; font-weight: 700; border-radius: 999px; padding: 2px 11px; white-space: nowrap; background: var(--notyet-bg); color: var(--notyet-fg); }
     .status-badge.working { background: var(--working-bg); color: var(--working-fg); }
     .status-badge.proof { background: var(--proof-bg); color: var(--proof-fg); }
+    .status-badge.client { background: transparent; color: var(--muted); box-shadow: inset 0 0 0 1.5px var(--muted); }
     .status-badge.done { background: var(--done-bg); color: var(--done-fg); }
     .when { font-size: 12.5px; color: var(--muted); }
     .when b { color: var(--text); font-weight: 700; }
@@ -227,6 +228,7 @@
     }
     .toast.err { border-color: var(--warn-fg); color: var(--warn-fg); }
 
+    @media (max-width: 1400px) { .board { grid-template-columns: repeat(3, 1fr); } }
     @media (max-width: 1100px) { .board { grid-template-columns: repeat(2, 1fr); } }
     @media (max-width: 700px) {
       .board { grid-template-columns: 1fr; padding: 8px 12px 40px; }
@@ -290,7 +292,8 @@ const state = {
   busy: false
 };
 const REFRESH_MS = 30000;
-const STATUS_CLASS = { '未入稿': 'notyet', '作業中': 'working', '校正中': 'proof', '下版済': 'done' };
+// 先方校正中＝枠線だけ（先方待ち）／作業中・赤字修正中＝塗り（こちらが手を動かす番）
+const STATUS_CLASS = { '未入稿': 'notyet', '作業中': 'working', '先方校正中': 'client', '赤字修正中': 'proof', '校正中': 'proof', '下版済': 'done' };
 const FIELD_LABEL = { status: '状態', date: '下版予定日', output: '出力区分', staff: '担当者', count: '掲載本数' };
 
 // ===========================================================================
@@ -606,13 +609,14 @@ function renderStaffView() {
   document.getElementById('viewStaff').innerHTML = html;
 }
 
-/** (B) ステータスビュー：未入稿｜作業中｜校正中｜完了（下版済）。 */
+/** (B) ステータスビュー：未入稿｜作業中｜先方校正中｜赤字修正中｜完了（下版済）。 */
 function renderStatusView() {
   const d = state.data;
   const cols = [
     { name: '未入稿', rows: d.rows.filter(function (r) { return r.status === '未入稿'; }) },
     { name: '作業中', rows: d.rows.filter(function (r) { return r.status === '作業中'; }) },
-    { name: '校正中', rows: d.rows.filter(function (r) { return r.status === '校正中'; }) },
+    { name: '先方校正中', sub: '先方の戻り待ち', rows: d.rows.filter(function (r) { return r.status === '先方校正中'; }) },
+    { name: '赤字修正中', sub: 'こちらの番', rows: d.rows.filter(function (r) { return r.status === '赤字修正中' || r.status === '校正中'; }) },
     { name: '完了（下版済）', sub: shortDate(d.weekStart) + ' 以降', rows: d.rows.filter(function (r) { return r.isDone; }) }
   ];
   document.getElementById('viewStatus').innerHTML = cols.map(function (c) {

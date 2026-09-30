@@ -148,8 +148,9 @@ console.log('--- ステータスビュー ---');
 ui.state.view = 'status';
 ui.render();
 const statusHtml = el('viewStatus').innerHTML;
-check('4カラム', ['未入稿', '作業中', '校正中', '完了（下版済）'].every(n => statusHtml.indexOf('name">' + n + '<') >= 0));
-check('件数', statusHtml.indexOf('未入稿</span><span class="sub">1件') >= 0 && statusHtml.indexOf('校正中</span><span class="sub">1件') >= 0);
+check('5カラム', ['未入稿', '作業中', '先方校正中', '赤字修正中', '完了（下版済）'].every(n => statusHtml.indexOf('name">' + n + '<') >= 0));
+check('件数（紀要の文芸研究は直し待ちがあるので赤字修正中）', statusHtml.indexOf('未入稿</span><span class="sub">1件') >= 0 && statusHtml.indexOf('赤字修正中</span><span class="sub">1件') >= 0, statusHtml.match(/name">[^<]*<\/span><span class="sub">[^<]*/g));
+check('赤字修正中は塗り、先方校正中は枠線のラベル', /status-badge proof">赤字修正中/.test(statusHtml));
 
 console.log('--- 閲覧者の詳細パネル ---');
 ui.openPanel('22962-000');
@@ -171,7 +172,8 @@ check('編集者に注記ボタンが出る', el('viewStaff').innerHTML.indexOf(
 ui.openPanel('22962-000');
 panel = el('panel').innerHTML;
 check('編集フォームが出る', panel.indexOf('id="f_status"') >= 0 && panel.indexOf('id="panelSave"') >= 0 && panel.indexOf('id="mergeTarget"') >= 0);
-check('生産表の値が分かる', panel.indexOf('校正中（生産表）') >= 0 && panel.indexOf('オフ（生産表）') >= 0);
+check('生産表の値が分かる', panel.indexOf('赤字修正中（生産表）') >= 0 && panel.indexOf('オフ（生産表）') >= 0);
+check('状態の選択肢は5つ', ['未入稿', '作業中', '先方校正中', '赤字修正中', '下版済'].every(n => panel.indexOf('value="' + n + '"') >= 0) && panel.indexOf('value="校正中"') < 0);
 check('統合先に自分は出ない', panel.indexOf('22962-000　学校法人') < 0 && panel.indexOf('22970-000　台東区') >= 0);
 
 preset.f_name = '和泉'; preset.f_status = '作業中'; preset.f_gehan = D(20).replace(/\//g, '-'); preset.f_output = 'オフ'; preset.f_memo = '著者校待ち'; preset.chkTakahashi = true;
@@ -183,7 +185,7 @@ check('状態・日付・担当が手動になった', saved.status === '作業�
 check('出力は生産表と同じなので手動にならない', saved.manualFields.indexOf('output') < 0);
 const cardAfter = el('viewStaff').innerHTML;
 check('カードに手動の印と直した人', cardAfter.indexOf('manual-badge') >= 0 && cardAfter.indexOf('手動 和泉') >= 0);
-check('生産表とボードを並べて表示', cardAfter.indexOf('状態 生産表 校正中 ／ ボード 作業中') >= 0, cardAfter.match(/conflict">[^<]*/g));
+check('生産表とボードを並べて表示', cardAfter.indexOf('状態 生産表 赤字修正中 ／ ボード 作業中') >= 0, cardAfter.match(/conflict">[^<]*/g));
 check('手動の下版予定日が大きい日付になる', cardAfter.indexOf('<span class="date">' + shortOf(D(20)) + '</span><span class="evt">下版予定</span>') >= 0, cardAfter.match(/dateline[^>]*>.*?<\/div>/g));
 check('高橋の抱えが増える', new RegExp('【高橋】.*抱え <b>2</b>件 ／ 今週下版 <b>' + gehanInWeek + '</b>件').test(cardAfter), cardAfter.match(/【高橋】.*?<\/span>/));
 
@@ -235,6 +237,10 @@ ui.render();
 check('超過が無ければ帯は出ない', !!el('overNotice').classes.hidden, el('overNotice').textContent);
 ui.state.data.rows = saveRows;
 ui.render();
+
+console.log('--- 先方校正中のラベル ---');
+const clientCard = ui.cardHtml(Object.assign({}, ui.state.data.rows.find(r => r.key === '22970-000'), { status: '先方校正中', isDone: false }), 'DTP');
+check('先方校正中は枠線だけのラベル（client）', clientCard.indexOf('status-badge client">先方校正中') >= 0);
 
 console.log('--- 紀要の案件は「●校提出／●校戻り」の工程名を出さない ---');
 const kiyoRow = Object.assign({}, ui.state.data.rows.find(r => r.key === '22962-000'), { next: '再校戻り予定 ' + D(3), isDone: false });

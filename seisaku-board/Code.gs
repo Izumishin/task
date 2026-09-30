@@ -200,8 +200,15 @@ const PAPER_HEADERS = ['受注番号', '論文名', '著者名', '状態', '直�
 const NCOL = { NAME: 1, NOTE: 2 };
 const NOTE_HEADERS = ['担当者名', '注記'];
 
-const STATUS = { NOT_YET: '未入稿', WORKING: '作業中', PROOF: '校正中', DONE: '下版済' };
-const STATUSES = [STATUS.NOT_YET, STATUS.WORKING, STATUS.PROOF, STATUS.DONE];
+/**
+ * 案件の状態。校正の段階は「いま誰の番か」で2つに分ける（橋本さん意見）。
+ *  先方校正中 … ●校を提出して、先方（著者・クライアント）の戻りを待っている
+ *  赤字修正中 … ●校が戻ってきて、こちらが赤字を直している
+ * 「校正中」は以前の状態名。シートに残っていても読めるようにしておく（normalizeStatus_）。
+ */
+const STATUS = { NOT_YET: '未入稿', WORKING: '作業中', CLIENT: '先方校正中', FIXING: '赤字修正中', DONE: '下版済',
+  PROOF_LEGACY: '校正中' };
+const STATUSES = [STATUS.NOT_YET, STATUS.WORKING, STATUS.CLIENT, STATUS.FIXING, STATUS.DONE];
 
 /** 手動で直せる項目（項目単位で取込との衝突を制御する）。 */
 const MANUAL_FIELD_KEYS = ['status', 'date', 'output', 'staff', 'count'];
@@ -694,7 +701,8 @@ function autoFromRow_(r, cols, staff, rules, todayStr) {
   } else {
     if (lastIdx < 0) status = STATUS.NOT_YET;
     else if (lastIdx === 0) status = STATUS.WORKING;
-    else status = STATUS.PROOF;
+    // 直近の工程が ●校提出 なら先方の番、●校戻り ならこちらの番
+    else status = /_OUT$/.test(STAGES[lastIdx].key) ? STATUS.CLIENT : STATUS.FIXING;
     recent = lastText;
   }
   if (status === STATUS.DONE) next = '';
@@ -1259,7 +1267,46 @@ function doGet() {
 }
 
 /** 1行分のシート値 → 画面用オブジェクト。 */
-function buildRecord_(values, rowNumber, papers) {
+/** 紀要の完了語（校了・責了）。 */
+function kiyoDoneWords_() {
+  return splitList_(getProp_(KIYO_PROP.DONE_WORDS, KIYO_DEFAULT.DONE_WORDS));
+}
+
+/**
+ * 生産表から判定した状態（H列）。以前の「校正中」が残っていたら、直近の動き（N列）の工程名で振り分ける。
+ */
+function autoStatus_(row) {
+  const s = toText_(row[COL.STATUS - 1]);
+  if (s !== STATUS.PROOF_LEGACY) return s;
+  return /戻り\s/.test(toText_(row[COL.RECENT - 1])) ? STATUS.FIXING : STATUS.CLIENT;
+}
+
+/**
+ * 紀要（論文明細がある案件）は、論文ごとに校正の進みがバラつくので、論文明細で「誰の番か」を決め直す。
+ *  - 直し待ち（●校戻り）の本文が1本でもある → 赤字修正中（こちらの番がある）
+ *  - 校了・責了を除く本文が全部 ●校提出 → 先方校正中（全部先方待ち）
+ *  - それ以外（組上がり・入稿のものが混ざる等）は生産表の判定のまま
+ * 未入稿・下版済は変えない。
+ */
+function kiyoTurnStatus_(status, papers, doneWords) {
+  if (!papers || !papers.length) return status;
+  if ([STATUS.WORKING, STATUS.CLIENT, STATUS.FIXING].indexOf(status) < 0) return status;
+  const words = doneWords || ['校了', '責了'];
+  const active = papers.filter(function (p) {
+    return p.kind !== PAPER_KIND.FRONT && words.indexOf(p.status) < 0;
+  });
+  if (active.some(function (p) { return /校戻り$/.test(p.status); })) return STATUS.FIXING;
+  if (active.length && active.every(function (p) { return /校提出$/.test(p.status); })) return STATUS.CLIENT;
+  return status;
+}
+
+/** 手で入れた状態が以前の「校正中」なら、自動判定の向き（先方／赤字）に合わせる。 */
+function normalizeStatus_(s, auto) {
+  if (s !== STATUS.PROOF_LEGACY) return s;
+  return (auto === STATUS.CLIENT || auto === STATUS.FIXING) ? auto : STATUS.CLIENT;
+}
+
+function buildRecord_(values, rowNumber, papers, doneWords) {
   const e = effective_(values);
   const due = toDateString_(values[COL.DUE - 1]);
   const doneDate = toDateString_(values[COL.DONE_DATE - 1]);
@@ -1278,6 +1325,8 @@ function buildRecord_(values, rowNumber, papers) {
     if (t === body) counts[p.status] = (counts[p.status] || 0) + 1;
   });
   const issueAuto = issueAuto_(values);
+  const statusAuto = kiyoTurnStatus_(autoStatus_(values), list, doneWords);
+  const status = e.manual.status ? normalizeStatus_(e.status, statusAuto) : statusAuto;
   return {
     row: rowNumber,
     key: toText_(values[COL.KEY - 1]),
@@ -1286,7 +1335,7 @@ function buildRecord_(values, rowNumber, papers) {
     customer: toText_(values[COL.CUSTOMER - 1]),
     item: toText_(values[COL.ITEM - 1]),
     sales: toText_(values[COL.SALES - 1]),
-    status: e.status, statusAuto: toText_(values[COL.STATUS - 1]),
+    status: status, statusAuto: statusAuto,
     gehan: e.gehan, gehanAuto: toDateString_(values[COL.GEHAN - 1]),
     output: e.output, outputAuto: toText_(values[COL.OUTPUT - 1]),
     dtp: e.dtp, dtpAuto: splitList_(values[COL.DTP - 1]),
@@ -1300,7 +1349,7 @@ function buildRecord_(values, rowNumber, papers) {
     manualAt: toText_(values[COL.MANUAL_AT - 1]),
     importedAt: toText_(values[COL.IMPORTED_AT - 1]),
     doneDate: doneDate,
-    isDone: e.status === STATUS.DONE,
+    isDone: status === STATUS.DONE,
     papers: list,
     paperCounts: counts,         // 本文の状態別本数
     bodyTotal: body.total,       // 本文の行数（紀要シートにある分）
@@ -1352,7 +1401,7 @@ function readNotes_(ss) {
 
 /**
  * 画面用データ一式。
- * - 未入稿・作業中・校正中：すべて
+ * - 未入稿・作業中・先方校正中・赤字修正中：すべて
  * - 下版済：完了日が「直近の月曜」以降のものだけ（月曜の朝に前週分がまとめて消える）
  */
 function getBoardData(options) {
@@ -1370,7 +1419,7 @@ function getBoardData(options) {
   const rows = [];
   values.forEach(function (v, i) {
     if (!toText_(v[COL.KEY - 1])) return;
-    const rec = buildRecord_(v, i + 2, papers[toText_(v[COL.ORDER_NO - 1])]);
+    const rec = buildRecord_(v, i + 2, papers[toText_(v[COL.ORDER_NO - 1])], cfg.doneWords);
     if (rec.isDone) {
       if (!rec.doneDate || rec.doneDate < weekStart) return;
     }
@@ -1446,11 +1495,15 @@ function saveCase(key, patch, auth) {
     const before = sh.getRange(row, 1, 1, LAST_COL).getValues()[0];
     const v = before.slice();
     const m = manualSet_(v);
+    const doneWords = kiyoDoneWords_();
+    const papersNow = readPapers_()[toText_(v[COL.ORDER_NO - 1])];
 
     if (p.hasOwnProperty('status')) {
       const s = toText_(p.status);
       if (s && STATUSES.indexOf(s) < 0) throw new Error('状態の値が不正です：' + s);
-      if (!s || s === toText_(v[COL.STATUS - 1])) { m.status = false; v[COL.STATUS_MANUAL - 1] = ''; }
+      // 自動判定（紀要は論文明細で決め直したもの）と同じ値なら手動にしない
+      const autoNow = kiyoTurnStatus_(autoStatus_(v), papersNow, doneWords);
+      if (!s || s === autoNow) { m.status = false; v[COL.STATUS_MANUAL - 1] = ''; }
       else { m.status = true; v[COL.STATUS_MANUAL - 1] = s; }
     }
     if (p.hasOwnProperty('gehanDate')) {
@@ -1497,7 +1550,7 @@ function saveCase(key, patch, auth) {
       v[COL.MANUAL_AT - 1] = nowStamp_();
       sh.getRange(row, 1, 1, LAST_COL).setValues([v]);
     }
-    return buildRecord_(v, row, readPapers_()[toText_(v[COL.ORDER_NO - 1])]);
+    return buildRecord_(v, row, papersNow, doneWords);
   });
 }
 
