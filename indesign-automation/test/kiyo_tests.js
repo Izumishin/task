@@ -605,7 +605,7 @@ const uMs = readDocxParts(n => (n === 'word/document.xml' ? uDoc : n === 'word/s
 const ub = uMs.blocks[0], ugot = {};
 ub.fmt.forEach(f => { ugot[ub.text.substring(f.start, f.end)] = f.key; });
 const uWant = { '線0': 'underline', '線1': 'underline', '線2': 'uDouble', '線3': 'uThick', '線4': 'uDotted', '線5': 'uDotted', '線6': 'uDash',
-  '線7': 'uDash', '線8': 'uDotDash', '線9': 'uDotDash', '線10': 'uWave', '線11': 'uWave', '線12': 'uWavyDouble',
+  '線7': 'uDash', '線8': 'uDotDash', '線9': 'uDotDotDash', '線10': 'uWave', '線11': 'uWave', '線12': 'uWavyDouble',
   '取消': 'strike', '二重取消': 'dstrike', '継承': 'uDotted' };
 check('Word の下線の線種・取り消し線を読み分ける (太さ違いは同じ種類)', Object.keys(uWant).every(k => ugot[k] === uWant[k]), JSON.stringify(ugot));
 check('スタイルの受け継ぎ: 後で指定した線種・「下線なし」で置き換わる', ugot['継承'] === 'uDotted' && ugot['消去'] === undefined && ugot['直接で消す'] === undefined,
@@ -635,6 +635,36 @@ check('その線種のスタイルがなければ、ふつうの下線・取り�
       pickFmtStyleKey({ uDash: true }, { underline: 'x' }) === 'underline' && pickFmtStyleKey({ dstrike: true }, { strike: 's' }) === 'strike' &&
       pickFmtStyleKey({ uDash: true }, { uDash: 'd', underline: 'x' }) === 'uDash' && pickFmtStyleKey(spanFromKey('uWave'), { underline: 'x' }) === 'underline');
 
+// ---- 表の中の飾り・二点鎖線・蛍光ペン ----
+console.log('table formatting:');
+const TC = body => `<w:tc>${body}</w:tc>`;
+const tDoc = `<?xml version="1.0"?><w:document ${W}><w:body>${P('表のある論文')}${P('１．はじめに', 'Heading1')}
+<w:tbl><w:tblGrid><w:gridCol w:w="1000"/><w:gridCol w:w="1000"/></w:tblGrid>
+<w:tr>${TC('<w:p>' + R('場面', '<w:b/>') + '</w:p>')}${TC('<w:p>' + R('子どもの', '<w:b/>') + T('様子') + '</w:p>')}</w:tr>
+<w:tr>${TC('<w:p>' + T('ユウキ：') + R('両手を', '<w:u w:val="single"/>') + T('上げる') + '</w:p><w:p>' + R('二段落目の点線', '<w:u w:val="dotted"/>') + '</w:p>')}
+${TC('<w:p>' + R('跳びはねる', '<w:u w:val="dotDotDash"/>') + T('と') + R('寝そべる', '<w:u w:val="dotDash"/>') + R('Study 研究', '<w:i/>') + '</w:p>')}</w:tr>
+</w:tbl>
+<w:p>${T('本文の注')}${R('1)', '<w:vertAlign w:val="superscript"/><w:highlight w:val="yellow"/>')}${T('と')}${R('強調', '<w:highlight w:val="none"/>')}</w:p>
+<w:sectPr/></w:body></w:document>`;
+const tFiles = { 'word/document.xml': tDoc, 'word/styles.xml': stylesXml };
+const tBuilt = buildItems(readDocxParts(n => (tFiles[n] !== undefined ? tFiles[n] : null)), prof);
+const tItem = tBuilt.items.find(x => x.role === 'table');
+const cellSeg = (r, c) => tItem.cellFmt[r][c].map(sp => comboKey(sp) + ':' + tItem.table.rows[r][c].substring(sp.start, sp.end));
+check('表のセルの中の下線の線種 (二点鎖線・一点鎖線も区別)',
+      JSON.stringify(cellSeg(1, 1)) === JSON.stringify(['uDotDotDash:跳びはねる', 'uDotDash:寝そべる', 'italic:Study ', 'italic+ja:研究']), JSON.stringify(cellSeg(1, 1)));
+check('セルの中の2段落目の飾りも位置が合う', JSON.stringify(cellSeg(1, 0)) === JSON.stringify(['underline:両手を', 'uDotted:二段落目の点線']), JSON.stringify(cellSeg(1, 0)));
+check('1行目のセル全体の太字は表の体裁に任せる (一部だけの太字は残す)', cellSeg(0, 0).length === 0 && JSON.stringify(cellSeg(0, 1)) === JSON.stringify(['bold:子どもの']),
+      JSON.stringify([cellSeg(0, 0), cellSeg(0, 1)]));
+const tCnt = countFmtCombos(tBuilt);
+check('表の中の飾りも数に入れる', tCnt.uDotDotDash === 1 && tCnt.uDotDash === 1 && tCnt.uDotted === 1 && tCnt['sup+highlight'] === 1, JSON.stringify(tCnt));
+check('蛍光ペン (「なし」は蛍光ペンにしない)', comboLabel('sup+highlight') === '上付き＋蛍光ペン' &&
+      !tBuilt.items.find(x => x.role === 'body').fmt.some(f => f.highlight && !f.sup));
+check('二点鎖線の線の名前', strokeKindOf('二点鎖線') === 'dotDotDash' && strokeKindOf('Dash Dot Dot') === 'dotDotDash' && strokeKindOf('一点鎖線') === 'dotDash' &&
+      strokeKindOf('Dash Dot') === 'dotDash');
+check('二点鎖線のスタイルがなければ 一点鎖線 → 下線 の順で代用',
+      pickFmtStyleKey({ uDotDotDash: true }, { uDotDash: 'a', underline: 'b' }) === 'uDotDash' &&
+      pickFmtStyleKey({ uDotDotDash: true }, { underline: 'b' }) === 'underline' && pickFmtStyleKey({ uDotDotDash: true }, { uDotDotDash: 'c', uDotDash: 'a' }) === 'uDotDotDash');
+
 // ---- InDesign の正規表現の不具合 (「( )」で取り出した部分が空になる) でも動くか ----
 console.log('regexp capture bug:');
 function runPipeline() {
@@ -651,6 +681,7 @@ function runPipeline() {
   out.fmt = JSON.stringify(fm.items.map(x => [x.role, x.text, x.fmt]));
   out.fn = JSON.stringify([fnb.items.map(x => [x.role, x.text]), fnb.footnotes]);
   out.levels = JSON.stringify(m1.blocks.map(b => b.level));
+  out.tables = JSON.stringify(buildItems(readDocxParts(n => (tFiles[n] !== undefined ? tFiles[n] : null)), pr).items.filter(x => x.role === 'table').map(x => x.cellFmt));
   out.lists = JSON.stringify(buildItems(readDocxParts(n => (listFiles[n] !== undefined ? listFiles[n] : null)), pr).items.map(x => [x.role, x.text]));
   if (process.env.KIYO_DOCX) out.real = JSON.stringify(buildItems(readDocxManuscript(fs.readFileSync(process.env.KIYO_DOCX).toString('latin1')), pr).items.map(x => [x.role, x.text]));
   return out;

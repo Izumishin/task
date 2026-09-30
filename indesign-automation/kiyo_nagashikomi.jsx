@@ -542,13 +542,13 @@ function listSeparator(label, suff) {
 var FMT_KINDS = [
   ["italic", "イタリック"], ["bold", "太字"], ["underline", "下線"],
   ["uDouble", "下二重線"], ["uThick", "太い下線"], ["uDotted", "下点線"], ["uDash", "下破線"],
-  ["uDotDash", "下一点鎖線"], ["uWave", "下波線"], ["uWavyDouble", "下二重波線"],
+  ["uDotDash", "下一点鎖線"], ["uDotDotDash", "下二点鎖線"], ["uWave", "下波線"], ["uWavyDouble", "下二重波線"],
   ["sup", "上付き"], ["sub", "下付き"],
-  ["kenten", "圏点"], ["strike", "取り消し線"], ["dstrike", "二重取り消し線"], ["ruby", "ルビ"]
+  ["kenten", "圏点"], ["strike", "取り消し線"], ["dstrike", "二重取り消し線"], ["highlight", "蛍光ペン"], ["ruby", "ルビ"]
 ];
 
 // 下線の線種 (1つの文字に付く下線は1種類なので、付け替えるときは他の線種を消す)
-var UNDERLINE_KINDS = ["underline", "uDouble", "uThick", "uDotted", "uDash", "uDotDash", "uWave", "uWavyDouble"];
+var UNDERLINE_KINDS = ["underline", "uDouble", "uThick", "uDotted", "uDash", "uDotDash", "uDotDotDash", "uWave", "uWavyDouble"];
 var STRIKE_KINDS = ["strike", "dstrike"];
 
 // Word の下線の線種 (w:u の値) → 下線の種類。太さ違いは同じ種類にまとめる
@@ -557,14 +557,14 @@ var WORD_UNDERLINE = {
   "single": "underline", "words": "underline", "double": "uDouble", "thick": "uThick",
   "dotted": "uDotted", "dottedHeavy": "uDotted",
   "dash": "uDash", "dashedHeavy": "uDash", "dashLong": "uDash", "dashLongHeavy": "uDash",
-  "dotDash": "uDotDash", "dashDotHeavy": "uDotDash", "dotDotDash": "uDotDash", "dashDotDotHeavy": "uDotDash",
+  "dotDash": "uDotDash", "dashDotHeavy": "uDotDash", "dotDotDash": "uDotDotDash", "dashDotDotHeavy": "uDotDotDash",
   "wave": "uWave", "wavyHeavy": "uWave", "wavyDouble": "uWavyDouble"
 };
 
 // その線種の文字スタイルがないときの代わり (線が消えるよりは、ふつうの下線・取り消し線にする)
 var FMT_FALLBACK = {
   uDouble: "underline", uThick: "underline", uDotted: "underline", uDash: "underline", uDotDash: "underline",
-  uWave: "underline", uWavyDouble: "underline", dstrike: "strike"
+  uDotDotDash: "uDotDash", uWave: "underline", uWavyDouble: "underline", dstrike: "strike"
 };
 
 function _clearKinds(fmt, kinds) { var i; for (i = 0; i < kinds.length; i++) delete fmt[kinds[i]]; }
@@ -598,6 +598,7 @@ function readRunProp(name, tag, fmt) {
     else { delete fmt[sk]; fmt._sOff = 1; }
   }
   else if (name === "w:em") { if (_isOn(tag)) fmt.kenten = true; else delete fmt.kenten; }
+  else if (name === "w:highlight") { if (_isOn(tag)) fmt.highlight = true; else delete fmt.highlight; }
   else if (name === "w:vertAlign") {
     v = xmlAttr(tag, "w:val");
     delete fmt.sup; delete fmt.sub;
@@ -644,13 +645,14 @@ function _fmtKey(f) {
 
 // 1つの区間に当てる文字スタイル (飾りが重なっているときは、上付き・下付き → 斜体 → 太字 … の順で1つ)
 var FMT_PRIORITY = ["sup", "sub", "italic", "bold", "underline", "uDouble", "uThick", "uDotted", "uDash", "uDotDash",
-                    "uWave", "uWavyDouble", "kenten", "strike", "dstrike"];
+                    "uDotDotDash", "uWave", "uWavyDouble", "kenten", "strike", "dstrike", "highlight"];
 
 // InDesign の線の種類の名前 (日本語版・英語版) と太さから、線種を決める
 function strokeKindOf(typeName, weight) {
   var t = String(typeName || "");
   if (/二重波|Double\s*Wav/i.test(t)) return "wavyDouble";
   if (/波|Wav/i.test(t)) return "wave";
+  if (/二点鎖線|Dash\s*-?\s*Dot\s*-?\s*Dot|Dot\s*-?\s*Dot\s*-?\s*Dash/i.test(t)) return "dotDotDash";
   if (/鎖線|Dot\s*-?\s*Dash|Dash\s*-?\s*Dot/i.test(t)) return "dotDash";
   if (/点線|Dotted|Dots|ドット/i.test(t)) return "dotted";
   if (/破線|Dash/i.test(t)) return "dash";
@@ -660,9 +662,9 @@ function strokeKindOf(typeName, weight) {
 }
 
 var UNDERLINE_STROKE = { underline: "single", uDouble: "double", uThick: "thick", uDotted: "dotted", uDash: "dash",
-                         uDotDash: "dotDash", uWave: "wave", uWavyDouble: "wavyDouble" };
+                         uDotDash: "dotDash", uDotDotDash: "dotDotDash", uWave: "wave", uWavyDouble: "wavyDouble" };
 var UNDERLINE_NAME = { uDouble: /下二重線|二重下線/, uThick: /太い?下線|下太線/, uDotted: /下点線|点線/, uDash: /下破線|破線/,
-                       uDotDash: /鎖線/, uWave: /下波線|波線/, uWavyDouble: /二重波/ };
+                       uDotDash: /一点鎖線/, uDotDotDash: /二点鎖線/, uWave: /下波線|波線/, uWavyDouble: /二重波/ };
 
 // 和文の文字 (かな・漢字・全角の記号)
 var RE_JA_CHAR = /[\u3000-\u30FF\u3400-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/;
@@ -715,10 +717,48 @@ function comboLabel(key) {
   return out.join("＋");
 }
 
-// 原稿に出てくる組み合わせごとの数
+// 表のセルの中の飾り → [行][列] の区間の配列。
+// 斜体は和文・欧文に分ける。1行目のセル全体の太字は見出し行の書式なので、表の体裁に任せて外す
+// (それ以外のセル全体の下線などは、意味を持つことがあるのでそのまま残す)
+function tableCellFmt(tb) {
+  var out = [], r, c, list, sp, i, row, text, core;
+  if (!tb.fmts) return out;
+  for (r = 0; r < tb.rows.length; r++) {
+    row = [];
+    for (c = 0; c < tb.rows[r].length; c++) {
+      text = tb.rows[r][c];
+      list = [];
+      var src = tb.fmts[r] && tb.fmts[r][c] ? tb.fmts[r][c] : [];
+      for (i = 0; i < src.length; i++) list.push(_copySpan(src[i]));
+      list = fitSpans(list, text.length);
+      if (r === 0) {
+        core = text.replace(/[\s　\t\r]/g, "").length;
+        var kept = [];
+        for (i = 0; i < list.length; i++) {
+          sp = list[i];
+          if (sp.bold && core > 0 && text.substring(sp.start, sp.end).replace(/[\s　\t\r]/g, "").length / core >= 0.9) {
+            delete sp.bold; sp.key = _fmtKey(sp);
+            if (sp.key === "") continue;
+          }
+          kept.push(sp);
+        }
+        list = kept;
+      }
+      row.push(splitJaItalic(list, text));
+    }
+    out.push(row);
+  }
+  return out;
+}
+
+// 原稿に出てくる組み合わせごとの数 (本文・注・脚注・表の中)
 function countFmtCombos(built) {
-  var cnt = {}, i, j, list = [], k;
-  for (i = 0; i < built.items.length; i++) if (built.items[i].fmt) list = list.concat(built.items[i].fmt);
+  var cnt = {}, i, j, list = [], k, r, c;
+  for (i = 0; i < built.items.length; i++) {
+    if (built.items[i].fmt) list = list.concat(built.items[i].fmt);
+    var cf = built.items[i].cellFmt;
+    if (cf) for (r = 0; r < cf.length; r++) for (c = 0; c < cf[r].length; c++) list = list.concat(cf[r][c]);
+  }
   if (built.footnotes) for (i = 0; i < built.footnotes.length; i++) if (built.footnotes[i].fmt) list = list.concat(built.footnotes[i].fmt);
   for (j = 0; j < list.length; j++) { k = comboKey(list[j]); if (k !== "") cnt[k] = (cnt[k] || 0) + 1; }
   return cnt;
@@ -792,7 +832,8 @@ function pickFmtStyleKey(span, map) {
     var kd = FMT_PRIORITY[i];
     if (!span[kd]) continue;
     if (map[kd]) return kd;
-    if (FMT_FALLBACK[kd] && map[FMT_FALLBACK[kd]]) return FMT_FALLBACK[kd];
+    var fb = FMT_FALLBACK[kd], hop = 0;
+    while (fb && hop++ < 4) { if (map[fb]) return fb; fb = FMT_FALLBACK[fb]; }
   }
   return null;
 }
@@ -929,13 +970,21 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
     pa.listLabel = lab.label;
     pa.isList = true;
   }
-  var tblStack = [], tbl = null, row = null, cell = null, grid = null;
+  var tblStack = [], tbl = null, row = null, rowFmt = null, cell = null, grid = null;
   var notes = {}, noteId = null, noteParas = null;
 
   function flushPara() {
     if (para === null) return;
     if (numState !== null) addListLabel(para);
     if (cell !== null) {
+      // セルの中の段落は "\r" でつなぐので、飾りの位置もそのぶんずらして覚える
+      var cellOff = 0, cq;
+      for (cq = 0; cq < cell.paras.length; cq++) cellOff += cell.paras[cq].length + 1;
+      for (cq = 0; cq < para.fmt.length; cq++) {
+        var csp = _copySpan(para.fmt[cq]);
+        csp.start += cellOff; csp.end += cellOff;
+        cell.fmt.push(csp);
+      }
       cell.paras.push(para.text);
       if (para.refs.length > 0 && tbl !== null) tbl.lostRefs = (tbl.lostRefs || 0) + para.refs.length;
     } else if (collectNotes) {
@@ -975,13 +1024,19 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
       else if (name === "w:txbxContent") { if (txbx > 0) txbx--; }
       else if (fallback > 0 || txbx > 0) continue;
       else if (name === "w:p") flushPara();
-      else if (name === "w:tc") { if (row !== null && cell !== null) row.push(cell.paras.join("\r")); cell = null; }
-      else if (name === "w:tr") { if (tbl !== null && row !== null) tbl.rows.push(row); row = null; }
+      else if (name === "w:tc") {
+        if (row !== null && cell !== null) { row.push(cell.paras.join("\r")); if (rowFmt !== null) rowFmt.push(cell.fmt); }
+        cell = null;
+      }
+      else if (name === "w:tr") {
+        if (tbl !== null && row !== null) { tbl.rows.push(row); tbl.fmts.push(rowFmt || []); }
+        row = null; rowFmt = null;
+      }
       else if (name === "w:tbl") {
         var done = tbl;
         tbl = tblStack.length > 0 ? tblStack.pop() : null;
         if (tbl === null) {
-          blocks.push({ type: "table", rows: done.rows, widths: done.widths, lostRefs: done.lostRefs || 0 });
+          blocks.push({ type: "table", rows: done.rows, fmts: done.fmts, widths: done.widths, lostRefs: done.lostRefs || 0 });
         } else if (cell !== null) {
           // 表の中の表は、文字だけ親のセルに入れる
           var k, flat = [];
@@ -1011,10 +1066,10 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
       if (noteParas !== null) noteParas.fmt = [];
       continue;
     }
-    if (name === "w:tbl") { if (tbl !== null) tblStack.push(tbl); tbl = { rows: [], widths: [] }; grid = tbl.widths; continue; }
+    if (name === "w:tbl") { if (tbl !== null) tblStack.push(tbl); tbl = { rows: [], fmts: [], widths: [] }; grid = tbl.widths; continue; }
     if (name === "w:gridCol") { if (grid !== null) grid.push(parseInt(xmlAttr(tag, "w:w"), 10) || 0); continue; }
-    if (name === "w:tr") { row = []; continue; }
-    if (name === "w:tc") { cell = { paras: [] }; continue; }
+    if (name === "w:tr") { row = []; rowFmt = []; continue; }
+    if (name === "w:tc") { cell = { paras: [], fmt: [] }; continue; }
     if (name === "w:p") {
       para = { type: "p", text: "", styleId: "", level: 0, refs: [], image: null, fmt: [], numId: null, ilvl: null };
       if (selfClose) flushPara();
@@ -1654,7 +1709,7 @@ function buildItems(ms, p) {
     if (role === "refTitle" && noteInsertAt < 0) noteInsertAt = items.length;
     if (role === "table") {
       if (b.lostRefs) warnings.push("表の中にある注 " + b.lostRefs + " 件は取り込めませんでした (表の中の注番号を確認してください)");
-      items.push({ role: "table", text: "■表■", table: b });
+      items.push({ role: "table", text: "■表■", table: b, cellFmt: tableCellFmt(b) });
       continue;
     }
     if (role === "figure") { items.push({ role: "figure", text: "■図■", image: b.image }); continue; }
@@ -2939,6 +2994,7 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
         }
         fillTable(tbl, it.table.rows, it.table.widths, ctx.tableTemplate ? ctx.tableTemplate.width : 0);
         if (!ctx.tableTemplate) styleNewTable(tbl, ctx);
+        if (it.cellFmt) applyCellFmt(tbl, it.table.rows, it.cellFmt, ctx);
         nTbl++;
       } catch (e5) {
         report.push("[注意] 表を作れませんでした (" + e5.message + ")。目印の文字を入れました。");
@@ -2952,6 +3008,22 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
   for (k2 in miss) if (miss.hasOwnProperty(k2)) {
     report.push("[注意] " + { noteRef: "本文中の注番号", dash: "副題のダーシ", keywordsLabel: "「キーワード：」", figSourceLabel: "「出典：」" }[k2] +
                 "の文字スタイルが前回号から見つからなかったため、段落スタイルのままです。");
+  }
+}
+
+// 表のセルの中の飾り (下線の線種・イタリックなど) を当てる
+function applyCellFmt(tbl, rows, cellFmt, ctx) {
+  var r, c, spans;
+  for (r = 0; r < cellFmt.length; r++) {
+    for (c = 0; c < cellFmt[r].length; c++) {
+      spans = cellFmt[r][c];
+      if (!spans || spans.length === 0) continue;
+      try {
+        applyFmtSpans(tbl.rows[r].cells[c], spans, 0, makeIndexMapper(rows[r][c]), ctx.fmtStyles, ctx.fmtStat);
+      } catch (e) {
+        ctx.fmtStat.failed = (ctx.fmtStat.failed || 0) + spans.length;
+      }
+    }
   }
 }
 
