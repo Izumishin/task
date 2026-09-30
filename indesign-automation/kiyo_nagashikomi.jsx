@@ -540,9 +540,34 @@ function listSeparator(label, suff) {
 // ---- 文字の飾り (イタリック・太字・下線・上付き・下付き・圏点・取り消し線・ルビ) ----
 
 var FMT_KINDS = [
-  ["italic", "イタリック"], ["bold", "太字"], ["underline", "下線"], ["sup", "上付き"], ["sub", "下付き"],
-  ["kenten", "圏点"], ["strike", "取り消し線"], ["ruby", "ルビ"]
+  ["italic", "イタリック"], ["bold", "太字"], ["underline", "下線"],
+  ["uDouble", "下二重線"], ["uThick", "太い下線"], ["uDotted", "下点線"], ["uDash", "下破線"],
+  ["uDotDash", "下一点鎖線"], ["uWave", "下波線"], ["uWavyDouble", "下二重波線"],
+  ["sup", "上付き"], ["sub", "下付き"],
+  ["kenten", "圏点"], ["strike", "取り消し線"], ["dstrike", "二重取り消し線"], ["ruby", "ルビ"]
 ];
+
+// 下線の線種 (1つの文字に付く下線は1種類なので、付け替えるときは他の線種を消す)
+var UNDERLINE_KINDS = ["underline", "uDouble", "uThick", "uDotted", "uDash", "uDotDash", "uWave", "uWavyDouble"];
+var STRIKE_KINDS = ["strike", "dstrike"];
+
+// Word の下線の線種 (w:u の値) → 下線の種類。太さ違いは同じ種類にまとめる
+// (「double」などは InDesign の古い JavaScript の予約語なので、名前はすべて引用符で囲む)
+var WORD_UNDERLINE = {
+  "single": "underline", "words": "underline", "double": "uDouble", "thick": "uThick",
+  "dotted": "uDotted", "dottedHeavy": "uDotted",
+  "dash": "uDash", "dashedHeavy": "uDash", "dashLong": "uDash", "dashLongHeavy": "uDash",
+  "dotDash": "uDotDash", "dashDotHeavy": "uDotDash", "dotDotDash": "uDotDash", "dashDotDotHeavy": "uDotDash",
+  "wave": "uWave", "wavyHeavy": "uWave", "wavyDouble": "uWavyDouble"
+};
+
+// その線種の文字スタイルがないときの代わり (線が消えるよりは、ふつうの下線・取り消し線にする)
+var FMT_FALLBACK = {
+  uDouble: "underline", uThick: "underline", uDotted: "underline", uDash: "underline", uDotDash: "underline",
+  uWave: "underline", uWavyDouble: "underline", dstrike: "strike"
+};
+
+function _clearKinds(fmt, kinds) { var i; for (i = 0; i < kinds.length; i++) delete fmt[kinds[i]]; }
 
 function fmtLabel(kind) {
   var i;
@@ -560,8 +585,18 @@ function readRunProp(name, tag, fmt) {
   var v;
   if (name === "w:i") { if (_isOn(tag)) fmt.italic = true; else delete fmt.italic; }
   else if (name === "w:b") { if (_isOn(tag)) fmt.bold = true; else delete fmt.bold; }
-  else if (name === "w:u") { if (_isOn(tag)) fmt.underline = true; else delete fmt.underline; }
-  else if (name === "w:strike" || name === "w:dstrike") { if (_isOn(tag)) fmt.strike = true; else delete fmt.strike; }
+  else if (name === "w:u") {
+    // 下線は1種類。「なし」はスタイルから受け継いだ下線も消す (_uOff は受け継ぎ用の目印)
+    _clearKinds(fmt, UNDERLINE_KINDS);
+    v = xmlAttr(tag, "w:val");
+    if (_isOn(tag)) { fmt[WORD_UNDERLINE.hasOwnProperty(v) ? WORD_UNDERLINE[v] : "underline"] = true; delete fmt._uOff; }
+    else fmt._uOff = 1;
+  }
+  else if (name === "w:strike" || name === "w:dstrike") {
+    var sk = name === "w:dstrike" ? "dstrike" : "strike";
+    if (_isOn(tag)) { _clearKinds(fmt, STRIKE_KINDS); fmt[sk] = true; delete fmt._sOff; }
+    else { delete fmt[sk]; fmt._sOff = 1; }
+  }
   else if (name === "w:em") { if (_isOn(tag)) fmt.kenten = true; else delete fmt.kenten; }
   else if (name === "w:vertAlign") {
     v = xmlAttr(tag, "w:val");
@@ -588,7 +623,15 @@ function docxStyleFmt(styles, id) {
   while (s && guard++ < 10) { chain.unshift(s); s = s.basedOn ? styles[s.basedOn] : null; }
   if (chain.length === 0) return out;
   if (/hyperlink|ハイパーリンク|footnote|endnote|脚注|文末/i.test(chain[chain.length - 1].name)) return out;
-  for (i = 0; i < chain.length; i++) for (k in chain[i].fmt) if (chain[i].fmt.hasOwnProperty(k)) out[k] = true;
+  for (i = 0; i < chain.length; i++) {
+    var f = chain[i].fmt, hasU = !!f._uOff, hasS = !!f._sOff, q;
+    for (q = 0; q < UNDERLINE_KINDS.length; q++) if (f[UNDERLINE_KINDS[q]]) hasU = true;
+    for (q = 0; q < STRIKE_KINDS.length; q++) if (f[STRIKE_KINDS[q]]) hasS = true;
+    // 基にしたスタイルの線種は、後のスタイルの線種で置き換わる
+    if (hasU) _clearKinds(out, UNDERLINE_KINDS);
+    if (hasS) _clearKinds(out, STRIKE_KINDS);
+    for (k in f) if (f.hasOwnProperty(k) && f[k] === true) out[k] = true;
+  }
   return out;
 }
 
@@ -600,7 +643,26 @@ function _fmtKey(f) {
 }
 
 // 1つの区間に当てる文字スタイル (飾りが重なっているときは、上付き・下付き → 斜体 → 太字 … の順で1つ)
-var FMT_PRIORITY = ["sup", "sub", "italic", "bold", "underline", "kenten", "strike"];
+var FMT_PRIORITY = ["sup", "sub", "italic", "bold", "underline", "uDouble", "uThick", "uDotted", "uDash", "uDotDash",
+                    "uWave", "uWavyDouble", "kenten", "strike", "dstrike"];
+
+// InDesign の線の種類の名前 (日本語版・英語版) と太さから、線種を決める
+function strokeKindOf(typeName, weight) {
+  var t = String(typeName || "");
+  if (/二重波|Double\s*Wav/i.test(t)) return "wavyDouble";
+  if (/波|Wav/i.test(t)) return "wave";
+  if (/鎖線|Dot\s*-?\s*Dash|Dash\s*-?\s*Dot/i.test(t)) return "dotDash";
+  if (/点線|Dotted|Dots|ドット/i.test(t)) return "dotted";
+  if (/破線|Dash/i.test(t)) return "dash";
+  if (/二重|細\s*-\s*細|太\s*-\s*太|太\s*-\s*細|細\s*-\s*太|Thin\s*-\s*Thin|Thick\s*-\s*Thick|Thick\s*-\s*Thin|Thin\s*-\s*Thick|Double/i.test(t)) return "double";
+  if (typeof weight === "number" && weight >= 1.5) return "thick";
+  return "single";
+}
+
+var UNDERLINE_STROKE = { underline: "single", uDouble: "double", uThick: "thick", uDotted: "dotted", uDash: "dash",
+                         uDotDash: "dotDash", uWave: "wave", uWavyDouble: "wavyDouble" };
+var UNDERLINE_NAME = { uDouble: /下二重線|二重下線/, uThick: /太い?下線|下太線/, uDotted: /下点線|点線/, uDash: /下破線|破線/,
+                       uDotDash: /鎖線/, uWave: /下波線|波線/, uWavyDouble: /二重波/ };
 
 // 和文の文字 (かな・漢字・全角の記号)
 var RE_JA_CHAR = /[\u3000-\u30FF\u3400-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/;
@@ -672,15 +734,28 @@ function guessComboStyleNames(keys, descs) {
       return (/Italic|Oblique/i.test(dd.fontStyle) ? 2 : 0) + (/イタリック|italic/i.test(dd.name) ? 1 : 0);
     }
     if (part === "bold") return (/Bold|Heavy|Black/i.test(dd.fontStyle) ? 2 : 0) + (/太字|ボールド|bold/i.test(dd.name) ? 1 : 0);
-    if (part === "underline") return (dd.underline ? 2 : 0) + (/下線|アンダー|underline/i.test(dd.name) ? 1 : 0);
+    if (UNDERLINE_STROKE.hasOwnProperty(part)) {
+      var uk = dd.underline ? strokeKindOf(dd.uTypeName, dd.uWeight) : null;
+      if (part === "underline") {
+        return (uk === "single" ? 2 : 0) +
+               (/下線|アンダー|underline/i.test(dd.name) && !/点線|破線|波線|二重|鎖線|太/.test(dd.name) ? 1 : 0);
+      }
+      return (uk === UNDERLINE_STROKE[part] ? 2 : 0) + (UNDERLINE_NAME[part].test(dd.name) ? 1 : 0);
+    }
+    if (part === "dstrike") {
+      return (dd.strike && strokeKindOf(dd.sTypeName) === "double" ? 2 : 0) + (/二重取り?消し|二重打ち?消し/.test(dd.name) ? 1 : 0);
+    }
     if (part === "sup") return (dd.position === "sup" ? 2 : 0) + (/上付/.test(dd.name) ? 1 : 0);
     if (part === "sub") return (dd.position === "sub" ? 2 : 0) + (/下付/.test(dd.name) ? 1 : 0);
     if (part === "kenten") return (dd.kenten ? 2 : 0) + (/圏点|傍点/.test(dd.name) ? 1 : 0);
-    if (part === "strike") return (dd.strike ? 2 : 0) + (/取り?消し|打ち?消し|strike/i.test(dd.name) ? 1 : 0);
+    if (part === "strike") {
+      return (dd.strike && strokeKindOf(dd.sTypeName) !== "double" ? 2 : 0) +
+             (/取り?消し|打ち?消し|strike/i.test(dd.name) && !/二重/.test(dd.name) ? 1 : 0);
+    }
     if (part === "ruby") return (dd.ruby ? 2 : 0) + (/ルビ|ruby/i.test(dd.name) ? 1 : 0);
     return 0;
   }
-  var ALL = ["italic", "bold", "underline", "sup", "sub", "kenten", "strike"];
+  var ALL = FMT_PRIORITY;
   for (i = 0; i < keys.length; i++) {
     key = keys[i]; parts = key.split("+"); ja = false; best = null; bestSc = 0;
     for (j = 0; j < parts.length; j++) if (parts[j] === "ja") ja = true;
@@ -713,8 +788,21 @@ function pickFmtStyleKey(span, map) {
   var key = comboKey(span), i;
   if (map[key]) return key;
   if (span.ja && span.italic) return map["italic+ja"] ? "italic+ja" : null;
-  for (i = 0; i < FMT_PRIORITY.length; i++) if (span[FMT_PRIORITY[i]] && map[FMT_PRIORITY[i]]) return FMT_PRIORITY[i];
+  for (i = 0; i < FMT_PRIORITY.length; i++) {
+    var kd = FMT_PRIORITY[i];
+    if (!span[kd]) continue;
+    if (map[kd]) return kd;
+    if (FMT_FALLBACK[kd] && map[FMT_FALLBACK[kd]]) return FMT_FALLBACK[kd];
+  }
   return null;
+}
+
+// 組み合わせの名前 ("uDotted+italic" など) → 区間の形 (確認画面で、代わりに使うスタイルを示すため)
+function spanFromKey(key) {
+  var sp = {}, parts = key.split("+"), i;
+  if (key === "ruby") { sp.ruby = "x"; return sp; }
+  for (i = 0; i < parts.length; i++) sp[parts[i]] = true;
+  return sp;
 }
 
 // ---- 飾りの区間の位置合わせ (文字の差し込み・削除に合わせてずらす) ----
@@ -774,7 +862,7 @@ function dropWholeParaEmphasis(list, text) {
     if (!sp.ruby && core > 0) {
       var covered = text.substring(sp.start, sp.end).replace(/[\s　\t]/g, "").length;
       if (covered / core >= 0.9) {
-        delete sp.bold; delete sp.italic; delete sp.underline;
+        delete sp.bold; delete sp.italic; _clearKinds(sp, UNDERLINE_KINDS);
         sp.key = _fmtKey(sp);
         if (sp.key === "") continue;
       }
@@ -2057,7 +2145,12 @@ function describeCharStyles(doc) {
   var all = doc.allCharacterStyles, out = [], i, cs, d, v;
   for (i = 0; i < all.length; i++) {
     cs = all[i];
-    d = { name: cs.name, fontStyle: "", underline: false, position: "", kenten: false, strike: false, ruby: false, skew: 0 };
+    d = { name: cs.name, fontStyle: "", underline: false, position: "", kenten: false, strike: false, ruby: false, skew: 0,
+          uTypeName: "", uWeight: -1, sTypeName: "" };
+    // 下線・取り消し線の線の種類 (点線・波線・二重線など) と太さ
+    try { v = cs.underlineType; if (v && v.name !== undefined) d.uTypeName = String(v.name); } catch (e7) {}
+    try { v = cs.underlineWeight; if (typeof v === "number") d.uWeight = v; } catch (e8) {}
+    try { v = cs.strikeThroughType; if (v && v.name !== undefined) d.sTypeName = String(v.name); } catch (e9) {}
     try { v = cs.skew; if (typeof v === "number") d.skew = v; } catch (e0) {}
     try { v = cs.fontStyle; if (typeof v === "string") d.fontStyle = v; } catch (e1) {}
     try { d.underline = cs.underline === true; } catch (e2) {}
@@ -2212,8 +2305,14 @@ function confirmDialog(built, p, styleMap, styleNames, info) {
     var f = info.fmt, parts = [], kd;
     for (kd in f.counts) {
       if (!f.counts.hasOwnProperty(kd)) continue;
+      var use = f.map[kd] ? f.map[kd] : null;
+      if (use === null && kd !== "ruby") {
+        // その組み合わせ用のスタイルがなければ、代わりに使うスタイル (ふつうの下線など) を示す
+        var alt = pickFmtStyleKey(spanFromKey(kd), f.map);
+        if (alt !== null) use = f.map[alt] + " で代用";
+      }
       parts.push(comboLabel(kd) + " " + f.counts[kd] + "か所→" +
-                 (f.map[kd] ? f.map[kd] : (kd === "ruby" ? "(ルビだけ付ける)" : "(当てない)")));
+                 (use !== null ? use : (kd === "ruby" ? "(ルビだけ付ける)" : "(当てない)")));
     }
     return parts.join(" / ");
   }
@@ -2367,6 +2466,7 @@ function fmtMapDialog(f) {
   }
   w.add("statictext", undefined, "※ 組み合わせ (イタリック＋太字 など) は、原稿に出てきたものだけ表示しています。", { multiline: true });
   w.add("statictext", undefined, "※ 和文の斜体は、欧文のイタリックでは代用しません (和文の書体にイタリックがないため)。");
+  w.add("statictext", undefined, "※ 下点線・下波線などの線種で「(当てない)」を選んだ場合は、ふつうの下線のスタイルで代用します。");
   if (f.counts.ruby) w.add("statictext", undefined, "※ ルビの文字は、文字スタイルを当てなくても付きます。");
   w.add("statictext", undefined, "※ ここで選んだ内容はこの InDesign ファイルに記録され、次号でも使われます。");
   var btns = w.add("group");

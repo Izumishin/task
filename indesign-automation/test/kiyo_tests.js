@@ -587,6 +587,54 @@ check('番号の形式', formatListNumber(3, 'upperRoman') === 'III' && formatLi
       formatListNumber(12, 'japaneseCounting') === '十二' && formatListNumber(2, 'iroha') === 'ロ' && formatListNumber(5, 'decimalZero') === '05' &&
       formatListNumber(3, 'ideographTraditional') === '丙' && formatListNumber(102, 'ideographDigital') === '一〇二' && formatListNumber(22, 'ordinal') === '22nd');
 
+// ---- 下線・取り消し線の線種 ----
+console.log('underline types:');
+const uStyles = `<?xml version="1.0"?><w:styles ${W}>
+<w:style w:type="character" w:styleId="U1"><w:name w:val="一重下線"/><w:rPr><w:u w:val="single"/></w:rPr></w:style>
+<w:style w:type="character" w:styleId="U2"><w:name w:val="点線に変更"/><w:basedOn w:val="U1"/><w:rPr><w:u w:val="dotted"/></w:rPr></w:style>
+<w:style w:type="character" w:styleId="U3"><w:name w:val="下線なしに変更"/><w:basedOn w:val="U1"/><w:rPr><w:u w:val="none"/></w:rPr></w:style>
+</w:styles>`;
+const uTypes = ['single', 'words', 'double', 'thick', 'dotted', 'dottedHeavy', 'dash', 'dashLongHeavy', 'dotDash', 'dashDotDotHeavy', 'wave', 'wavyHeavy', 'wavyDouble'];
+const uDoc = `<?xml version="1.0"?><w:document ${W}><w:body><w:p>` +
+  uTypes.map((u, i) => T('＿') + R('線' + i, `<w:u w:val="${u}"/>`)).join('') +
+  T('＿') + R('取消', '<w:strike/>') + T('＿') + R('二重取消', '<w:dstrike/>') +
+  T('＿') + R('継承', '<w:rStyle w:val="U2"/>') + T('＿') + R('消去', '<w:rStyle w:val="U3"/>') +
+  T('＿') + R('直接で消す', '<w:rStyle w:val="U1"/><w:u w:val="none"/>') +
+  `</w:p><w:sectPr/></w:body></w:document>`;
+const uMs = readDocxParts(n => (n === 'word/document.xml' ? uDoc : n === 'word/styles.xml' ? uStyles : null));
+const ub = uMs.blocks[0], ugot = {};
+ub.fmt.forEach(f => { ugot[ub.text.substring(f.start, f.end)] = f.key; });
+const uWant = { '線0': 'underline', '線1': 'underline', '線2': 'uDouble', '線3': 'uThick', '線4': 'uDotted', '線5': 'uDotted', '線6': 'uDash',
+  '線7': 'uDash', '線8': 'uDotDash', '線9': 'uDotDash', '線10': 'uWave', '線11': 'uWave', '線12': 'uWavyDouble',
+  '取消': 'strike', '二重取消': 'dstrike', '継承': 'uDotted' };
+check('Word の下線の線種・取り消し線を読み分ける (太さ違いは同じ種類)', Object.keys(uWant).every(k => ugot[k] === uWant[k]), JSON.stringify(ugot));
+check('スタイルの受け継ぎ: 後で指定した線種・「下線なし」で置き換わる', ugot['継承'] === 'uDotted' && ugot['消去'] === undefined && ugot['直接で消す'] === undefined,
+      JSON.stringify(ugot));
+check('線種の名前', comboLabel('uDotted') === '下点線' && comboLabel('italic+uWave') === 'イタリック＋下波線' && comboKey({ italic: true, uWave: true }) === 'italic+uWave' &&
+      comboLabel('dstrike') === '二重取り消し線' && comboLabel('italic+uDouble') === 'イタリック＋下二重線', comboLabel('italic+uDouble'));
+check('InDesign の線の種類の名前 (日本語版・英語版) から線種を決める',
+      strokeKindOf('点線') === 'dotted' && strokeKindOf('日本式点線') === 'dotted' && strokeKindOf('Dotted') === 'dotted' &&
+      strokeKindOf('破線 (3 と 2)') === 'dash' && strokeKindOf('Dashed (4 and 4)') === 'dash' && strokeKindOf('波線') === 'wave' &&
+      strokeKindOf('Wavy') === 'wave' && strokeKindOf('細-細') === 'double' && strokeKindOf('Thin - Thin') === 'double' &&
+      strokeKindOf('実線', 2) === 'thick' && strokeKindOf('実線', 0.5) === 'single' && strokeKindOf('Solid') === 'single' && strokeKindOf('') === 'single');
+const uDescs = [
+  { name: '下線', underline: true, uTypeName: '実線', uWeight: 0.5 },
+  { name: '下点線', underline: true, uTypeName: '点線' },
+  { name: 'アンダーライン波', underline: true, uTypeName: 'Wavy' },
+  { name: '二重', underline: true, uTypeName: '細-細' },
+  { name: '太線', underline: true, uTypeName: '実線', uWeight: 2 },
+  { name: '取り消し', strike: true, sTypeName: '実線' },
+  { name: '二重取り消し', strike: true, sTypeName: '細-細' },
+  { name: '点線イタリック', underline: true, uTypeName: 'Dotted', fontStyle: 'Italic' }
+].map(d => Object.assign({ fontStyle: '', underline: false, position: '', kenten: false, strike: false, ruby: false, skew: 0, uTypeName: '', uWeight: -1, sTypeName: '' }, d));
+const ug = guessComboStyleNames(['underline', 'uDotted', 'uWave', 'uDouble', 'uThick', 'strike', 'dstrike', 'italic+uDotted', 'uDash'], uDescs);
+check('線種ごとに文字スタイルを選ぶ (ふつうの下線に点線のスタイルを選ばない)',
+      ug.underline === '下線' && ug.uDotted === '下点線' && ug.uWave === 'アンダーライン波' && ug.uDouble === '二重' && ug.uThick === '太線' &&
+      ug.strike === '取り消し' && ug.dstrike === '二重取り消し' && ug['italic+uDotted'] === '点線イタリック' && !ug.uDash, JSON.stringify(ug));
+check('その線種のスタイルがなければ、ふつうの下線・取り消し線のスタイルで代用',
+      pickFmtStyleKey({ uDash: true }, { underline: 'x' }) === 'underline' && pickFmtStyleKey({ dstrike: true }, { strike: 's' }) === 'strike' &&
+      pickFmtStyleKey({ uDash: true }, { uDash: 'd', underline: 'x' }) === 'uDash' && pickFmtStyleKey(spanFromKey('uWave'), { underline: 'x' }) === 'underline');
+
 // ---- InDesign の正規表現の不具合 (「( )」で取り出した部分が空になる) でも動くか ----
 console.log('regexp capture bug:');
 function runPipeline() {
