@@ -1835,7 +1835,8 @@ function buildStoryText(items) {
     if (it.fmt) for (k = 0; k < it.fmt.length; k++) {
       chars.push({ kind: "fmt", start: pos + it.fmt[k].start, len: it.fmt[k].end - it.fmt[k].start, span: it.fmt[k] });
     }
-    parts.push(it.text);
+    // 段落の中に段落の区切りの文字が混じっていると段落の数がずれるので、段落内の改行にしておく
+    parts.push(it.text.replace(/[\r\u2029]/g, "\n"));
     pos += it.text.length + 1;
   }
   return { text: parts.join("\r"), paras: paras, chars: chars };
@@ -2224,12 +2225,15 @@ function describeCharStyles(doc) {
 
 // 飾りの区間を当てる (文字スタイル + ルビ)。base は区間の位置に足す値、target は文字を持つもの (ストーリーや脚注)
 function applyFmtSpans(target, spans, base, mapIdx, fmtStyles, stat) {
-  var i, sp, s0, s1, rng, kind;
+  var i, sp, s0, s1, rng, kind, tlen = -1;
+  // 文字の範囲がはみ出していると InDesign がエラーを出すので、先に文字数で確かめる
+  try { tlen = target.characters.length; } catch (eL) { return; }
   for (i = 0; i < spans.length; i++) {
     sp = spans[i];
     s0 = base + mapIdx(sp.start); s1 = base + mapIdx(sp.end) - 1;
-    if (s1 < s0) continue;
-    try { rng = target.characters.itemByRange(s0, s1).texts[0]; } catch (e0) { continue; }
+    if (s1 < s0 || s0 < 0) continue;
+    if (s1 >= tlen) { stat.failed = (stat.failed || 0) + 1; continue; }
+    try { rng = target.characters.itemByRange(s0, s1).texts[0]; if (!rng.isValid) continue; } catch (e0) { continue; }
     if (sp.ruby) {
       try {
         if (fmtStyles.ruby) rng.appliedCharacterStyle = fmtStyles.ruby;
@@ -2837,8 +2841,10 @@ function lastContainer(story) {
 }
 
 function addPageForOverflow(doc, story) {
-  var last = lastContainer(story), page = last.parentPage;
-  if (!page) return false;
+  var last = lastContainer(story);
+  if (!last || !last.isValid) return false;
+  var page = last.parentPage;
+  if (!page || !page.isValid) return false;
   var np = doc.pages.add(LocationOptions.AFTER, page);
   try { np.appliedMaster = page.appliedMaster; } catch (e0) {}
   var conts = story.textContainers, ref = null, k;
@@ -2849,32 +2855,52 @@ function addPageForOverflow(doc, story) {
   if (ref === null) ref = last;
   var rb = ref.geometricBounds, rpb = ref.parentPage.bounds, npb = np.bounds;
   var nb = [npb[0] + (rb[0] - rpb[0]), npb[1] + (rb[1] - rpb[1]), npb[0] + (rb[2] - rpb[0]), npb[1] + (rb[3] - rpb[1])];
-  var nf = null;
+  var nf = null, dupOK = false;
   try {
     // 枠の設定(段組・グリッドなど)を引き継ぐため、同じ側のページの枠を複製して使う
     nf = ref.duplicate(np);
-    if (nf.parentStory.id === story.id) throw new Error("same story");
-    nf.parentStory.contents = "";
-    nf.geometricBounds = nb;
-  } catch (e1) {
-    try { if (nf) nf.remove(); } catch (e2) {}
+    if (nf && nf.isValid && nf.parentStory.id !== story.id) {
+      nf.parentStory.contents = "";
+      nf.geometricBounds = nb;
+      dupOK = true;
+    }
+  } catch (e1) {}
+  if (!dupOK) {
+    try { if (nf && nf.isValid) nf.remove(); } catch (e2) {}
     nf = np.textFrames.add({ geometricBounds: nb });
     try { nf.appliedObjectStyle = ref.appliedObjectStyle; } catch (e3) {}
     try { nf.textFramePreferences.textColumnCount = ref.textFramePreferences.textColumnCount; } catch (e4) {}
     try { nf.textFramePreferences.textColumnGutter = ref.textFramePreferences.textColumnGutter; } catch (e5) {}
   }
-  last.nextTextFrame = nf;
+  try {
+    last.nextTextFrame = nf;
+  } catch (e6) {
+    try { np.remove(); } catch (e7) {}
+    return false;
+  }
+  // 枠に入りきらない大きな表・図があると、ページを足しても何も流れ込まない。
+  // そのときは足したページを消して止める (空のページが延々と増えないように)
+  try { story.recompose(); } catch (e8) {}
+  try {
+    if (nf.characters.length === 0 && lastContainer(story).overflows) {
+      try { last.nextTextFrame = NothingEnum.NOTHING; } catch (e9) {}
+      np.remove();
+      return "stuck";
+    }
+  } catch (e10) {}
   return true;
 }
 
 function flowOverflow(doc, story, report) {
-  var added = 0, guard = 0;
+  var added = 0, guard = 0, r = true;
   while (lastContainer(story).overflows && guard++ < 300) {
-    if (!addPageForOverflow(doc, story)) break;
+    r = addPageForOverflow(doc, story);
+    if (r !== true) break;
     added++;
   }
   if (added > 0) report.push("文字があふれたため " + added + " ページ追加しました。");
-  if (lastContainer(story).overflows) report.push("[注意] まだ文字があふれています。ページを追加してください。");
+  if (r === "stuck") report.push("[注意] 枠に入りきらない大きな表か図があるため、ページの追加を途中で止めました。表・図の大きさを直してからページを追加してください。");
+  else if (lastContainer(story).overflows) report.push("[注意] まだ文字があふれています。ページを追加してください。");
 }
 
 // 本文が短くなって空いた最後のほうの枠のページ (枠しかないページ) を探す
@@ -2895,6 +2921,7 @@ function emptyTrailingPages(story) {
 function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, report) {
   var sb = buildStoryText(built.items), text = sb.text, mapIdx = makeIndexMapper(text), i;
   // 1) 文字を入れる
+  setStep("文字の流し込み");
   if (tailStart < 0) {
     story.contents = text;
   } else {
@@ -2906,7 +2933,17 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
   var none = doc.characterStyles.item(0);
   try { story.characters.itemByRange(0, total - 1).texts[0].appliedCharacterStyle = none; } catch (e0) {}
 
+  // 1') Word の段落の中の改行は、InDesign では段落の区切りになってしまうことがあるので、
+  //     「強制改行」に置き換える (段落の数がずれると、段落スタイルや表の位置がずれるため)
+  setStep("段落の中の改行の処理");
+  var brs = [], bp = text.indexOf("\n");
+  while (bp >= 0) { brs.push(bp); bp = text.indexOf("\n", bp + 1); }
+  for (i = brs.length - 1; i >= 0; i--) {
+    try { story.characters.item(mapIdx(brs[i])).contents = SpecialCharacters.FORCED_LINE_BREAK; } catch (eb) {}
+  }
+
   // 2) 段落スタイル (同じスタイルが続く所はまとめて当てる)
+  setStep("段落スタイルの適用");
   var n = sb.paras.length, a = 0;
   while (a < n) {
     var b = a;
@@ -2920,6 +2957,7 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
   }
 
   // 3) 文字の飾り (イタリック・ルビなど)。注番号などの文字スタイルはこのあとで当てる
+  setStep("文字の飾りの適用");
   var fmtSpans = [];
   for (i = 0; i < sb.chars.length; i++) {
     if (sb.chars[i].kind !== "fmt") continue;
@@ -2930,6 +2968,7 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
   applyFmtSpans(story, fmtSpans, 0, mapIdx, ctx.fmtStyles, ctx.fmtStat);
 
   // 3') 文字スタイル (注番号・ダーシ・「キーワード：」「出典：」)
+  setStep("注番号などの文字スタイルの適用");
   var cs, c, miss = {};
   for (i = 0; i < sb.chars.length; i++) {
     c = sb.chars[i];
@@ -2942,6 +2981,7 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
 
   // 4) Word の脚注を InDesign の脚注として入れる (後ろから入れると、前の位置がずれない)
   //    番号の書式と脚注本文のスタイルは、InDesign の「脚注オプション」の設定に従う
+  setStep("脚注の挿入");
   var fns = [], nFn = 0, fnFail = 0;
   for (i = 0; i < sb.chars.length; i++) if (sb.chars[i].kind === "footnote") fns.push(sb.chars[i]);
   for (i = fns.length - 1; i >= 0; i--) {
@@ -2961,45 +3001,66 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
   if (fnFail > 0) report.push("[注意] 脚注 " + fnFail + " 件を入れられませんでした。");
 
   // 5) 図と表 (後ろから入れると、前の段落の位置がずれない)
-  var nFig = 0, nTbl = 0, it, para;
-  for (i = n - 1; i >= 0; i--) {
-    it = built.items[i];
-    if (it.role !== "figure" && it.role !== "table") continue;
-    para = story.paragraphs[i];
-    var hadCR = para.contents.charAt(para.contents.length - 1) === "\r";
-    para.contents = hadCR ? "\r" : "";
-    para = story.paragraphs[i];
-    if (it.role === "figure") {
-      var f = ctx.images[it.image];
-      if (f) {
-        try {
-          var placed = para.insertionPoints[0].place(f);
-          var g = placed instanceof Array ? placed[0] : placed;
-          fitInlineGraphic(g.parent, para.insertionPoints[0]);
-          nFig++;
-        } catch (e4) { para.insertionPoints[0].contents = "［図をここに配置してください］"; report.push("[注意] 図を配置できませんでした: " + e4.message); }
-      } else {
-        para.insertionPoints[0].contents = "［図をここに配置してください］";
-        report.push("[注意] 図の画像を取り出せなかったため、目印の文字を入れました。");
-      }
-    } else {
-      try {
-        var tbl;
-        if (ctx.tableTemplate) {
-          ctx.tableTemplate.frame.parentStory.characters.item(ctx.tableTemplate.table.storyOffset.index)
-            .duplicate(LocationOptions.AT_BEGINNING, para);
-          tbl = story.paragraphs[i].tables[0];
+  //    段落の番号がずれていても正しい所に入るよう、目印 (■表■・■図■) の段落を順に対応させる
+  setStep("図と表の位置の確認");
+  var nFig = 0, nTbl = 0, it, para, ftIdx = [], marks = [], pcont;
+  for (i = 0; i < n; i++) if (built.items[i].role === "figure" || built.items[i].role === "table") ftIdx.push(i);
+  if (ftIdx.length > 0) {
+    pcont = story.paragraphs.everyItem().contents;
+    if (!(pcont instanceof Array)) pcont = [pcont];
+    for (i = 0; i < pcont.length; i++) {
+      if (typeof pcont[i] === "string" && /^■[表図]■\r?$/.test(pcont[i])) marks.push(i);
+    }
+  }
+  var j, pi, lbl;
+  for (j = ftIdx.length - 1; j >= 0; j--) {
+    it = built.items[ftIdx[j]];
+    lbl = it.role === "table" ? "表" : "図";
+    setStep(lbl + "の作成 (後ろから " + (ftIdx.length - j) + " 個目)");
+    pi = marks.length === ftIdx.length ? marks[j] : ftIdx[j];
+    if (pi >= pcont.length || typeof pcont[pi] !== "string" || pcont[pi].replace(/\r$/, "") !== it.text) {
+      report.push("[注意] " + lbl + "を入れる位置が見つからなかったため、" + lbl + "を1つ入れられませんでした。");
+      continue;
+    }
+    try {
+      para = story.paragraphs[pi];
+      var hadCR = para.contents.charAt(para.contents.length - 1) === "\r";
+      para.contents = hadCR ? "\r" : "";
+      para = story.paragraphs[pi];
+      if (it.role === "figure") {
+        var f = ctx.images[it.image];
+        if (f) {
+          try {
+            var placed = para.insertionPoints[0].place(f);
+            var g = placed instanceof Array ? placed[0] : placed;
+            fitInlineGraphic(g.parent, para.insertionPoints[0]);
+            nFig++;
+          } catch (e4) { para.insertionPoints[0].contents = "［図をここに配置してください］"; report.push("[注意] 図を配置できませんでした: " + e4.message); }
         } else {
-          tbl = para.insertionPoints[0].tables.add({ headerRowCount: 1, bodyRowCount: 1, columnCount: 2 });
+          para.insertionPoints[0].contents = "［図をここに配置してください］";
+          report.push("[注意] 図の画像を取り出せなかったため、目印の文字を入れました。");
         }
-        fillTable(tbl, it.table.rows, it.table.widths, ctx.tableTemplate ? ctx.tableTemplate.width : 0);
-        if (!ctx.tableTemplate) styleNewTable(tbl, ctx);
-        if (it.cellFmt) applyCellFmt(tbl, it.table.rows, it.cellFmt, ctx);
-        nTbl++;
-      } catch (e5) {
-        report.push("[注意] 表を作れませんでした (" + e5.message + ")。目印の文字を入れました。");
-        story.paragraphs[i].insertionPoints[0].contents = "［表をここに入れてください］";
+      } else {
+        try {
+          var tbl;
+          if (ctx.tableTemplate) {
+            ctx.tableTemplate.frame.parentStory.characters.item(ctx.tableTemplate.table.storyOffset.index)
+              .duplicate(LocationOptions.AT_BEGINNING, para);
+            tbl = story.paragraphs[pi].tables[0];
+          } else {
+            tbl = para.insertionPoints[0].tables.add({ headerRowCount: 1, bodyRowCount: 1, columnCount: 2 });
+          }
+          fillTable(tbl, it.table.rows, it.table.widths, ctx.tableTemplate ? ctx.tableTemplate.width : 0);
+          if (!ctx.tableTemplate) styleNewTable(tbl, ctx);
+          if (it.cellFmt) { setStep("表の中の文字の飾り (後ろから " + (ftIdx.length - j) + " 個目の表)"); applyCellFmt(tbl, it.table.rows, it.cellFmt, ctx); }
+          nTbl++;
+        } catch (e5) {
+          report.push("[注意] 表を作れませんでした (" + e5.message + (e5.line ? "、" + e5.line + " 行目" : "") + ")。目印の文字を入れました。");
+          try { story.paragraphs[pi].insertionPoints[0].contents = "［表をここに入れてください］"; } catch (e5b) {}
+        }
       }
+    } catch (eFT) {
+      stepNote(report, eFT);
     }
   }
   if (nTbl > 0) report.push("表 " + nTbl + " 個を作成しました" + (ctx.tableTemplate ? " (前回号の表の体裁を使用)。" : "。"));
@@ -3013,13 +3074,14 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
 
 // 表のセルの中の飾り (下線の線種・イタリックなど) を当てる
 function applyCellFmt(tbl, rows, cellFmt, ctx) {
-  var r, c, spans;
-  for (r = 0; r < cellFmt.length; r++) {
-    for (c = 0; c < cellFmt[r].length; c++) {
+  var r, c, spans, nR = tbl.rows.length, row, nC;
+  for (r = 0; r < cellFmt.length && r < nR; r++) {
+    row = tbl.rows[r]; nC = row.cells.length;
+    for (c = 0; c < cellFmt[r].length && c < nC; c++) {
       spans = cellFmt[r][c];
       if (!spans || spans.length === 0) continue;
       try {
-        applyFmtSpans(tbl.rows[r].cells[c], spans, 0, makeIndexMapper(rows[r][c]), ctx.fmtStyles, ctx.fmtStat);
+        applyFmtSpans(row.cells[c], spans, 0, makeIndexMapper(rows[r][c]), ctx.fmtStyles, ctx.fmtStat);
       } catch (e) {
         ctx.fmtStat.failed = (ctx.fmtStat.failed || 0) + spans.length;
       }
@@ -3038,15 +3100,42 @@ function styleNewTable(tbl, ctx) {
   }
 }
 
+// 流し込みのどの段階か (エラーのときに表示する)。
+// doScript の中で起きたエラーは行番号が doScript を呼んだ行になってしまうため、ここで覚えておく
+var _applyWhere = "", _applyStep = "", _applyErr = null, _applyDone = false;
+function setStep(s) { _applyStep = (_applyWhere ? _applyWhere + " / " : "") + s; }
+
+// 一部だけの失敗は、流し込み全体を止めずに完了画面で知らせる
+function stepNote(report, e) {
+  report.push("[注意] 「" + _applyStep + "」でエラーが出たため、そこは飛ばしました (" +
+              e.message + (e.line ? "、" + e.line + " 行目" : "") + ")。");
+}
+
 var _ctx = null;
 function runApply() {
-  var c = _ctx;
+  _applyErr = null; _applyWhere = ""; _applyStep = ""; _applyDone = false;
+  try {
+    runApplyBody(_ctx);
+    _applyDone = true;
+  } catch (e) {
+    _applyErr = { message: e.message, line: e.line, step: _applyStep };
+    throw e;
+  }
+}
+
+function runApplyBody(c) {
+  setStep("前回号の表のひな形の準備");
   c.tableTemplate = makeTableTemplate(c.doc, c.story);
   if (c.front) {
+    _applyWhere = "題目などの枠";
     applyToStory(c.doc, c.front.story, -1, c.front.built, c.front.styleNames, c.styleObjs, c, c.report);
   }
+  _applyWhere = "本文";
   applyToStory(c.doc, c.story, c.tailStart, c.built, c.styleNames, c.styleObjs, c, c.report);
-  flowOverflow(c.doc, c.story, c.report);
+  _applyWhere = "";
+  setStep("あふれた分のページの追加");
+  try { flowOverflow(c.doc, c.story, c.report); } catch (eOv) { stepNote(c.report, eOv); }
+  setStep("柱の題目の置き換え");
   // 柱などに入っている前回号の題目を新しい題目に置き換える
   if (c.oldTitle && c.newTitle && c.oldTitle !== c.newTitle) {
     try {
@@ -3209,15 +3298,26 @@ function main() {
   }
 
   showProgress("流し込んでいます… (しばらくかかります)");
-  var oldUIL = app.scriptPreferences.userInteractionLevel;
+  var oldUIL = app.scriptPreferences.userInteractionLevel, outerErr = null;
   try {
     app.scriptPreferences.userInteractionLevel = UserInteractionLevels.NEVER_INTERACT;
     app.doScript(runApply, ScriptLanguage.JAVASCRIPT, [], UndoModes.ENTIRE_SCRIPT, "紀要の流し込み");
   } catch (e4) {
+    outerErr = e4;
+    // 流し込みは最後まで終わっているのに、途中で(スクリプトが対処済みの)エラーがあったことを
+    // InDesign が後から知らせてくることがある。その場合は結果を表示して続ける
+    if (_applyDone) {
+      report.push("[注意] InDesign から次のエラーの知らせがありましたが、流し込みは最後まで行いました: " +
+                  e4.message + "。紙面を確認してください。");
+    }
+  }
+  if (!_applyDone) {
     hideProgress();
     app.scriptPreferences.userInteractionLevel = oldUIL;
-    alert("流し込みの途中でエラーが発生しました:\n" + e4.message + (e4.line ? " (" + e4.line + " 行目)" : "") +
-          "\n\n「編集 > 取り消し」で元に戻せます。");
+    var ae = _applyErr || { message: outerErr ? outerErr.message : "(不明)", line: 0, step: _applyStep };
+    alert("流し込みの途中でエラーが発生しました:\n" + ae.message + (ae.line ? " (" + ae.line + " 行目)" : "") +
+          "\n止まった所: " + (ae.step || "不明") +
+          "\n\n「編集 > 取り消し」で元に戻せます。\nこの画面をそのまま送っていただければ、原因を調べます。");
     return;
   }
   app.scriptPreferences.userInteractionLevel = oldUIL;
@@ -3247,7 +3347,7 @@ function main() {
   report.push("仕上げに確認してください:");
   report.push("・見出し・表・図の位置と体裁");
   report.push("・偶数ページの柱 (号数など) と開始ページ番号");
-  report.push("・文字の飾り (表の中のイタリックなどは取り込んでいません)");
+  report.push("・文字の飾り (イタリック・下線の線種など)");
   report.push("・英文要旨のページ (Word 原稿に含まれていなければ前回号のままです)");
   alert("流し込みが終わりました。\n\n" + report.join("\n") +
         "\n\n元に戻すときは「編集 > 取り消し」を " + undoCount + " 回。");
