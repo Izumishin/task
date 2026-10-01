@@ -1374,6 +1374,48 @@ function classifySequence(items) {
   return roles;
 }
 
+// 別のテキストボックスが「題目〜キーワード」の枠らしいかの点数 (-1 = 違う)。
+// classifySequence は最初の段落をいつも題目とみなすので、それだけでは決めない。
+// 図の説明や囲み記事などの小さな枠を取り違えないよう、要旨・キーワードの有無と
+// 段落スタイル名 (題目・著者名など) で確かめる
+var FRONT_STYLE_ROLES = { title: 1, subtitle: 1, author: 1, affiliation: 1, abstractTitle: 1, "abstract": 1, keywords: 1 };
+function styleFitsRole(name, role) {
+  var g = STYLE_GUESS[role], j;
+  if (!g || !name) return false;
+  if (g[1].test(name)) return false;
+  for (j = 0; j < g[0].length; j++) if (g[0][j].test(name)) return true;
+  return false;
+}
+function frontScore(paras) {
+  if (!paras || paras.length === 0 || paras.length > 40) return -1;
+  var roles = classifySequence(paras), i, has = {}, styleHits = 0, sc = 0, nText = 0;
+  var first = -1;
+  for (i = 0; i < paras.length; i++) if (trimWS(paras[i].text) !== "") { first = i; break; }
+  if (first < 0 || roles[first] !== "title") return -1;
+  var t0 = trimWS(paras[first].text), s0 = paras[first].style || "";
+  // 図表の題・出典・柱・ノンブル・キャプションの枠は違う
+  if (RE_FIG_CAPTION.test(t0) || RE_FIG_SOURCE.test(t0)) return -1;
+  if (/柱|ノンブル|キャプション|図表|写真|running|folio|caption/i.test(s0)) return -1;
+  for (i = 0; i < paras.length; i++) {
+    if (roles[i] === "empty") continue;
+    nText++;
+    has[roles[i]] = true;
+    if (FRONT_STYLE_ROLES[roles[i]] && styleFitsRole(paras[i].style, roles[i])) styleHits++;
+  }
+  if (nText < 2) return -1;   // 1行だけの枠 (見出し・小さなメモなど) は違う
+  if (has.abstractTitle) sc += 3;
+  if (has.keywords) sc += 3;
+  if (has["abstract"]) sc += 2;
+  if (has.author) sc += 1;
+  if (has.affiliation) sc += 1;
+  if (has.subtitle) sc += 1;
+  sc += 2 * styleHits;
+  // 見出し・注・文献があるのは本文側の枠
+  if (has.h1 || has.h2 || has.h3 || has.noteTitle || has.refTitle) sc -= 3;
+  return sc;
+}
+var FRONT_MIN_SCORE = 3;
+
 // ------------------------------------------------------------
 // 前回号の紙面から体裁を学習する
 // ------------------------------------------------------------
@@ -2262,26 +2304,77 @@ function findCharStyle(doc, name) {
   return null;
 }
 
-// 前付け (題目〜キーワード) が別のテキストに入っている場合に、そのストーリーを探す
-function findFrontStory(doc, bodyStory) {
-  var i, s, paras, roles, k, hasTitle, hasFront;
+// 前付け (題目〜キーワード) が別のテキストに入っている場合に、その候補のストーリーを探す。
+// 点数の高い順に返す。本文の途中のページにある枠・本文に埋め込まれた枠 (アンカー付き)・
+// 図の説明などの小さな枠は候補にしない
+function pageOffsetOf(item) {
+  try { var pg = item.parentPage; if (pg && pg.isValid) return pg.documentOffset; } catch (e) {}
+  return -1;
+}
+function isAnchoredFrame(tf) {
+  try {
+    var par = tf.parent, guard = 0;
+    while (par && guard++ < 10) {
+      var cn = par.constructor.name;
+      if (cn === "Character") return true;
+      if (cn !== "Group") return false;
+      par = par.parent;
+    }
+  } catch (e) {}
+  return false;
+}
+function findFrontCandidates(doc, bodyStory) {
+  var out = [], i, s, paras, sc;
+  var bodyOff = -1;
+  try { bodyOff = pageOffsetOf(bodyStory.textContainers[0]); } catch (e0) {}
   for (i = 0; i < doc.stories.length; i++) {
     s = doc.stories[i];
     if (s.id === bodyStory.id) continue;
     try {
       if (s.paragraphs.length === 0 || s.paragraphs.length > 40) continue;
       if (s.textContainers.length === 0) continue;
-      var pg = s.textContainers[0].parentPage;
+      var tf = s.textContainers[0], pg = tf.parentPage;
       if (!pg || pg.parent.constructor.name === "MasterSpread") continue;
+      if (isAnchoredFrame(tf)) continue;
+      // 題目などは論文の最初 (本文が始まるページか、その前のページ) にある
+      var off = pg.documentOffset;
+      if (bodyOff >= 0 && (off > bodyOff || off < bodyOff - 1)) continue;
       paras = readStoryParas(s, true);
-      roles = classifySequence(paras);
-      hasTitle = false; hasFront = false;
-      for (k = 0; k < roles.length; k++) {
-        if (roles[k] === "title") hasTitle = true;
-        if (roles[k] === "abstract" || roles[k] === "author" || roles[k] === "keywords") hasFront = true;
-      }
-      if (hasTitle && hasFront) return { story: s, paras: paras };
+      sc = frontScore(paras);
+      if (sc < 1) continue;
+      var top = 0;
+      try { top = tf.geometricBounds[0]; } catch (e1) {}
+      out.push({ story: s, paras: paras, score: sc, frame: tf, page: pg, offset: off, top: top });
     } catch (e) {}
+  }
+  out.sort(function (x, y) { return (y.score - x.score) || (x.offset - y.offset) || (x.top - y.top); });
+  // はっきりした候補があれば、あいまいな候補は出さない
+  if (out.length > 0 && out[0].score >= FRONT_MIN_SCORE) {
+    var strong = [], q;
+    for (q = 0; q < out.length; q++) if (out[q].score >= FRONT_MIN_SCORE) strong.push(out[q]);
+    out = strong;
+  }
+  return out;
+}
+
+// 候補の枠を画面に出して、題目などを入れてよいか聞く。断られたら次の候補へ。
+// どれも違うときは null (題目なども本文のテキストの先頭に入れる)
+function chooseFrontStory(doc, cands) {
+  var i, c, head;
+  for (i = 0; i < cands.length && i < 3; i++) {
+    c = cands[i];
+    try { app.activeWindow.activePage = c.page; } catch (e0) {}
+    try { app.select(c.frame); } catch (e1) {}
+    head = "";
+    var k;
+    for (k = 0; k < c.paras.length && head === ""; k++) head = trimWS(c.paras[k].text);
+    if (head.length > 30) head = head.substring(0, 30) + "…";
+    if (confirm("題目・著者名・要旨などを入れるテキストボックスはこれでよいですか?\n\n" +
+                (c.page.name ? c.page.name + " ページ" : "") + "の枠 (いま選択しています)\n" +
+                "先頭の行: 「" + head + "」\n\n" +
+                "「はい」→ この枠に入れます\n「いいえ」→ " + (i + 1 < cands.length && i < 2 ? "ほかの枠を探します" : "本文のテキストの先頭に入れます"))) {
+      return c;
+    }
   }
   return null;
 }
@@ -3185,7 +3278,13 @@ function main() {
   }
   if (!hasTitle) {
     showProgress("題目・要旨のテキストを探しています…");
-    front = findFrontStory(doc, story);
+    var fcands = [];
+    try { fcands = findFrontCandidates(doc, story); } catch (eF) {}
+    hideProgress();
+    if (fcands.length > 0) {
+      front = chooseFrontStory(doc, fcands);
+      try { app.select(frame); } catch (eS) {}
+    }
   }
   var profile = learnProfile(front ? front.paras.concat(learnParas) : learnParas);
   var oldTitle = oldTitleText(front ? front.paras : learnParas, classifySequence(front ? front.paras : learnParas));

@@ -707,6 +707,25 @@ check('「2020年…」のような数字始まりの文は見出し番号とし
 check('括弧付きの番号の読み取り', JSON.stringify(readParenNumber('（\u20051\u2005）\t注', 0)) === JSON.stringify({ pad: '\u2005', digits: '1', after: '\t', end: 6 }) &&
       readParenNumber('（注）', 0) === null);
 
+// ---- 題目などを入れる別の枠の見分け ----
+console.log('front box:');
+const FP = arr => arr.map(x => Object.assign({ level: 0, runs: null, style: '' }, typeof x === 'string' ? { text: x } : x));
+const realFront = FP([{ text: '幼児期の遊びに関する研究', style: '01_タイトル' }, { text: '―保育者の関わりから―', style: '02_副題' },
+  { text: '山田　花子', style: '03_著者名' }, { text: '要　　旨', style: '04_要旨見出し' },
+  { text: '　本研究は幼児期の遊びについて調べたものである。', style: '05_要旨' }, { text: 'キーワード：遊び，保育者', style: '06_キーワード' }]);
+const genericFront = FP(['幼児期の遊びに関する研究', '―保育者の関わりから―', '山田　花子', '○○大学教育学部']);
+const captionBox = FP(['図1　調査の流れ', '出典：筆者作成']);
+const sideBox = FP(['コラム', '短いメモ書きです', 'もう一行']);
+const memoBox = FP(['注意書き']);
+const bodyLike = FP(['論文の題目', '1．はじめに', '　本文です。']);
+check('題目・要旨・キーワードのある枠は題目の枠', frontScore(realFront) >= FRONT_MIN_SCORE, frontScore(realFront));
+check('スタイル名がふつうでも題目・副題・著者・所属がそろえば題目の枠', frontScore(genericFront) >= FRONT_MIN_SCORE, frontScore(genericFront));
+check('図の題・出典の枠は題目の枠にしない', frontScore(captionBox) < 0, frontScore(captionBox));
+check('短い囲み記事の枠は題目の枠にしない', frontScore(sideBox) < FRONT_MIN_SCORE, frontScore(sideBox));
+check('1行だけの枠は題目の枠にしない', frontScore(memoBox) < 0, frontScore(memoBox));
+check('見出しのある枠は題目の枠にしない', frontScore(bodyLike) < FRONT_MIN_SCORE, frontScore(bodyLike));
+check('柱・キャプションのスタイルの枠は題目の枠にしない', frontScore(FP([{ text: '幼児期の遊び', style: '柱' }, '山田'])) < 0);
+
 // ---- InDesign の古い JavaScript で使えない予約語 ----
 console.log('ExtendScript:');
 const reservedHits = require('./es3_reserved')(src);
