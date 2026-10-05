@@ -925,6 +925,369 @@ function addFmtSpan(list, start, end, f) {
   list.push(span);
 }
 
+// ---- Word の数式 (挿入 > 数式 で作ったもの = OMML) を文字にする ----
+// InDesign には数式の機能がないので、1行の文字にして、下付き・上付き・イタリックは
+// 文字の飾りとして当てる。縦に組んだ分数・Σ の上下の範囲・行列など、1行では
+// 元の形にならない式は complex として知らせる (手で仕上げる目印)
+
+// 数式の XML を簡単な木にする
+function _ommlTree(xml) {
+  var root = { name: "#root", tag: "", kids: [] }, stack = [root], pos = 0, lt, gt, tag, nm, node, cur;
+  while (true) {
+    lt = xml.indexOf("<", pos); if (lt < 0) break;
+    gt = xml.indexOf(">", lt); if (gt < 0) break;
+    cur = stack[stack.length - 1];
+    if (lt > pos && (cur.name === "m:t" || cur.name === "w:t")) cur.kids.push({ name: "#text", text: decodeXmlEntities(xml.substring(pos, lt)), kids: [] });
+    tag = xml.substring(lt + 1, gt); pos = gt + 1;
+    if (tag.charAt(0) === "?" || tag.charAt(0) === "!") continue;
+    if (tag.charAt(0) === "/") {
+      nm = tag.substring(1);
+      var d = stack.length - 1;
+      while (d > 0 && stack[d].name !== nm) d--;
+      if (d > 0) stack.length = d;
+      continue;
+    }
+    nm = _tagName(tag);
+    node = { name: nm, tag: tag, kids: [] };
+    cur.kids.push(node);
+    if (tag.charAt(tag.length - 1) !== "/") stack.push(node);
+  }
+  return root;
+}
+
+function _omKid(node, name) {
+  var i;
+  if (!node) return null;
+  for (i = 0; i < node.kids.length; i++) if (node.kids[i].name === name) return node.kids[i];
+  return null;
+}
+function _omKids(node, name) {
+  var out = [], i;
+  for (i = 0; i < node.kids.length; i++) if (node.kids[i].name === name) out.push(node.kids[i]);
+  return out;
+}
+function _omVal(e) { return e ? xmlAttr(e.tag, "m:val") : null; }
+// <m:xxxPr> の中の <m:yyy m:val="..."/> の値 (なければ null)
+function _omPrVal(node, prName, name) { return _omVal(_omKid(_omKid(node, prName), name)); }
+function _omText(node) {
+  var s = "", i;
+  if (node.name === "#text") return node.text;
+  for (i = 0; i < node.kids.length; i++) s += _omText(node.kids[i]);
+  return s;
+}
+
+// 二項演算子・関係記号 (前後を少し空ける)
+var OM_BINOPS = "=+\u2212<>\u2264\u2265\u2260\u00D7\u00B1\u2213\u2248\u2261\u2192\u2190\u221D\u2208\u2282\u2286\u00F7\u22C5";
+var OM_OPENERS = "([{\u27E8|,\u2061";
+var OM_SPACE = "\u2005";   // 四分アキ (幅が固定の空き)
+var OM_THIN = "\u2006";    // 六分アキ (関数名と引数の間)
+
+// 白抜きの文字 (𝔼 など)。InDesign の書体によっては表示できないので special として知らせる
+var OM_DOUBLE_STRUCK = { C: "\u2102", H: "\u210D", N: "\u2115", P: "\u2119", Q: "\u211A", R: "\u211D", Z: "\u2124" };
+function _omDoubleStruck(s) {
+  var out = "", i, c, cp;
+  for (i = 0; i < s.length; i++) {
+    c = s.charAt(i);
+    if (OM_DOUBLE_STRUCK.hasOwnProperty(c)) { out += OM_DOUBLE_STRUCK[c]; continue; }
+    if (c >= "A" && c <= "Z") cp = 0x1D538 + (s.charCodeAt(i) - 65);
+    else if (c >= "a" && c <= "z") cp = 0x1D552 + (s.charCodeAt(i) - 97);
+    else if (c >= "0" && c <= "9") cp = 0x1D7D8 + (s.charCodeAt(i) - 48);
+    else { out += c; continue; }
+    cp -= 0x10000;
+    out += String.fromCharCode(0xD800 + (cp >> 10), 0xDC00 + (cp & 0x3FF));
+  }
+  return out;
+}
+
+// アクセント (ハットなど): 合成済みの文字があればそれを使う
+var OM_ACCENT_COMBINING = { "^": "\u0302", "\u02C6": "\u0302", "~": "\u0303", "\u02DC": "\u0303", "\u00AF": "\u0304",
+                            "\u02D9": "\u0307", "\u00A8": "\u0308", "\u2192": "\u20D7", "\u02C7": "\u030C" };
+var OM_PRECOMPOSED = {
+  "\u0302": { A: "\u00C2", E: "\u00CA", I: "\u00CE", O: "\u00D4", U: "\u00DB", a: "\u00E2", e: "\u00EA", i: "\u00EE", o: "\u00F4", u: "\u00FB",
+              C: "\u0108", G: "\u011C", H: "\u0124", J: "\u0134", S: "\u015C", W: "\u0174", Y: "\u0176", Z: "\u1E90",
+              c: "\u0109", g: "\u011D", h: "\u0125", j: "\u0135", s: "\u015D", w: "\u0175", y: "\u0177", z: "\u1E91" },
+  "\u0303": { A: "\u00C3", N: "\u00D1", O: "\u00D5", a: "\u00E3", n: "\u00F1", o: "\u00F5", E: "\u1EBC", e: "\u1EBD", Y: "\u1EF8", y: "\u1EF9" },
+  "\u0304": { A: "\u0100", E: "\u0112", I: "\u012A", O: "\u014C", U: "\u016A", a: "\u0101", e: "\u0113", i: "\u012B", o: "\u014D", u: "\u016B",
+              X: "X\u0304", x: "x\u0304", Y: "\u0232", y: "\u0233" },
+  "\u0307": { x: "\u1E8B", X: "\u1E8A", y: "\u1E8F", Y: "\u1E8E" },
+  "\u0308": { A: "\u00C4", E: "\u00CB", I: "\u00CF", O: "\u00D6", U: "\u00DC", a: "\u00E4", e: "\u00EB", i: "\u00EF", o: "\u00F6", u: "\u00FC", y: "\u00FF", x: "\u1E8D", X: "\u1E8C" }
+};
+
+function _omNewOut() { return { text: "", spans: [], ops: 0, paren: 0, complex: false, special: false }; }
+
+// 数式の中の括弧は、「半角括弧を全角に」の置き換えで変わらないよう、流し込む直前まで
+// 別の文字 (私用領域) にしておく。unprotectMath で元に戻す
+var OM_PROTECT = { "(": "\uE100", ")": "\uE101", "[": "\uE102", "]": "\uE103", "{": "\uE104", "}": "\uE105" };
+var OM_UNPROTECT = { "\uE100": "(", "\uE101": ")", "\uE102": "[", "\uE103": "]", "\uE104": "{", "\uE105": "}" };
+function protectMath(t) { return t.replace(/[()\[\]{}]/g, function (c) { return OM_PROTECT[c]; }); }
+function unprotectMath(t) { return String(t).replace(/[\uE100-\uE105]/g, function (c) { return OM_UNPROTECT[c]; }); }
+
+// 文字を足す (f: { italic, bold, sub, sup })
+function _omEmit(out, s, f) {
+  if (s === "") return;
+  s = protectMath(s);
+  var st = out.text.length;
+  out.text += s;
+  addFmtSpan(out.spans, st, out.text.length, f);
+}
+function _omFmt(st, italic, bold) {
+  var f = {};
+  if (italic) f.italic = true;
+  if (bold) f.bold = true;
+  if (st.script === "sub") f.sub = true;
+  if (st.script === "sup") f.sup = true;
+  return f;
+}
+// 別に作った部分 (分母など) をつなげる
+function _omAppend(out, part) {
+  var base = out.text.length, i, sp;
+  out.text += part.text;
+  for (i = 0; i < part.spans.length; i++) {
+    sp = _copySpan(part.spans[i]);
+    sp.start += base; sp.end += base;
+    addFmtSpan(out.spans, sp.start, sp.end, sp);
+  }
+  if (part.complex) out.complex = true;
+  if (part.special) out.special = true;
+}
+function _omLast(out) { return out.text.length > 0 ? out.text.charAt(out.text.length - 1) : ""; }
+function _omIsSpace(c) { return c === " " || (c >= "\u2000" && c <= "\u200B"); }
+// 前後の空きを除く
+function _omTrim(p) {
+  while (p.text.length > 0 && _omIsSpace(_omLast(p))) p.text = p.text.substring(0, p.text.length - 1);
+  while (p.text.length > 0 && _omIsSpace(p.text.charAt(0))) { p.text = p.text.substring(1); moveSpans(p.spans, -1); }
+  p.spans = fitSpans(p.spans, p.text.length);
+}
+function _omSpace(out, st) {
+  var l = _omLast(out);
+  if (l !== "" && !_omIsSpace(l)) _omEmit(out, OM_SPACE, _omFmt(st, false, false));
+}
+// 関数名 (max・log など)。前の文字との間を少し空ける
+var RE_OM_FUNC = /^(max|min|sup|inf|lim|log|ln|exp|sin|cos|tan|det|arg|Pr|var|Var|Cov|corr|plim)(?![A-Za-z])/;
+
+// <m:r> (数式の中の文字)
+function _omRun(node, out, st) {
+  var rPr = _omKid(node, "m:rPr"), wPr = _omKid(node, "w:rPr");
+  var sty = _omVal(_omKid(rPr, "m:sty")), scr = _omVal(_omKid(rPr, "m:scr")), nor = !!_omKid(rPr, "m:nor");
+  var txt = "", i, ts = _omKids(node, "m:t");
+  for (i = 0; i < ts.length; i++) txt += _omText(ts[i]);
+  if (txt === "") return;
+  var italic, bold;
+  if (nor) {
+    // ふつうの文字として書かれた部分 (「Allowance asset」など): Word の文字の書式に従う
+    var wf = {};
+    if (wPr) for (i = 0; i < wPr.kids.length; i++) readRunProp(wPr.kids[i].name, wPr.kids[i].tag, wf);
+    _omEmit(out, txt, _omFmt(st, !!wf.italic, !!wf.bold));
+    return;
+  }
+  if (scr === "double-struck") { txt = _omDoubleStruck(txt); out.special = true; }
+  bold = sty === "b" || sty === "bi";
+  if (!st.script && RE_OM_FUNC.test(txt) && /[A-Za-z0-9\u0391-\u03C9)\]}\uE101\uE103\uE105]$/.test(_omLast(out))) {
+    _omEmit(out, OM_THIN, _omFmt(st, false, false));
+  }
+  for (i = 0; i < txt.length; i++) {
+    var c = txt.charAt(i);
+    if (c === "-") c = "\u2212";   // 数式のハイフンはマイナス記号
+    if (c === " ") { _omSpace(out, st); continue; }
+    // 原稿で入れた細い空き (ヘアスペースなど): 空きが続くときは1つにする
+    if (c >= "\u2000" && c <= "\u200B") {
+      var lw = _omLast(out);
+      if (lw !== "" && lw !== " " && !(lw >= "\u2000" && lw <= "\u200B")) _omEmit(out, c, _omFmt(st, false, false));
+      continue;
+    }
+    // 文字で書かれた括弧の中の演算子は、分数の括弧を付けるかどうかの判断に数えない
+    if (c === "(" || c === "[" || c === "{") out.paren++;
+    else if ((c === ")" || c === "]" || c === "}") && out.paren > 0) out.paren--;
+    if (c === "," && !st.script) {
+      _omEmit(out, c, _omFmt(st, false, bold));
+      _omEmit(out, OM_THIN, _omFmt(st, false, false));
+      continue;
+    }
+    if (OM_BINOPS.indexOf(c) >= 0) {
+      var l = _omLast(out);
+      var binary = l !== "" && OM_OPENERS.indexOf(l) < 0 && OM_BINOPS.indexOf(l) < 0 && !(l === OM_SPACE && OM_BINOPS.indexOf(out.text.charAt(out.text.length - 2)) >= 0);
+      if (binary && !st.script) {
+        _omSpace(out, st);
+        _omEmit(out, c, _omFmt(st, false, bold));
+        _omEmit(out, OM_SPACE, _omFmt(st, false, false));
+        if (st.level === 0 && out.paren === 0) out.ops++;
+        continue;
+      }
+      if (binary && st.level === 0 && out.paren === 0) out.ops++;
+      _omEmit(out, c, _omFmt(st, false, bold));
+      continue;
+    }
+    // 書体: 原稿どおり。指定がなければ Word と同じく文字 (欧文・ギリシャ文字) だけイタリック
+    if (sty === "p" || sty === "b" || st.upright) italic = false;
+    else italic = /[A-Za-z\u0391-\u03C9]/.test(c);
+    if (c >= "\uD800" && c <= "\uDBFF" && i + 1 < txt.length) { c += txt.charAt(i + 1); i++; }
+    _omEmit(out, c, _omFmt(st, italic, bold));
+  }
+}
+
+function _omChild(node, name, out, st) {
+  var k = _omKid(node, name);
+  if (k) _omNode(k, out, st);
+}
+function _omWith(st, changes) {
+  var o = {}, k;
+  for (k in st) if (st.hasOwnProperty(k)) o[k] = st[k];
+  for (k in changes) if (changes.hasOwnProperty(k)) o[k] = changes[k];
+  return o;
+}
+// 一部分を別に作る (括弧を付けるかどうかを、中に演算子があるかで決めるため)
+function _omPart(node, st) {
+  var p = _omNewOut();
+  if (node) _omNode(node, p, _omWith(st, { level: 0 }));
+  _omTrim(p);
+  return p;
+}
+function _omWrapped(out, part, st) {
+  if (part.ops === 0) { _omAppend(out, part); return; }
+  _omEmit(out, "(", _omFmt(st, false, false));
+  _omAppend(out, part);
+  _omEmit(out, ")", _omFmt(st, false, false));
+}
+
+function _omNode(node, out, st) {
+  var nm = node.name, i, k;
+  if (nm === "#text") return;
+  if (nm === "m:r") { _omRun(node, out, st); return; }
+  if (/Pr$/.test(nm) || nm === "m:ctrlPr" || nm === "w:rPr") return;
+  if (nm === "m:sSub" || nm === "m:sSup" || nm === "m:sSubSup") {
+    _omChild(node, "m:e", out, st);
+    if (nm !== "m:sSup") _omChild(node, "m:sub", out, _omWith(st, { script: "sub", level: st.level + 1 }));
+    if (nm !== "m:sSub") _omChild(node, "m:sup", out, _omWith(st, { script: "sup", level: st.level + 1 }));
+    return;
+  }
+  if (nm === "m:sPre") {
+    _omChild(node, "m:sub", out, _omWith(st, { script: "sub", level: st.level + 1 }));
+    _omChild(node, "m:sup", out, _omWith(st, { script: "sup", level: st.level + 1 }));
+    _omChild(node, "m:e", out, st);
+    return;
+  }
+  if (nm === "m:f") {
+    // 分数 → 「分子/分母」。縦に組む分数は1行では元の形にならないので、別行の式なら目印を付ける
+    var ftype = _omPrVal(node, "m:fPr", "m:type");
+    var num = _omPart(_omKid(node, "m:num"), st), den = _omPart(_omKid(node, "m:den"), st);
+    if (ftype === "noBar") { out.complex = true; }
+    if (ftype !== "lin" && st.display) out.complex = true;
+    _omWrapped(out, num, st);
+    _omEmit(out, "/", _omFmt(st, false, false));
+    _omWrapped(out, den, st);
+    if (st.level === 0) out.ops++;
+    return;
+  }
+  if (nm === "m:d") {
+    // 括弧。m:val="" は「括弧なし」
+    var beg = _omPrVal(node, "m:dPr", "m:begChr"), end = _omPrVal(node, "m:dPr", "m:endChr"), sep = _omPrVal(node, "m:dPr", "m:sepChr");
+    if (beg === null) beg = "("; if (end === null) end = ")"; if (sep === null) sep = "|";
+    var es = _omKids(node, "m:e"), inner = _omWith(st, { level: st.level + 1 });
+    _omEmit(out, beg, _omFmt(st, false, false));
+    for (i = 0; i < es.length; i++) {
+      if (i > 0) _omEmit(out, sep, _omFmt(st, false, false));
+      _omNode(es[i], out, inner);
+    }
+    _omEmit(out, end, _omFmt(st, false, false));
+    return;
+  }
+  if (nm === "m:rad") {
+    var deg = _omPart(_omKid(node, "m:deg"), _omWith(st, { script: "sup" }));
+    if (deg.text !== "") _omAppend(out, deg);
+    _omEmit(out, "\u221A", _omFmt(st, false, false));
+    var rad = _omPart(_omKid(node, "m:e"), st);
+    if (rad.text.length > 1) { _omEmit(out, "(", _omFmt(st, false, false)); _omAppend(out, rad); _omEmit(out, ")", _omFmt(st, false, false)); }
+    else _omAppend(out, rad);
+    return;
+  }
+  if (nm === "m:nary") {
+    // Σ・∫ など。範囲は下付き・上付きにする (別行の式で上下に置く形は目印を付ける)
+    var chr = _omPrVal(node, "m:naryPr", "m:chr");
+    if (chr === null || chr === "") chr = "\u222B";
+    var loc = _omPrVal(node, "m:naryPr", "m:limLoc");
+    if (st.display && loc !== "subSup") out.complex = true;
+    _omEmit(out, chr, _omFmt(st, false, false));
+    _omChild(node, "m:sub", out, _omWith(st, { script: "sub", level: st.level + 1 }));
+    _omChild(node, "m:sup", out, _omWith(st, { script: "sup", level: st.level + 1 }));
+    var body = _omPart(_omKid(node, "m:e"), st);
+    // Σ の後ろは少し空ける (Word では、Σ の対象を Σ の外に続けて書くこともある)
+    _omEmit(out, OM_THIN, _omFmt(st, false, false));
+    _omAppend(out, body);
+    if (body.ops > 0 && st.level === 0) out.ops++;
+    return;
+  }
+  if (nm === "m:acc") {
+    var ac = _omPrVal(node, "m:accPr", "m:chr");
+    if (ac === null || ac === "") ac = "\u0302";
+    if (OM_ACCENT_COMBINING.hasOwnProperty(ac)) ac = OM_ACCENT_COMBINING[ac];
+    var base = _omPart(_omKid(node, "m:e"), st);
+    var pre = OM_PRECOMPOSED[ac];
+    if (base.text.length === 1 && pre && pre.hasOwnProperty(base.text)) {
+      var f0 = base.spans.length > 0 ? base.spans[0] : _omFmt(st, false, false);
+      _omEmit(out, pre[base.text], f0);
+    } else {
+      // 合成済みの文字がないときは、組み合わせ用の記号を後ろに付ける
+      _omAppend(out, base);
+      _omEmit(out, ac, base.spans.length > 0 ? base.spans[base.spans.length - 1] : _omFmt(st, false, false));
+      out.special = true;
+      if (base.text.length > 1) out.complex = true;
+    }
+    return;
+  }
+  if (nm === "m:bar" || nm === "m:groupChr" || nm === "m:borderBox") {
+    _omChild(node, "m:e", out, st);
+    out.complex = true;
+    return;
+  }
+  if (nm === "m:func") {
+    _omChild(node, "m:fName", out, _omWith(st, { upright: true }));
+    var arg = _omPart(_omKid(node, "m:e"), st), a0 = arg.text.charAt(0);
+    if (arg.text !== "" && "([{".indexOf(a0) < 0) _omEmit(out, OM_THIN, _omFmt(st, false, false));
+    _omAppend(out, arg);
+    return;
+  }
+  if (nm === "m:limLow" || nm === "m:limUpp") {
+    _omChild(node, "m:e", out, st);
+    _omChild(node, "m:lim", out, _omWith(st, { script: nm === "m:limLow" ? "sub" : "sup", level: st.level + 1 }));
+    if (st.display) out.complex = true;
+    return;
+  }
+  if (nm === "m:eqArr") {
+    var rows = _omKids(node, "m:e");
+    for (i = 0; i < rows.length; i++) {
+      if (i > 0) _omEmit(out, "\n", {});
+      _omNode(rows[i], out, st);
+    }
+    out.complex = true;
+    return;
+  }
+  if (nm === "m:m") {
+    var mrs = _omKids(node, "m:mr"), cells;
+    _omEmit(out, "[", _omFmt(st, false, false));
+    for (i = 0; i < mrs.length; i++) {
+      if (i > 0) _omEmit(out, ";" + OM_SPACE, _omFmt(st, false, false));
+      cells = _omKids(mrs[i], "m:e");
+      for (k = 0; k < cells.length; k++) {
+        if (k > 0) _omEmit(out, "," + OM_SPACE, _omFmt(st, false, false));
+        _omNode(cells[k], out, st);
+      }
+    }
+    _omEmit(out, "]", _omFmt(st, false, false));
+    out.complex = true;
+    return;
+  }
+  // そのほか (m:e, m:box, m:phant など): 中身をそのまま
+  for (i = 0; i < node.kids.length; i++) _omNode(node.kids[i], out, st);
+}
+
+// <m:oMath> の中身 → { text, spans, complex, special }
+function ommlToText(xml, display) {
+  var out = _omNewOut();
+  _omNode(_ommlTree(xml), out, { script: null, level: 0, display: !!display, upright: false });
+  _omTrim(out);
+  return out;
+}
+
 // Word スタイルから見出しレベル (1〜) を求める。見出しでなければ 0
 function docxHeadingLevel(styles, styleId) {
   var guard = 0, s = styles[styleId], m;
@@ -949,7 +1312,7 @@ function docxHeadingLevel(styles, styleId) {
 function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
   var blocks = [], pos = 0, n = xml.length, lt, gt, tag, name, selfClose, closeIdx;
   var para = null, skip = 0, inTabs = 0, fallback = 0, txbx = 0;
-  var inPPr = 0, runFmt = null, inRPr = false, ruby = null, inRt = 0, pprChange = 0;
+  var inPPr = 0, runFmt = null, inRPr = false, ruby = null, inRt = 0, pprChange = 0, mathPara = 0;
   var numState = numbering ? createNumState(numbering) : null;
 
   // 自動の番号・記号を段落の頭に文字として入れ、注番号・飾りの位置をずらす
@@ -969,6 +1332,19 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
     for (k = 0; k < pa.fmt.length; k++) { pa.fmt[k].start += pre.length; pa.fmt[k].end += pre.length; }
     pa.listLabel = lab.label;
     pa.isList = true;
+  }
+  // Word の数式を文字にして段落に足す (display = 別の行に立てた式)
+  function addMath(pa, mxml, display) {
+    var r = ommlToText(mxml, display), base, k, sp;
+    if (r.text === "") return;
+    if (display && pa.mathDisplay && pa.text !== "" && pa.text.charAt(pa.text.length - 1) !== "\n") pa.text += "\n";
+    base = pa.text.length;
+    pa.text += r.text;
+    for (k = 0; k < r.spans.length; k++) { sp = r.spans[k]; addFmtSpan(pa.fmt, sp.start + base, sp.end + base, sp); }
+    pa.math = (pa.math || 0) + 1;
+    if (display) pa.mathDisplay = true;
+    if (r.complex) { if (!pa.mathComplex) pa.mathComplex = []; pa.mathComplex.push(unprotectMath(r.text)); }
+    if (r.special) pa.mathSpecial = true;
   }
   var tblStack = [], tbl = null, row = null, rowFmt = null, cell = null, grid = null;
   var notes = {}, noteId = null, noteParas = null;
@@ -1013,6 +1389,7 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
       else if (name === "w:rPr") { inRPr = false; }
       else if (name === "w:r") { runFmt = null; }
       else if (name === "w:rt") { if (inRt > 0) inRt--; }
+      else if (name === "m:oMathPara") { if (mathPara > 0) mathPara--; }
       else if (name === "w:rubyBase") { if (ruby !== null && para !== null) ruby.end = para.text.length; }
       else if (name === "w:ruby") {
         if (ruby !== null && para !== null && ruby.start >= 0 && ruby.end > ruby.start && ruby.text !== "") {
@@ -1076,6 +1453,16 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
       continue;
     }
     if (para === null) continue;
+    // Word の数式 (別の行に立てた式は m:oMathPara で囲まれている)
+    if (name === "m:oMathPara") { if (!selfClose) mathPara++; continue; }
+    if (name === "m:oMath") {
+      if (selfClose) continue;
+      closeIdx = xml.indexOf("</m:oMath>", pos);
+      if (closeIdx < 0) break;
+      if (skip === 0) addMath(para, xml.substring(pos, closeIdx), mathPara > 0);
+      pos = closeIdx + 10;
+      continue;
+    }
     // 段落記号の書式 (<w:pPr> の中の <w:rPr>) は文字の飾りではない
     if (name === "w:pPr") { if (!selfClose) inPPr++; continue; }
     if (inPPr > 0) {
@@ -1215,7 +1602,7 @@ function readDocxManuscript(bin, onProgress) {
 var ROLES = [
   ["title", "題目"], ["subtitle", "副題"], ["author", "著者名"], ["affiliation", "所属"],
   ["abstractTitle", "要旨の見出し"], ["abstract", "要旨"], ["keywords", "キーワード"],
-  ["h1", "大見出し"], ["h2", "中見出し"], ["h3", "小見出し"], ["body", "本文"], ["list", "箇条書き"],
+  ["h1", "大見出し"], ["h2", "中見出し"], ["h3", "小見出し"], ["body", "本文"], ["list", "箇条書き"], ["math", "数式 (別行)"],
   ["figCaption", "図表のタイトル"], ["table", "表"], ["figure", "図(画像)"], ["figSource", "図表の出典・注"],
   ["noteTitle", "注の見出し"], ["note", "注"],
   ["refTitle", "参考文献の見出し"], ["refSub", "参考文献の小見出し"], ["ref", "参考文献"]
@@ -1312,6 +1699,8 @@ function classifySequence(items) {
     if (it.isTable) { roles.push("table"); lastFig = i; if (st === "front") st = "body"; continue; }
     if (it.isImage && t === "") { roles.push("figure"); lastFig = i; if (st === "front") st = "body"; continue; }
     if (t === "") { roles.push("empty"); continue; }
+    // 別の行に立てた数式
+    if (it.isMath && (haveTitle || st === "body")) { roles.push("math"); continue; }
     depth = headingDepthByText(t);
     // 全角スペースで字下げした長めの段落は本文
     if (depth > 0 && it.text.charAt(0) === "　" && t.length > 15) depth = 0;
@@ -1594,7 +1983,7 @@ function learnProfile(oldParas) {
   }
   p.punct = { counts: pc, comma: _dominant(pc["、"], pc["，"], "、", "，"), period: _dominant(pc["。"], pc["．"], "。", "．") };
   // 英数字 (全角か半角か)・括弧 (全角か半角か)
-  var cc = { zenAlnum: 0, hanAlnum: 0, hanBracket: 0, zenBracket: 0 };
+  var cc = { zenAlnum: 0, hanAlnum: 0, hanBracket: 0, zenBracket: 0, ja: 0 };
   for (i = 0; i < oldParas.length; i++) {
     r = roles[i];
     if (r !== "body" && r !== "abstract" && r !== "note" && r !== "ref") continue;
@@ -1690,7 +2079,7 @@ function buildItems(ms, p) {
   for (i = 0; i < blocks.length; i++) {
     b = blocks[i];
     if (b.type === "table") seq.push({ text: "", level: 0, isTable: true, isImage: false, block: b });
-    else seq.push({ text: b.text, level: b.level, isTable: false, isImage: !!b.image, isList: !!b.isList, block: b });
+    else seq.push({ text: b.text, level: b.level, isTable: false, isImage: !!b.image, isList: !!b.isList, isMath: !!b.mathDisplay, block: b });
   }
   // 題目の段落に改行があれば、題目と副題に分ける
   var firstIdx = -1;
@@ -1819,6 +2208,9 @@ function buildItems(ms, p) {
     if (HEADINGISH[role] || role === "keywords") fm = dropWholeParaEmphasis(fm, out);
     fm = splitJaItalic(fm, out);
     var item = { role: role, text: out, refs: refs, fmt: fm };
+    if (b.math) item.math = b.math;
+    if (b.mathComplex) item.mathComplex = b.mathComplex;
+    if (b.mathSpecial) item.mathSpecial = true;
     if (role === "keywords") { var km = RE_KEYWORDS.exec(out); if (km) item.label = { start: 0, len: km[0].length }; }
     if (role === "figSource") { var sm = RE_FIG_SOURCE.exec(out); if (sm) item.label = { start: 0, len: sm[0].length }; }
     if (role === "title" || role === "subtitle") {
@@ -1878,7 +2270,7 @@ function buildStoryText(items) {
       chars.push({ kind: "fmt", start: pos + it.fmt[k].start, len: it.fmt[k].end - it.fmt[k].start, span: it.fmt[k] });
     }
     // 段落の中に段落の区切りの文字が混じっていると段落の数がずれるので、段落内の改行にしておく
-    parts.push(it.text.replace(/[\r\u2029]/g, "\n"));
+    parts.push(unprotectMath(it.text).replace(/[\r\u2029]/g, "\n"));
     pos += it.text.length + 1;
   }
   return { text: parts.join("\r"), paras: paras, chars: chars };
@@ -1898,6 +2290,7 @@ var STYLE_GUESS = {
   h3: [[/小見出し|見出し\s*[3３]/], /Abstract|中見出し|大見出し/i],
   body: [[/本文/], /Abstract|注|要旨|表/i],
   list: [[/箇条|リスト|list/i], /Abstract/i],
+  math: [[/数式/, /^式$|式[（(]?別行|ディスプレイ|display/i], /Abstract/i],
   figCaption: [[/図表タイトル|表タイトル|図タイトル|キャプション/], /Abstract/i],
   figSource: [[/図表注|出典|図注|表注/], /Abstract/i],
   table: [[/^図表$/, /図表[^タ注]*$/], /Abstract/i],
@@ -1911,7 +2304,7 @@ var STYLE_GUESS = {
 var STYLE_FALLBACK = {
   subtitle: "title", affiliation: "author", abstractTitle: "abstract", keywords: "abstract",
   h3: "h2", figSource: "note", table: "figCaption", figure: "table", refTitle: "noteTitle",
-  refSub: "ref", ref: "note", noteTitle: "h2", note: "body", figCaption: "body", list: "body"
+  refSub: "ref", ref: "note", noteTitle: "h2", note: "body", figCaption: "body", list: "body", math: "body"
 };
 
 function guessStyleName(role, names) {
@@ -1988,6 +2381,18 @@ function _dominant(a, b, ca, cb) {
   return null;
 }
 
+// Word の数式の数 (全部・別の行の式・1行では元の形にならない式)
+function countMath(built) {
+  var r = { total: 0, display: 0, complex: 0 }, i, it;
+  for (i = 0; i < built.items.length; i++) {
+    it = built.items[i];
+    if (it.math) r.total += it.math;
+    if (it.role === "math") r.display++;
+    if (it.mathComplex) r.complex += it.mathComplex.length;
+  }
+  return r;
+}
+
 function _eachBuiltText(built, fn) {
   var i, it, r, c;
   for (i = 0; i < built.items.length; i++) {
@@ -2032,6 +2437,7 @@ function countCharClassesInto(text, cc) {
     cc.hanAlnum += (t.match(/[A-Za-z0-9]/g) || []).length;
     cc.hanBracket += (t.match(/[()\[\]{}\uFF62\uFF63]/g) || []).length;
     cc.zenBracket += (t.match(/[（）［］｛｝]/g) || []).length;
+    cc.ja += (t.match(/[ぁ-んァ-ヶ一-龠々]/g) || []).length;
     return t;
   });
 }
@@ -2048,13 +2454,16 @@ function _convZenAlnum(t, role, p) {
 
 // 流し込むときに聞く文字の統一 (前回号の書き方を初期値にする)
 function textConversions(built, p) {
-  var cc = { zenAlnum: 0, hanAlnum: 0, hanBracket: 0, zenBracket: 0 }, out = [], pref = p.charPref || {};
+  var cc = { zenAlnum: 0, hanAlnum: 0, hanBracket: 0, zenBracket: 0, ja: 0 }, out = [], pref = p.charPref || {};
   _eachBuiltText(built, function (t) { countCharClassesInto(t, cc); return t; });
   if (cc.zenAlnum > 0) {
     out.push({ kind: "zenAlnum", label: "全角英数字を半角にする", count: cc.zenAlnum, apply: pref.alnum !== "zen" });
   }
   if (cc.hanBracket > 0) {
-    out.push({ kind: "hanBracket", label: "半角括弧 ( ) [ ] { } を全角にする (URL の中は変えません)", count: cc.hanBracket, apply: pref.bracket !== "half" });
+    // 英文の原稿 (日本語の文字がごく少ない) では、括弧は半角のままが正しいので初期値はオフ
+    var english = cc.ja < cc.hanAlnum * 0.05;
+    out.push({ kind: "hanBracket", label: "半角括弧 ( ) [ ] { } を全角にする (URL・数式の中は変えません)", count: cc.hanBracket,
+               apply: pref.bracket !== "half" && !english });
   }
   return out;
 }
@@ -2287,13 +2696,23 @@ function applyFmtSpans(target, spans, base, mapIdx, fmtStyles, stat) {
       continue;
     }
     kind = pickFmtStyleKey(sp, fmtStyles);
+    // 上付き・下付きは、消えると意味が変わる (数式の添字など) ので、文字スタイルで
+    // 当てられないときは文字に直接「上付き・下付き」を設定する
+    var direct = false;
+    if ((sp.sub || sp.sup) && (kind === null || !/(^|\+)(sub|sup)(\+|$)/.test(kind))) {
+      try { rng.position = sp.sup ? Position.SUPERSCRIPT : Position.SUBSCRIPT; direct = true; stat.directPos = (stat.directPos || 0) + 1; } catch (eP) {}
+    }
     if (kind === null) {
-      var sk = "skip_" + comboKey(sp);
-      stat[sk] = (stat[sk] || 0) + 1;
+      if (!direct || comboKey(sp) !== (sp.sup ? "sup" : "sub")) {
+        var sk = "skip_" + comboKey(sp);
+        stat[sk] = (stat[sk] || 0) + 1;
+      }
       continue;
     }
     try { rng.appliedCharacterStyle = fmtStyles[kind]; stat[comboKey(sp)] = (stat[comboKey(sp)] || 0) + 1; }
     catch (e3) { stat.failed = (stat.failed || 0) + 1; }
+    // 文字スタイルを当てると直接の設定が消えることがあるので、もう一度
+    if (direct) { try { rng.position = sp.sup ? Position.SUPERSCRIPT : Position.SUBSCRIPT; } catch (eP2) {} }
   }
 }
 
@@ -2494,7 +2913,8 @@ function confirmDialog(built, p, styleMap, styleNames, info) {
       if (it.role === "blank") continue;
       if (!showAll.value && MAIN_ROLES.hasOwnProperty(it.role)) continue;
       txt = it.role === "table" ? "［表 " + it.table.rows.length + "行×" + (it.table.rows[0] ? it.table.rows[0].length : 0) + "列］" :
-            it.role === "figure" ? "［図の画像］" : trimWS(it.text).substring(0, 60);
+            it.role === "figure" ? "［図の画像］" : trimWS(unprotectMath(it.text)).substring(0, 60);
+      if (it.mathComplex) txt = "【要仕上げ】" + txt;
       li = lb.add("item", roleLabel(it.role));
       li.subItems[0].text = txt;
       li.subItems[1].text = names[k] || "(なし)";
@@ -3049,6 +3469,17 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
     a = b + 1;
   }
 
+  // 2') 別の行の数式: 数式用の段落スタイルを使っていなければ、中央揃えにする
+  setStep("数式の段落の体裁");
+  for (i = 0; i < n; i++) {
+    if (built.items[i].role !== "math" || /式/.test(styleNames[i] || "")) continue;
+    try {
+      var mp = story.paragraphs[i];
+      mp.justification = Justification.CENTER_ALIGN;
+      mp.firstLineIndent = 0; mp.leftIndent = 0;
+    } catch (eM) {}
+  }
+
   // 3) 文字の飾り (イタリック・ルビなど)。注番号などの文字スタイルはこのあとで当てる
   setStep("文字の飾りの適用");
   var fmtSpans = [];
@@ -3157,6 +3588,27 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
     }
   }
   if (nTbl > 0) report.push("表 " + nTbl + " 個を作成しました" + (ctx.tableTemplate ? " (前回号の表の体裁を使用)。" : "。"));
+
+  // 6) 数式。1行では元の形にならない式には付箋 (印刷されないメモ) を付けて知らせる
+  setStep("数式の確認の付箋");
+  var mInfo = countMath(built), mList = [], special = false;
+  for (i = 0; i < n; i++) {
+    it = built.items[i];
+    if (it.mathSpecial) special = true;
+    if (!it.mathComplex) continue;
+    var q2;
+    for (q2 = 0; q2 < it.mathComplex.length; q2++) mList.push(it.mathComplex[q2].replace(/[\u2005\u2006]/g, " "));
+    try {
+      var nt = story.paragraphs[i].insertionPoints[0].notes.add();
+      nt.insertionPoints.item(-1).contents = "【要仕上げ】Word の数式を1行の文字にしました。縦の分数や Σ の上下の範囲など、元の形に組み直してください。";
+    } catch (eN) {}
+  }
+  if (mInfo.total > 0) report.push("Word の数式 " + mInfo.total + " 個を文字で入れました (別の行の式 " + mInfo.display + " 個)。");
+  if (mList.length > 0) {
+    report.push("[要仕上げ] 1行では元の形にならない式 " + mList.length + " 個 (紙面に付箋を付けました):");
+    for (i = 0; i < mList.length && i < 5; i++) report.push("　・" + (mList[i].length > 50 ? mList[i].substring(0, 50) + "…" : mList[i]));
+  }
+  if (special) report.push("[注意] 数式に \uD835\uDD3C などの特別な文字があります。書体に文字がないと □ になるので、確認してください。");
   if (nFig > 0) report.push("図 " + nFig + " 個を配置しました (画像は Links フォルダに保存)。");
   var k2;
   for (k2 in miss) if (miss.hasOwnProperty(k2)) {
@@ -3313,6 +3765,12 @@ function main() {
   if (profile.learnedFrom === 0) notes.push("※ 前回号の体裁を学習できなかったため、スタイル名から推測しています。");
   if (front) notes.push("※ 題目〜キーワードは、別のテキストボックス(前回号で題目があった所)に入れます。");
   if (tailStart >= 0) notes.push("※ 英文要旨の部分は原稿にないため、前回号のまま残します。");
+  var mathInfo = countMath(built);
+  if (mathInfo.total > 0) {
+    notes.push("※ Word の数式 " + mathInfo.total + " 個を文字にして入れます (別の行の式 " + mathInfo.display + " 個は「数式 (別行)」)。" +
+               (mathInfo.complex > 0 ? "縦の分数や Σ の上下の範囲など、1行では元の形にならない式 " + mathInfo.complex +
+                " 個は【要仕上げ】と表示し、紙面に付箋を付けます。" : ""));
+  }
   var punct = punctMismatches(built, profile);
   var charNames = [], cdescs = describeCharStyles(doc), cd;
   for (cd = 0; cd < cdescs.length; cd++) if (cdescs[cd].name && cdescs[cd].name.charAt(0) !== "[") charNames.push(cdescs[cd].name);
@@ -3343,6 +3801,8 @@ function main() {
     applyTextConversion(built, convs[pu], profile);
     punctReport.push(convs[pu].label.replace(/ \(.*\)$/, "") + ": " + convs[pu].count + " か所を置き換えました。");
   }
+  // 数式の中の括弧を元に戻す (置き換えの対象から外すため、ここまで別の文字にしていた)
+  _eachBuiltText(built, function (t) { return unprotectMath(t); });
 
   // 前付けを別ストーリーに分ける
   var FRONT = { title: 1, subtitle: 1, author: 1, affiliation: 1, abstractTitle: 1, "abstract": 1, keywords: 1 };
@@ -3425,13 +3885,14 @@ function main() {
   // 文字の飾りの結果
   var st = _ctx.fmtStat, fq2, fparts = [], fskip = [];
   for (fq2 in st) {
-    if (!st.hasOwnProperty(fq2) || fq2 === "failed") continue;
+    if (!st.hasOwnProperty(fq2) || fq2 === "failed" || fq2 === "directPos") continue;
     if (fq2.indexOf("skip_") === 0) fskip.push(comboLabel(fq2.substring(5)) + " " + st[fq2] + "か所");
     else fparts.push(comboLabel(fq2) + " " + st[fq2] + "か所");
   }
   if (fparts.length > 0) report.push("文字の飾りを当てました: " + fparts.join(" / "));
   if (fskip.length > 0) report.push("[注意] 文字スタイルを選んでいないため当てなかった飾り: " + fskip.join(" / "));
   if (st.failed) report.push("[注意] 文字の飾り " + st.failed + " か所を当てられませんでした。");
+  if (st.directPos) report.push("上付き・下付きの文字スタイルがない所 " + st.directPos + " か所は、文字に直接「上付き・下付き」を設定しました。");
 
   // 空いたページの削除 (確認してから)
   var empties = emptyTrailingPages(story), undoCount = 1;

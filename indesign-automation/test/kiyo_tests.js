@@ -707,6 +707,58 @@ check('「2020年…」のような数字始まりの文は見出し番号とし
 check('括弧付きの番号の読み取り', JSON.stringify(readParenNumber('（\u20051\u2005）\t注', 0)) === JSON.stringify({ pad: '\u2005', digits: '1', after: '\t', end: 6 }) &&
       readParenNumber('（注）', 0) === null);
 
+// ---- Word の数式 (OMML) ----
+console.log('equations:');
+const MR = (t, sty) => `<m:r>${sty ? `<m:rPr><m:sty m:val="${sty}"/></m:rPr>` : ''}<w:rPr><w:rFonts w:ascii="Cambria Math"/></w:rPr><m:t>${t}</m:t></m:r>`;
+const SSUB = (e, s, sty) => `<m:sSub><m:sSubPr><m:ctrlPr/></m:sSubPr><m:e>${MR(e, sty)}</m:e><m:sub>${MR(s, sty)}</m:sub></m:sSub>`;
+const OM = x => `<m:oMath>${x}</m:oMath>`;
+const MW = W + ' xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"';
+const mathDoc = `<?xml version="1.0"?><w:document ${MW}><w:body>
+${P('数式のある論文')}${P('１．はじめに', 'Heading1')}
+<w:p><w:r><w:t xml:space="preserve">Let </w:t></w:r>${OM(SSUB('A', 'i0', 'p'))}<w:r><w:t xml:space="preserve"> be (the) allowances and </w:t></w:r>${OM(MR('λ', 'p') + MR('&gt;0', 'p'))}<w:r><w:t>.</w:t></w:r></w:p>
+<w:p><m:oMathPara><m:oMathParaPr><m:jc m:val="center"/></m:oMathParaPr>${OM(SSUB('A', 'i1', 'p') + MR('=', 'p') + SSUB('A', 'i0', 'p') + MR('-', 'p') + SSUB('E', 'i', 'p'))}</m:oMathPara></w:p>
+<w:p><m:oMathPara>${OM(MR('x') + MR('=') + '<m:f><m:num>' + MR('a+b') + '</m:num><m:den>' + MR('c') + '</m:den></m:f>')}</m:oMathPara></w:p>
+<w:p><m:oMathPara>${OM('<m:sSubSup><m:e>' + MR('L', 'p') + '</m:e><m:sub>' + MR('i', 'p') + '</m:sub><m:sup>' + MR('N', 'p') + '</m:sup></m:sSubSup>' +
+  MR('=', 'p') + SSUB('p', 't', 'p') + MR('max{0,', 'p') + '<m:acc><m:accPr><m:chr m:val="̂"/></m:accPr><m:e>' + MR('E', 'p') + '</m:e></m:acc>' + MR('-', 'p') + MR('1}', 'p'))}</m:oMathPara></w:p>
+<w:p><m:oMathPara>${OM('<m:nary><m:naryPr><m:chr m:val="∑"/><m:limLoc m:val="undOvr"/></m:naryPr><m:sub>' + MR('t=1') + '</m:sub><m:sup>' + MR('T') + '</m:sup><m:e>' + MR('x') + '</m:e></m:nary>' +
+  '<m:r><m:rPr><m:scr m:val="double-struck"/><m:sty m:val="p"/></m:rPr><m:t>E</m:t></m:r>' +
+  '<m:r><m:rPr><m:nor/></m:rPr><m:t>Expected value</m:t></m:r>')}</m:oMathPara></w:p>
+${P('本文の続きです。')}
+<w:sectPr/></w:body></w:document>`;
+const mathMs = readDocxManuscript(makeZip([['word/document.xml', mathDoc]]).toString('latin1'));
+const mathBuilt = buildItems(mathMs, defaultProfile());
+const mItems = mathBuilt.items;
+const mText = it => unprotectMath(it.text);
+const SP = ' ';
+const inlineIt = mItems.find(it => /^Let /.test(mText(it)) || /Let /.test(mText(it)));
+check('文中の数式が消えない', inlineIt && mText(inlineIt).indexOf('Let Ai0 be (the) allowances and λ' + SP + '>' + SP + '0.') >= 0, inlineIt && JSON.stringify(mText(inlineIt)));
+const subSpan = inlineIt && inlineIt.fmt.find(f => f.sub);
+const letIdx = inlineIt ? mText(inlineIt).indexOf('Ai0') : -1;
+check('添字は下付き', subSpan && subSpan.start === letIdx + 1 && subSpan.end === letIdx + 3, JSON.stringify(inlineIt && inlineIt.fmt));
+check('原稿で立体 (sty=p) の記号はイタリックにしない', inlineIt && !inlineIt.fmt.some(f => f.italic));
+const mathRoles = mItems.filter(it => it.role === 'math');
+check('別の行の数式は「数式 (別行)」', mathRoles.length === 4, mItems.map(i => i.role).join(','));
+check('演算子の前後を四分アキにして、ハイフンはマイナスに', mathRoles[0] && mText(mathRoles[0]) === 'Ai1' + SP + '=' + SP + 'Ai0' + SP + '−' + SP + 'Ei', mathRoles[0] && JSON.stringify(mText(mathRoles[0])));
+check('指定のない記号は Word と同じくイタリック', mathRoles[1] && mathRoles[1].fmt.some(f => f.italic && mText(mathRoles[1]).substring(f.start, f.end) === 'x'));
+check('分数は「(分子)/分母」にして要仕上げ', mathRoles[1] && /\(a \+ b\)\/c$/.test(mText(mathRoles[1])) && mathRoles[1].mathComplex && mathRoles[1].mathComplex.length === 1,
+      mathRoles[1] && JSON.stringify(mText(mathRoles[1])));
+check('上付きと下付きが両方ある記号・ハット・max の前の空き', mathRoles[2] && mText(mathRoles[2]) === 'LiN' + SP + '=' + SP + 'pt max{0, Ê' + SP + '−' + SP + '1}',
+      mathRoles[2] && JSON.stringify(mText(mathRoles[2])));
+check('L の添字 i は下付き・N は上付き', mathRoles[2] && mathRoles[2].fmt.some(f => f.sub && f.start === 1 && f.end === 2) && mathRoles[2].fmt.some(f => f.sup && f.start === 2 && f.end === 3));
+check('Σ の範囲は下付き・上付きで、別行なら要仕上げ。白抜きの E は 𝔼', mathRoles[3] && mText(mathRoles[3]).indexOf('∑t=1T x') === 0 &&
+      mText(mathRoles[3]).indexOf('𝔼Expected value') > 0 && mathRoles[3].mathComplex && mathRoles[3].mathSpecial, mathRoles[3] && JSON.stringify(mText(mathRoles[3])));
+const mc = countMath(mathBuilt);
+check('数式の数を数える', mc.total === 6 && mc.display === 4 && mc.complex === 2, JSON.stringify(mc));
+// 「半角括弧を全角に」でも数式の中の括弧は変えない
+const convB = textConversions(mathBuilt, Object.assign(defaultProfile(), { charPref: { bracket: 'full' } })).find(c => c.kind === 'hanBracket');
+check('数式の括弧は「半角括弧を全角に」の数に入れない', convB && convB.count === 2, JSON.stringify(convB));
+applyTextConversion(mathBuilt, convB, defaultProfile());
+check('数式の括弧は全角にならない (本文の括弧は全角になる)', /be （the） allowances/.test(mText(inlineIt)) && /\(a/.test(mText(mathRoles[1])) && /max\{0/.test(mText(mathRoles[2])));
+const mSb = buildStoryText(mItems);
+check('流し込む文字では数式の括弧が元に戻る', mSb.text.indexOf('') < 0 && mSb.text.indexOf('max{0,') > 0);
+const enConv = textConversions({ items: [{ role: 'body', text: 'This is an English paper (2020) with brackets [1].', refs: [] }] }, Object.assign(defaultProfile(), { charPref: { bracket: 'full' } }));
+check('英文の原稿では「半角括弧を全角に」の初期値はオフ', enConv.find(c => c.kind === 'hanBracket').apply === false);
+
 // ---- 題目などを入れる別の枠の見分け ----
 console.log('front box:');
 const FP = arr => arr.map(x => Object.assign({ level: 0, runs: null, style: '' }, typeof x === 'string' ? { text: x } : x));
