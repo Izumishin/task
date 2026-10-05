@@ -756,6 +756,16 @@ applyTextConversion(mathBuilt, convB, defaultProfile());
 check('数式の括弧は全角にならない (本文の括弧は全角になる)', /be （the） allowances/.test(mText(inlineIt)) && /\(a/.test(mText(mathRoles[1])) && /max\{0/.test(mText(mathRoles[2])));
 const mSb = buildStoryText(mItems);
 check('流し込む文字では数式の括弧が元に戻る', mSb.text.indexOf('') < 0 && mSb.text.indexOf('max{0,') > 0);
+// Word で PDF にする式 (縦の分数・Σ のある別行の式) と、Word の数式の番号
+check('本文の数式の数を数える (Word の OMaths と照らし合わせる)', mathMs.mathCount === 6, mathMs.mathCount);
+check('PDF にする式は、縦の分数・Σ のある別行の式だけ (番号は本文の中の順番)',
+      JSON.stringify(mItems.filter(it => it.mathPdfIdx).map(it => it.mathPdfIdx)) === JSON.stringify([[4], [6]]),
+      JSON.stringify(mItems.filter(it => it.mathPdfIdx).map(it => it.mathPdfIdx)));
+const numDoc = `<?xml version="1.0"?><w:document ${MW}><w:body>${P('題目')}${P('１．はじめに', 'Heading1')}
+<w:p><m:oMathPara>${OM('<m:f><m:num>' + MR('a') + '</m:num><m:den>' + MR('b') + '</m:den></m:f>')}</m:oMathPara><w:r><w:tab/><w:t>(1)</w:t></w:r></w:p>
+<w:p><w:r><w:t>本文</w:t></w:r></w:p><w:sectPr/></w:body></w:document>`;
+const numItems = buildItems(readDocxManuscript(makeZip([['word/document.xml', numDoc]]).toString('latin1')), defaultProfile()).items;
+check('式番号などの文字がある段落は PDF にしない (文字の式＋付箋)', !numItems.some(it => it.mathPdfIdx) && numItems.some(it => it.mathComplex));
 const enConv = textConversions({ items: [{ role: 'body', text: 'This is an English paper (2020) with brackets [1].', refs: [] }] }, Object.assign(defaultProfile(), { charPref: { bracket: 'full' } }));
 check('英文の原稿では「半角括弧を全角に」の初期値はオフ', enConv.find(c => c.kind === 'hanBracket').apply === false);
 

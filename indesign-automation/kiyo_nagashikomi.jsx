@@ -1312,7 +1312,7 @@ function docxHeadingLevel(styles, styleId) {
 function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
   var blocks = [], pos = 0, n = xml.length, lt, gt, tag, name, selfClose, closeIdx;
   var para = null, skip = 0, inTabs = 0, fallback = 0, txbx = 0;
-  var inPPr = 0, runFmt = null, inRPr = false, ruby = null, inRt = 0, pprChange = 0, mathPara = 0;
+  var inPPr = 0, runFmt = null, inRPr = false, ruby = null, inRt = 0, pprChange = 0, mathPara = 0, mathCount = 0;
   var numState = numbering ? createNumState(numbering) : null;
 
   // 自動の番号・記号を段落の頭に文字として入れ、注番号・飾りの位置をずらす
@@ -1334,8 +1334,10 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
     pa.isList = true;
   }
   // Word の数式を文字にして段落に足す (display = 別の行に立てた式)
-  function addMath(pa, mxml, display) {
+  // idx: 本文の中で何番目の数式か (Word の OMaths の番号。PDF にするときに使う)
+  function addMath(pa, mxml, display, idx) {
     var r = ommlToText(mxml, display), base, k, sp;
+    if (idx) { if (!pa.mathIdx) pa.mathIdx = []; pa.mathIdx.push(idx); }
     if (r.text === "") return;
     if (display && pa.mathDisplay && pa.text !== "" && pa.text.charAt(pa.text.length - 1) !== "\n") pa.text += "\n";
     base = pa.text.length;
@@ -1459,7 +1461,8 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
       if (selfClose) continue;
       closeIdx = xml.indexOf("</m:oMath>", pos);
       if (closeIdx < 0) break;
-      if (skip === 0) addMath(para, xml.substring(pos, closeIdx), mathPara > 0);
+      if (!collectNotes) mathCount++;
+      if (skip === 0) addMath(para, xml.substring(pos, closeIdx), mathPara > 0, collectNotes ? 0 : mathCount);
       pos = closeIdx + 10;
       continue;
     }
@@ -1497,6 +1500,7 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
         else {
           var t0 = para.text.length;
           para.text += tt;
+          if (/[^\s\u3000]/.test(tt)) para.hasText = true;
           if (runFmt !== null) addFmtSpan(para.fmt, t0, para.text.length, runFmt);
         }
       }
@@ -1518,7 +1522,9 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
     if (name === "v:imagedata") { para.image = xmlAttr(tag, "r:id"); continue; }
   }
   flushPara();
-  return collectNotes ? notes : blocks;
+  if (collectNotes) return notes;
+  blocks.mathCount = mathCount;
+  return blocks;
 }
 
 // docx の中身を読む。getText(名前) は docx 内のファイルを文字列で返す関数
@@ -1577,8 +1583,10 @@ function readDocxParts(getText, onProgress) {
   var endXml = getText(partOf("/endnotes", "endnotes.xml"));
   var footXml = getText(partOf("/footnotes", "footnotes.xml"));
   var numbering = parseNumbering(getText(partOf("/numbering", "numbering.xml")));
+  var bodyBlocks = parseDocxBody(docXml, styles, false, onProgress, numbering);
   return {
-    blocks: parseDocxBody(docXml, styles, false, onProgress, numbering),
+    blocks: bodyBlocks,
+    mathCount: bodyBlocks.mathCount || 0,
     endnotes: endXml ? parseDocxBody(endXml, styles, true, null, numbering) : {},
     footnotes: footXml ? parseDocxBody(footXml, styles, true, null, numbering) : {},
     rels: rels,
@@ -2209,6 +2217,8 @@ function buildItems(ms, p) {
     fm = splitJaItalic(fm, out);
     var item = { role: role, text: out, refs: refs, fmt: fm };
     if (b.math) item.math = b.math;
+    // 縦の分数などがある別行の式で、式だけの段落なら、Word で PDF にして配置できる
+    if (role === "math" && b.mathComplex && b.mathIdx && !b.hasText && refs.length === 0) item.mathPdfIdx = b.mathIdx;
     if (b.mathComplex) item.mathComplex = b.mathComplex;
     if (b.mathSpecial) item.mathSpecial = true;
     if (role === "keywords") { var km = RE_KEYWORDS.exec(out); if (km) item.label = { start: 0, len: km[0].length }; }
@@ -3143,6 +3153,98 @@ function unzipDocxWithOS(src) {
   return dest;
 }
 
+// ---- Word の数式を PDF にする (Windows のみ。Word を裏で動かす) ----
+// jobs: [{ idx: Word の何番目の数式か, file: 書き出す PDF }]
+// 戻り値: { ok: 書き出せた数, count: Word が数えた数式の数 (-1 = 不明), error: 文字列 }
+function exportMathPdfs(docxFile, jobs, pointSize) {
+  var res = { ok: 0, count: -1, error: "" };
+  if (File.fs !== "Windows") { res.error = "Mac では未対応"; return res; }
+  // Word で開いている原稿でも使えるよう、コピーを開く
+  var tmp = new File(Folder.temp + "/kiyo_math_" + (new Date()).getTime() + ".docx");
+  if (!docxFile.copy(tmp)) tmp = docxFile;
+  var logFile = new File(Folder.temp + "/kiyo_math_" + (new Date()).getTime() + ".txt");
+  var ks = [], ps = [], i;
+  for (i = 0; i < jobs.length; i++) { ks.push(jobs[i].idx); ps.push('"' + _vbsStr(jobs[i].file.fsName) + '"'); }
+  var size = (typeof pointSize === "number" && pointSize > 0) ? Math.round(pointSize * 10) / 10 : 10;
+  var vbs = [
+    'Sub KiyoMathPdf()',
+    '  On Error Resume Next',
+    '  Dim fso, lg, wd, doc, nd, ks, ps, i, own',
+    '  Set fso = CreateObject("Scripting.FileSystemObject")',
+    '  Set lg = fso.CreateTextFile("' + _vbsStr(logFile.fsName) + '", True, False)',
+    '  Set wd = CreateObject("Word.Application")',
+    '  If Err.Number <> 0 Then',
+    '    lg.WriteLine "NOWORD"',
+    '    lg.Close',
+    '    Exit Sub',
+    '  End If',
+    // すでに開いていた Word につながった場合は、最後に Word を終了しない
+    '  own = (wd.Documents.Count = 0)',
+    '  wd.DisplayAlerts = 0',
+    '  Err.Clear',
+    '  Set doc = wd.Documents.Open("' + _vbsStr(tmp.fsName) + '", False, True, False)',
+    '  If Err.Number <> 0 Then',
+    '    lg.WriteLine "NOOPEN"',
+    '    lg.Close',
+    '    If own Then wd.Quit 0',
+    '    Exit Sub',
+    '  End If',
+    '  lg.WriteLine "COUNT" & vbTab & doc.OMaths.Count',
+    '  Set nd = wd.Documents.Add',
+    '  nd.PageSetup.PageWidth = 1500',
+    '  nd.PageSetup.PageHeight = 600',
+    '  nd.PageSetup.TopMargin = 36',
+    '  nd.PageSetup.BottomMargin = 36',
+    '  nd.PageSetup.LeftMargin = 36',
+    '  nd.PageSetup.RightMargin = 36',
+    '  ks = Array(' + ks.join(", ") + ')',
+    '  ps = Array(' + ps.join(", ") + ')',
+    '  For i = 0 To UBound(ks)',
+    '    Err.Clear',
+    '    nd.Content.Delete',
+    '    nd.Content.FormattedText = doc.OMaths(ks(i)).Range.FormattedText',
+    '    If nd.OMaths.Count > 0 Then nd.OMaths(1).Type = 0',
+    '    nd.Content.Font.Size = ' + size,
+    '    nd.ExportAsFixedFormat ps(i), 17, False',
+    '    If Err.Number = 0 Then',
+    '      lg.WriteLine "OK" & vbTab & ks(i)',
+    '    Else',
+    '      lg.WriteLine "ERR" & vbTab & ks(i)',
+    '    End If',
+    '  Next',
+    '  nd.Close 0',
+    '  doc.Close 0',
+    '  If own Then wd.Quit 0',
+    '  lg.Close',
+    'End Sub',
+    'KiyoMathPdf'
+  ].join("\r\n");
+  try { app.doScript(vbs, ScriptLanguage.VISUAL_BASIC); } catch (e) { res.error = e.message; }
+  var log = readUtf8File(logFile.fsName) || "", lines = log.split(/\r?\n/), parts;
+  for (i = 0; i < lines.length; i++) {
+    parts = lines[i].split("\t");
+    if (parts[0] === "COUNT") res.count = parseInt(parts[1], 10);
+    else if (parts[0] === "NOWORD") res.error = "Word を起動できませんでした";
+    else if (parts[0] === "NOOPEN") res.error = "Word で原稿を開けませんでした";
+  }
+  for (i = 0; i < jobs.length; i++) if (jobs[i].file.exists) res.ok++;
+  try { logFile.remove(); } catch (e2) {}
+  if (tmp !== docxFile) { try { tmp.remove(); } catch (e3) {} }
+  return res;
+}
+
+// PDF を配置するとき、余白を除いた中身の大きさで切り抜く
+function setPdfCropToContent() {
+  var old = null;
+  try { old = app.pdfPlacePreferences.pdfCrop; } catch (e0) { return null; }
+  var names = ["CROP_CONTENT_VISIBLE_LAYERS", "CROP_CONTENT_ALL_LAYERS", "CROP_CONTENT"], i;
+  for (i = 0; i < names.length; i++) {
+    try { if (PDFCrop[names[i]] !== undefined) { app.pdfPlacePreferences.pdfCrop = PDFCrop[names[i]]; break; } } catch (e1) {}
+  }
+  try { app.pdfPlacePreferences.pageNumber = 1; } catch (e2) {}
+  return old;
+}
+
 function readUtf8File(path) {
   var f = new File(path);
   if (!f.exists) return null;
@@ -3525,21 +3627,25 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
   if (fnFail > 0) report.push("[注意] 脚注 " + fnFail + " 件を入れられませんでした。");
 
   // 5) 図と表 (後ろから入れると、前の段落の位置がずれない)
-  //    段落の番号がずれていても正しい所に入るよう、目印 (■表■・■図■) の段落を順に対応させる
+  //    段落の番号がずれていても正しい所に入るよう、目印 (■表■・■図■・■式■) の段落を順に対応させる
+  //    (■式■ は Word で PDF にした数式)
   setStep("図と表の位置の確認");
-  var nFig = 0, nTbl = 0, it, para, ftIdx = [], marks = [], pcont;
-  for (i = 0; i < n; i++) if (built.items[i].role === "figure" || built.items[i].role === "table") ftIdx.push(i);
+  var nFig = 0, nTbl = 0, nPdf = 0, it, para, ftIdx = [], marks = [], pcont;
+  for (i = 0; i < n; i++) {
+    it = built.items[i];
+    if (it.role === "figure" || it.role === "table" || (it.role === "math" && it.mathPdfFiles)) ftIdx.push(i);
+  }
   if (ftIdx.length > 0) {
     pcont = story.paragraphs.everyItem().contents;
     if (!(pcont instanceof Array)) pcont = [pcont];
     for (i = 0; i < pcont.length; i++) {
-      if (typeof pcont[i] === "string" && /^■[表図]■\r?$/.test(pcont[i])) marks.push(i);
+      if (typeof pcont[i] === "string" && /^■[表図式]■\r?$/.test(pcont[i])) marks.push(i);
     }
   }
   var j, pi, lbl;
   for (j = ftIdx.length - 1; j >= 0; j--) {
     it = built.items[ftIdx[j]];
-    lbl = it.role === "table" ? "表" : "図";
+    lbl = it.role === "table" ? "表" : it.role === "math" ? "数式" : "図";
     setStep(lbl + "の作成 (後ろから " + (ftIdx.length - j) + " 個目)");
     pi = marks.length === ftIdx.length ? marks[j] : ftIdx[j];
     if (pi >= pcont.length || typeof pcont[pi] !== "string" || pcont[pi].replace(/\r$/, "") !== it.text) {
@@ -3551,7 +3657,14 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
       var hadCR = para.contents.charAt(para.contents.length - 1) === "\r";
       para.contents = hadCR ? "\r" : "";
       para = story.paragraphs[pi];
-      if (it.role === "figure") {
+      if (it.role === "math") {
+        if (placeMathPdfs(para, it, ctx)) { nPdf++; it.mathPlaced = true; }
+        else {
+          // 配置できなければ、文字の式に戻して付箋を付ける (6 で)
+          restoreMathText(story.paragraphs[pi], it, ctx);
+          report.push("[注意] 数式の PDF を配置できなかったため、文字の式で入れました。");
+        }
+      } else if (it.role === "figure") {
         var f = ctx.images[it.image];
         if (f) {
           try {
@@ -3594,8 +3707,8 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
   var mInfo = countMath(built), mList = [], special = false;
   for (i = 0; i < n; i++) {
     it = built.items[i];
-    if (it.mathSpecial) special = true;
-    if (!it.mathComplex) continue;
+    if (it.mathSpecial && !it.mathPlaced) special = true;
+    if (!it.mathComplex || it.mathPlaced) continue;
     var q2;
     for (q2 = 0; q2 < it.mathComplex.length; q2++) mList.push(it.mathComplex[q2].replace(/[\u2005\u2006]/g, " "));
     try {
@@ -3603,7 +3716,11 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
       nt.insertionPoints.item(-1).contents = "【要仕上げ】Word の数式を1行の文字にしました。縦の分数や Σ の上下の範囲など、元の形に組み直してください。";
     } catch (eN) {}
   }
-  if (mInfo.total > 0) report.push("Word の数式 " + mInfo.total + " 個を文字で入れました (別の行の式 " + mInfo.display + " 個)。");
+  if (mInfo.total > 0) report.push("Word の数式 " + mInfo.total + " 個を入れました (別の行の式 " + mInfo.display + " 個)。");
+  if (nPdf > 0) {
+    report.push("縦の分数などがある式 " + nPdf + " 個は、Word で PDF にして配置しました (Links フォルダの「…_数式01.pdf」など)。");
+    report.push("　PDF を自分で作り直すときは、同じ名前で上書き保存して、リンクパネルで「リンクを更新」してください。");
+  }
   if (mList.length > 0) {
     report.push("[要仕上げ] 1行では元の形にならない式 " + mList.length + " 個 (紙面に付箋を付けました):");
     for (i = 0; i < mList.length && i < 5; i++) report.push("　・" + (mList[i].length > 50 ? mList[i].substring(0, 50) + "…" : mList[i]));
@@ -3615,6 +3732,38 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
     report.push("[注意] " + { noteRef: "本文中の注番号", dash: "副題のダーシ", keywordsLabel: "「キーワード：」", figSourceLabel: "「出典：」" }[k2] +
                 "の文字スタイルが前回号から見つからなかったため、段落スタイルのままです。");
   }
+}
+
+// Word で PDF にした数式を、空にした段落に配置する (式が複数あれば強制改行で区切る)
+function placeMathPdfs(para, it, ctx) {
+  var files = it.mathPdfFiles, q, ok = 0, old = setPdfCropToContent();
+  try {
+    for (q = files.length - 1; q >= 0; q--) {
+      if (!files[q] || !files[q].exists) continue;
+      var placed = para.insertionPoints[0].place(files[q]);
+      var g = placed instanceof Array ? placed[0] : placed;
+      try { fitInlineGraphic(g.parent, para.insertionPoints[0]); } catch (eF) {}
+      if (q > 0) para.insertionPoints[0].contents = SpecialCharacters.FORCED_LINE_BREAK;
+      ok++;
+    }
+    // 式の画像が行送りより高いと上の行に重なるので、この段落の行送りは「自動」にする
+    if (ok > 0) { try { para.leading = Leading.AUTO; } catch (eL) {} }
+  } catch (e) {
+    ok = 0;
+  }
+  if (old !== null) { try { app.pdfPlacePreferences.pdfCrop = old; } catch (e2) {} }
+  if (ok === 0) { try { para.contents = para.contents.charAt(para.contents.length - 1) === "\r" ? "\r" : ""; } catch (e3) {} }
+  return ok > 0;
+}
+
+// PDF にできなかった数式を、文字の式に戻す
+function restoreMathText(para, it, ctx) {
+  try {
+    var t = it.mathText;
+    para.insertionPoints[0].contents = t;
+    if (it.mathFmt && it.mathFmt.length > 0) applyFmtSpans(para, it.mathFmt, 0, makeIndexMapper(t), ctx.fmtStyles, ctx.fmtStat);
+    it.mathPdfFiles = null;
+  } catch (e) {}
 }
 
 // 表のセルの中の飾り (下線の線種・イタリックなど) を当てる
@@ -3654,6 +3803,76 @@ function setStep(s) { _applyStep = (_applyWhere ? _applyWhere + " / " : "") + s;
 function stepNote(report, e) {
   report.push("[注意] 「" + _applyStep + "」でエラーが出たため、そこは飛ばしました (" +
               e.message + (e.line ? "、" + e.line + " 行目" : "") + ")。");
+}
+
+// Word で PDF にする数式を選び、書き出して、その段落を目印 (■式■) に置き換える
+function prepareMathPdfs(doc, src, docxName, built, ms, profile, styleMap, sty, report) {
+  var items = built.items, targets = [], i, k;
+  for (i = 0; i < items.length; i++) if (items[i].role === "math" && items[i].mathPdfIdx) targets.push(i);
+  if (targets.length === 0) return;
+  if (File.fs !== "Windows") {
+    report.push("[注意] 縦の分数などがある式を PDF にする機能は Windows 専用のため、文字の式で入れます。");
+    return;
+  }
+  if (!confirm("縦の分数や Σ などがある式が " + targets.length + " 個あります。\n" +
+               "Word で PDF にして、紙面に配置しますか?\n\n" +
+               "「はい」→ Word を裏で起動して PDF にします (少し時間がかかります)\n" +
+               "「いいえ」→ 1行の文字の式で入れ、付箋を付けます")) return;
+  var folder;
+  try { folder = new Folder(doc.filePath + "/Links"); } catch (e) { folder = new Folder(Folder.myDocuments + "/Links"); }
+  if (!folder.exists) folder.create();
+  var base = docxName.replace(/\.docx$/i, "").replace(/[\\\/:*?"<>|]/g, "_");
+  var jobs = [], seq = 0, existing = 0;
+  for (i = 0; i < targets.length; i++) {
+    var it = items[targets[i]], files = [];
+    for (k = 0; k < it.mathPdfIdx.length; k++) {
+      seq++;
+      var f = new File(folder.fsName + "/" + base + "_数式" + (seq < 10 ? "0" : "") + seq + ".pdf");
+      files.push(f);
+      if (f.exists) existing++;
+      jobs.push({ idx: it.mathPdfIdx[k], file: f });
+    }
+    it.mathPdfFiles = files;
+  }
+  // 前に作った (または自分で作り直した) PDF があれば、使うか作り直すかを聞く
+  var reuse = false;
+  if (existing > 0) {
+    reuse = confirm("Links フォルダに、前に作った数式の PDF が " + existing + " 個あります。\n\n" +
+                    "「はい」→ そのまま使う (自分で作り直した PDF を残す)\n「いいえ」→ Word で作り直して上書きする");
+  }
+  var todo = [];
+  for (i = 0; i < jobs.length; i++) {
+    if (reuse && jobs[i].file.exists) continue;
+    if (jobs[i].file.exists) { try { jobs[i].file.remove(); } catch (eR) {} }
+    todo.push(jobs[i]);
+  }
+  // 数式の大きさは、数式の段落スタイルの文字の大きさに合わせる
+  var names2 = resolveStyleNames(items, profile, styleMap), ptSize = 10;
+  try { var mst = sty.map[names2[targets[0]]]; if (mst && typeof mst.pointSize === "number") ptSize = mst.pointSize; } catch (eS) {}
+  if (todo.length > 0) {
+    showProgress("Word で数式を PDF にしています… (" + todo.length + " 個)");
+    var res = exportMathPdfs(src, todo, ptSize);
+    hideProgress();
+    if (res.error) report.push("[注意] " + res.error + "。");
+    // Word が数えた数式の数とスクリプトが数えた数が違うと、別の式を PDF にしてしまうおそれがある
+    if (res.count >= 0 && ms.mathCount && res.count !== ms.mathCount) {
+      report.push("[注意] Word とスクリプトで数式の数が合わなかったため (" + res.count + " 個と " + ms.mathCount + " 個)、PDF は使わず文字の式で入れます。");
+      for (i = 0; i < jobs.length; i++) { try { if (jobs[i].file.exists) jobs[i].file.remove(); } catch (eD) {} }
+    }
+  }
+  // PDF ができた式だけ、段落を目印にする (できなかった式は文字のまま)
+  var nOK = 0;
+  for (i = 0; i < targets.length; i++) {
+    var it2 = items[targets[i]], all = true;
+    for (k = 0; k < it2.mathPdfFiles.length; k++) if (!it2.mathPdfFiles[k].exists) all = false;
+    if (!all) { it2.mathPdfFiles = null; continue; }
+    it2.mathText = unprotectMath(it2.text).replace(/\n/g, " ");
+    it2.mathFmt = it2.fmt;
+    it2.text = "■式■";
+    it2.fmt = [];
+    nOK++;
+  }
+  if (nOK < targets.length) report.push("[注意] " + (targets.length - nOK) + " 個の式は PDF にできなかったため、文字の式で入れます。");
 }
 
 var _ctx = null;
@@ -3769,7 +3988,8 @@ function main() {
   if (mathInfo.total > 0) {
     notes.push("※ Word の数式 " + mathInfo.total + " 個を文字にして入れます (別の行の式 " + mathInfo.display + " 個は「数式 (別行)」)。" +
                (mathInfo.complex > 0 ? "縦の分数や Σ の上下の範囲など、1行では元の形にならない式 " + mathInfo.complex +
-                " 個は【要仕上げ】と表示し、紙面に付箋を付けます。" : ""));
+                " 個は【要仕上げ】と表示します (Windows では、流し込む前に Word で PDF にして配置するか聞きます。" +
+                "PDF にしない式は、紙面に付箋を付けます)。" : ""));
   }
   var punct = punctMismatches(built, profile);
   var charNames = [], cdescs = describeCharStyles(doc), cd;
@@ -3831,7 +4051,12 @@ function main() {
   if (ms.folder) removeFolder(ms.folder);
   hideProgress();
 
-  var report = punctReport;
+  // 縦の分数などがある別行の式は、Word で PDF にして配置する (Windows のみ)
+  var mathReport = [];
+  try { prepareMathPdfs(doc, src, docxName, built, ms, profile, styleMap, sty, mathReport); }
+  catch (eMP) { hideProgress(); mathReport.push("[注意] 数式の PDF を作れませんでした (" + eMP.message + ")。文字の式で入れます。"); }
+
+  var report = punctReport.concat(mathReport);
   _ctx = {
     doc: doc, story: story, tailStart: tailStart, built: built,
     styleNames: resolveStyleNames(built.items, profile, styleMap),
