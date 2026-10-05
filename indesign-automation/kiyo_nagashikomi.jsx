@@ -1348,7 +1348,7 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
     if (r.complex) { if (!pa.mathComplex) pa.mathComplex = []; pa.mathComplex.push(unprotectMath(r.text)); }
     if (r.special) pa.mathSpecial = true;
   }
-  var tblStack = [], tbl = null, row = null, rowFmt = null, cell = null, grid = null;
+  var tblStack = [], tbl = null, row = null, rowFmt = null, rowRefs = null, cell = null, grid = null;
   var notes = {}, noteId = null, noteParas = null;
 
   function flushPara() {
@@ -1363,8 +1363,11 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
         csp.start += cellOff; csp.end += cellOff;
         cell.fmt.push(csp);
       }
+      // 注番号の位置も、セルの文字の中の位置にして覚える
+      for (cq = 0; cq < para.refs.length; cq++) {
+        cell.refs.push({ pos: para.refs[cq].pos + cellOff, kind: para.refs[cq].kind, id: para.refs[cq].id });
+      }
       cell.paras.push(para.text);
-      if (para.refs.length > 0 && tbl !== null) tbl.lostRefs = (tbl.lostRefs || 0) + para.refs.length;
     } else if (collectNotes) {
       if (noteParas !== null) { noteParas.push(para.text); noteParas.fmt.push(para.fmt); }
     } else {
@@ -1404,19 +1407,35 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
       else if (fallback > 0 || txbx > 0) continue;
       else if (name === "w:p") flushPara();
       else if (name === "w:tc") {
-        if (row !== null && cell !== null) { row.push(cell.paras.join("\r")); if (rowFmt !== null) rowFmt.push(cell.fmt); }
+        if (row !== null && cell !== null) {
+          row.push(cell.paras.join("\r"));
+          if (rowFmt !== null) rowFmt.push(cell.fmt);
+          if (rowRefs !== null) rowRefs.push(cell.refs);
+        }
         cell = null;
       }
       else if (name === "w:tr") {
-        if (tbl !== null && row !== null) { tbl.rows.push(row); tbl.fmts.push(rowFmt || []); }
-        row = null; rowFmt = null;
+        if (tbl !== null && row !== null) { tbl.rows.push(row); tbl.fmts.push(rowFmt || []); tbl.refs.push(rowRefs || []); }
+        row = null; rowFmt = null; rowRefs = null;
       }
       else if (name === "w:tbl") {
         var done = tbl;
-        tbl = tblStack.length > 0 ? tblStack.pop() : null;
+        // 表の中の表が終わったら、外の表の読みかけの行・セルに戻る
+        if (tblStack.length > 0) {
+          var outer = tblStack.pop();
+          tbl = outer.tbl; row = outer.row; rowFmt = outer.rowFmt; rowRefs = outer.rowRefs; cell = outer.cell; grid = outer.grid;
+        } else {
+          tbl = null;
+        }
         if (tbl === null) {
-          blocks.push({ type: "table", rows: done.rows, fmts: done.fmts, widths: done.widths, lostRefs: done.lostRefs || 0 });
-        } else if (cell !== null) {
+          blocks.push({ type: "table", rows: done.rows, fmts: done.fmts, widths: done.widths, refs: done.refs, lostRefs: done.lostRefs || 0 });
+        } else {
+          // 表の中の表の注は取り込めない (文字だけ親のセルに入れる)
+          var lr = 0, r2, c2;
+          for (r2 = 0; r2 < done.refs.length; r2++) for (c2 = 0; c2 < done.refs[r2].length; c2++) lr += done.refs[r2][c2].length;
+          if (lr > 0) tbl.lostRefs = (tbl.lostRefs || 0) + lr + (done.lostRefs || 0);
+        }
+        if (tbl !== null && cell !== null) {
           // 表の中の表は、文字だけ親のセルに入れる
           var k, flat = [];
           for (k = 0; k < done.rows.length; k++) flat.push(done.rows[k].join("　"));
@@ -1445,10 +1464,14 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
       if (noteParas !== null) noteParas.fmt = [];
       continue;
     }
-    if (name === "w:tbl") { if (tbl !== null) tblStack.push(tbl); tbl = { rows: [], fmts: [], widths: [] }; grid = tbl.widths; continue; }
+    if (name === "w:tbl") {
+      if (tbl !== null) tblStack.push({ tbl: tbl, row: row, rowFmt: rowFmt, rowRefs: rowRefs, cell: cell, grid: grid });
+      tbl = { rows: [], fmts: [], widths: [], refs: [] }; grid = tbl.widths;
+      continue;
+    }
     if (name === "w:gridCol") { if (grid !== null) grid.push(parseInt(xmlAttr(tag, "w:w"), 10) || 0); continue; }
-    if (name === "w:tr") { row = []; rowFmt = []; continue; }
-    if (name === "w:tc") { cell = { paras: [], fmt: [] }; continue; }
+    if (name === "w:tr") { row = []; rowFmt = []; rowRefs = []; continue; }
+    if (name === "w:tc") { cell = { paras: [], fmt: [], refs: [] }; continue; }
     if (name === "w:p") {
       para = { type: "p", text: "", styleId: "", level: 0, refs: [], image: null, fmt: [], numId: null, ilvl: null };
       if (selfClose) flushPara();
@@ -2159,12 +2182,13 @@ function buildItems(ms, p) {
   for (i = 0; i < seq.length; i++) {
     b = seq[i].block;
     if (!b.refs) continue;
-    var q;
-    for (q = 0; q < b.refs.length; q++) {
-      var key = b.refs[q].kind + ":" + b.refs[q].id;
-      if (b.refs[q].kind === "footnote") {
+    // 表の中の注番号も、表の中の順 (行ごとに左から) に数える
+    var brefs = b.type === "table" ? _flatTableRefs(b) : b.refs, q;
+    for (q = 0; q < brefs.length; q++) {
+      var key = brefs[q].kind + ":" + brefs[q].id;
+      if (brefs[q].kind === "footnote") {
         if (fnNo[key] === undefined) {
-          var fpar = ms.footnotes[b.refs[q].id], ftxt = [], fq, ffmt = [], flen = 0;
+          var fpar = ms.footnotes[brefs[q].id], ftxt = [], fq, ffmt = [], flen = 0;
           if (!fpar) { warnings.push("脚注 " + (footnotes.length + 1) + " の本文が見つかりませんでした"); fpar = [""]; }
           for (fq = 0; fq < fpar.length; fq++) {
             var ft = trimWS(fpar[fq]);
@@ -2180,7 +2204,7 @@ function buildItems(ms, p) {
           fnNo[key] = footnotes.length;
           footnotes.push({ text: ftxt.join("\r"), fmt: splitJaItalic(ffmt, ftxt.join("\r")) });
         }
-      } else if (!noteNo[key]) { noteOrder.push(b.refs[q]); noteNo[key] = noteOrder.length; }
+      } else if (!noteNo[key]) { noteOrder.push(brefs[q]); noteNo[key] = noteOrder.length; }
     }
   }
 
@@ -2191,8 +2215,11 @@ function buildItems(ms, p) {
     if (role === "empty") continue;
     if (role === "refTitle" && noteInsertAt < 0) noteInsertAt = items.length;
     if (role === "table") {
-      if (b.lostRefs) warnings.push("表の中にある注 " + b.lostRefs + " 件は取り込めませんでした (表の中の注番号を確認してください)");
-      items.push({ role: "table", text: "■表■", table: b, cellFmt: tableCellFmt(b) });
+      if (b.lostRefs) warnings.push("表の中の表にある注 " + b.lostRefs + " 件は取り込めませんでした (表の中の注番号を確認してください)");
+      var tr2 = _tableWithRefs(b, fnNo, noteNo, p);
+      var titem = { role: "table", text: "■表■", table: tr2.table, cellFmt: tableCellFmt(tr2.table) };
+      if (tr2.cellRefs) titem.cellRefs = tr2.cellRefs;
+      items.push(titem);
       continue;
     }
     if (role === "figure") { items.push({ role: "figure", text: "■図■", image: b.image }); continue; }
@@ -2306,6 +2333,51 @@ function buildItems(ms, p) {
     withBlanks.push(items[w]);
   }
   return { items: withBlanks, notes: noteOrder.length, footnotes: footnotes, warnings: warnings };
+}
+
+// 表の中の注番号を、表の中の順 (行ごとに左から) に並べる
+function _flatTableRefs(tb) {
+  var out = [], r, c, k, list;
+  if (!tb.refs) return out;
+  for (r = 0; r < tb.refs.length; r++) for (c = 0; c < tb.refs[r].length; c++) {
+    list = tb.refs[r][c].slice(0);
+    list.sort(function (x, y) { return x.pos - y.pos; });
+    for (k = 0; k < list.length; k++) out.push(list[k]);
+  }
+  return out;
+}
+
+// 表のセルの注番号: 文末脚注は本文と同じく番号の文字 (「（1）」など) をセルに入れ、
+// 脚注は位置だけ覚える (流し込むときにセルの中に InDesign の脚注を入れる)
+// 戻り値: { table: 注番号を入れた表, cellRefs: [行][列] → [{ start, len, footnote? }] (注がなければ null) }
+function _tableWithRefs(b, fnNo, noteNo, p) {
+  var rows = [], fmts = [], cellRefs = [], has = false, r, c, k;
+  for (r = 0; r < b.rows.length; r++) {
+    rows.push([]); fmts.push([]); cellRefs.push([]);
+    for (c = 0; c < b.rows[r].length; c++) {
+      var text = b.rows[r][c], fm = [], src = b.fmts && b.fmts[r] && b.fmts[r][c] ? b.fmts[r][c] : [];
+      for (k = 0; k < src.length; k++) fm.push(_copySpan(src[k]));
+      var refs = b.refs && b.refs[r] && b.refs[r][c] ? b.refs[r][c].slice(0) : [];
+      if (refs.length === 0) { rows[r].push(text); fmts[r].push(fm); cellRefs[r].push([]); continue; }
+      refs.sort(function (x, y) { return x.pos - y.pos; });
+      var out = "", last = 0, marks = [], cr = [];
+      for (k = 0; k < refs.length; k++) {
+        out += text.substring(last, refs[k].pos);
+        last = refs[k].pos;
+        var key = refs[k].kind + ":" + refs[k].id;
+        if (refs[k].kind === "footnote") { cr.push({ start: out.length, len: 0, footnote: fnNo[key] }); continue; }
+        var mark = _noteRef(noteNo[key], p);
+        cr.push({ start: out.length, len: mark.length });
+        marks.push({ pos: refs[k].pos, len: mark.length });
+        out += mark;
+      }
+      out += text.substring(last);
+      shiftSpansForMarks(fm, marks);
+      rows[r].push(out); fmts[r].push(fm); cellRefs[r].push(cr);
+      has = true;
+    }
+  }
+  return { table: { type: "table", rows: rows, fmts: fmts, widths: b.widths, lostRefs: b.lostRefs || 0 }, cellRefs: has ? cellRefs : null };
 }
 
 // 段落列 → 1つの文字列と、段落・文字スタイルの位置
@@ -3649,13 +3721,7 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
   for (i = fns.length - 1; i >= 0; i--) {
     try {
       var fn = story.insertionPoints.item(mapIdx(fns[i].start)).footnotes.add();
-      var fobj = built.footnotes && built.footnotes[fns[i].footnote] ? built.footnotes[fns[i].footnote] : null;
-      var ftx = fobj ? fobj.text : "";
-      if (ftx !== "") {
-        var fbase = fn.characters.length;
-        fn.insertionPoints.item(-1).contents = ftx;
-        if (fobj.fmt && fobj.fmt.length > 0) applyFmtSpans(fn, fobj.fmt, fbase, makeIndexMapper(ftx), ctx.fmtStyles, ctx.fmtStat);
-      }
+      fillFootnote(fn, built.footnotes && built.footnotes[fns[i].footnote] ? built.footnotes[fns[i].footnote] : null, ctx);
       nFn++;
     } catch (e6) { fnFail++; }
   }
@@ -3667,6 +3733,7 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
   //    (■式■ は Word で PDF にした数式)
   setStep("図と表の位置の確認");
   var nFig = 0, nTbl = 0, nPdf = 0, it, para, ftIdx = [], marks = [], pcont;
+  var tblNotes = { fn: 0, moved: 0, failed: 0 };
   for (i = 0; i < n; i++) {
     it = built.items[i];
     if (it.role === "figure" || it.role === "table" || (it.role === "math" && it.mathPdfFiles)) ftIdx.push(i);
@@ -3726,6 +3793,10 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
           fillTable(tbl, it.table.rows, it.table.widths, ctx.tableTemplate ? ctx.tableTemplate.width : 0);
           if (!ctx.tableTemplate) styleNewTable(tbl, ctx);
           if (it.cellFmt) { setStep("表の中の文字の飾り (後ろから " + (ftIdx.length - j) + " 個目の表)"); applyCellFmt(tbl, it.table.rows, it.cellFmt, ctx); }
+          if (it.cellRefs) {
+            setStep("表の中の注番号 (後ろから " + (ftIdx.length - j) + " 個目の表)");
+            applyCellRefs(story, tbl, it, built.footnotes, ctx, tblNotes);
+          }
           nTbl++;
         } catch (e5) {
           report.push("[注意] 表を作れませんでした (" + e5.message + (e5.line ? "、" + e5.line + " 行目" : "") + ")。目印の文字を入れました。");
@@ -3737,6 +3808,9 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
     }
   }
   if (nTbl > 0) report.push("表 " + nTbl + " 個を作成しました" + (ctx.tableTemplate ? " (前回号の表の体裁を使用)。" : "。"));
+  if (tblNotes.fn > 0) report.push("表の中の脚注 " + tblNotes.fn + " 件を、表のセルの中に InDesign の脚注として入れました。");
+  if (tblNotes.moved > 0) report.push("[注意] 表の中の脚注 " + tblNotes.moved + " 件はセルの中に入れられなかったため、表の直後に入れました。表の中の注番号を確認してください。");
+  if (tblNotes.failed > 0) report.push("[注意] 表の中の脚注 " + tblNotes.failed + " 件を入れられませんでした。");
 
   // 6) 数式。1行では元の形にならない式には付箋 (印刷されないメモ) を付けて知らせる
   setStep("数式の確認の付箋");
@@ -3800,6 +3874,57 @@ function restoreMathText(para, it, ctx) {
     if (it.mathFmt && it.mathFmt.length > 0) applyFmtSpans(para, it.mathFmt, 0, makeIndexMapper(t), ctx.fmtStyles, ctx.fmtStat);
     it.mathPdfFiles = null;
   } catch (e) {}
+}
+
+// InDesign の脚注に、Word の脚注の文字と飾りを入れる
+function fillFootnote(fn, fobj, ctx) {
+  var ftx = fobj ? fobj.text : "";
+  if (ftx === "") return;
+  var fbase = fn.characters.length;
+  fn.insertionPoints.item(-1).contents = ftx;
+  if (fobj.fmt && fobj.fmt.length > 0) applyFmtSpans(fn, fobj.fmt, fbase, makeIndexMapper(ftx), ctx.fmtStyles, ctx.fmtStat);
+}
+
+// 表のセルの中の注番号: 文末脚注の番号の文字に文字スタイルを当て、脚注はセルの中に InDesign の脚注を入れる。
+// (古い InDesign などでセルの中に脚注を入れられないときは、表の直後に入れる)
+function applyCellRefs(story, tbl, it, footnotes, ctx, stat) {
+  var r, c, k, refs, cell, mapIdx, nR = tbl.rows.length, row, nC, after = [];
+  for (r = 0; r < it.cellRefs.length && r < nR; r++) {
+    row = tbl.rows[r]; nC = row.cells.length;
+    for (c = 0; c < it.cellRefs[r].length && c < nC; c++) {
+      refs = it.cellRefs[r][c];
+      if (!refs || refs.length === 0) continue;
+      cell = row.cells[c];
+      mapIdx = makeIndexMapper(it.table.rows[r][c]);
+      // 注番号の文字 (文末脚注) の文字スタイル
+      for (k = 0; k < refs.length; k++) {
+        if (refs[k].footnote !== undefined || !refs[k].len || !ctx.charStyles.noteRef) continue;
+        try { cell.characters.itemByRange(mapIdx(refs[k].start), mapIdx(refs[k].start + refs[k].len) - 1).texts[0].appliedCharacterStyle = ctx.charStyles.noteRef; } catch (eS) {}
+      }
+      // 脚注 (後ろから入れると、前の位置がずれない)
+      var cellAfter = [];
+      for (k = refs.length - 1; k >= 0; k--) {
+        if (refs[k].footnote === undefined) continue;
+        var fobj = footnotes && footnotes[refs[k].footnote] ? footnotes[refs[k].footnote] : null;
+        try {
+          var fn = cell.insertionPoints.item(mapIdx(refs[k].start)).footnotes.add();
+          fillFootnote(fn, fobj, ctx);
+          stat.fn++;
+        } catch (eF) {
+          cellAfter.unshift(fobj);
+        }
+      }
+      after = after.concat(cellAfter);
+    }
+  }
+  // セルの中に入れられなかった脚注は、表の直後にまとめて入れる (同じ位置に後ろから入れて、順番を保つ)
+  for (k = after.length - 1; k >= 0; k--) {
+    try {
+      var ip = story.insertionPoints.item(tbl.storyOffset.index + 1);
+      fillFootnote(ip.footnotes.add(), after[k], ctx);
+      stat.moved++;
+    } catch (eA) { stat.failed++; }
+  }
 }
 
 // 表のセルの中の飾り (下線の線種・イタリックなど) を当てる

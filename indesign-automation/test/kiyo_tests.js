@@ -304,14 +304,38 @@ const fnBuilt = buildItems(fnMs, prof);
 const fnBody = fnBuilt.items.find(x => x.role === 'body');
 check('脚注は文字にせず位置だけ残す (注の欄も作らない)', fnBody.text === '　本文の一文目。二文目' && !fnBuilt.items.some(x => x.role === 'note' || x.role === 'noteTitle'),
       JSON.stringify(fnBuilt.items.map(x => x.role + ':' + x.text)));
-check('脚注の本文 (2段落目も)', fnBuilt.footnotes.length === 2 && fnBuilt.footnotes[0].text === '一つ目の脚注。' && fnBuilt.footnotes[1].text === '二つ目の脚注\r二段落目',
+check('脚注の本文 (2段落目も・表の中の脚注も)', fnBuilt.footnotes.length === 3 && fnBuilt.footnotes[0].text === '一つ目の脚注。' && fnBuilt.footnotes[1].text === '二つ目の脚注\r二段落目' &&
+      fnBuilt.footnotes[2].text === '表の中の脚注',
       JSON.stringify(fnBuilt.footnotes));
 const fnSb = buildStoryText(fnBuilt.items);
 const fnPos = fnSb.chars.filter(c => c.kind === 'footnote');
 check('脚注の位置 (字下げの分もずらす)', fnPos.length === 2 && fnSb.text.substring(fnPos[0].start - 6, fnPos[0].start) === '本文の一文目' &&
       fnSb.text.substring(fnPos[1].start - 3, fnPos[1].start) === '二文目' && fnPos[0].footnote === 0 && fnPos[1].footnote === 1,
       JSON.stringify(fnPos));
-check('表の中の注は警告に出す', fnBuilt.warnings.some(w => w.indexOf('表の中') >= 0), JSON.stringify(fnBuilt.warnings));
+const fnTbl = fnBuilt.items.find(x => x.role === 'table');
+check('表の中の脚注は、セルの中の位置と脚注の番号を覚える (消さない)', fnTbl && fnTbl.cellRefs && fnTbl.table.rows[0][0] === '表の中' &&
+      JSON.stringify(fnTbl.cellRefs[0][0]) === JSON.stringify([{ start: 3, len: 0, footnote: 2 }]) && !fnBuilt.warnings.some(w => w.indexOf('表の中') >= 0),
+      JSON.stringify(fnTbl && { refs: fnTbl.cellRefs, rows: fnTbl.table.rows, w: fnBuilt.warnings }));
+// 表の中の文末脚注 (《注》にまとめる形) と、本文・表の中の注番号の順番、表の中の表
+const tnDoc = `<?xml version="1.0"?><w:document ${W}><w:body>${P('題目')}${P('１．はじめに', 'Heading1')}
+<w:p><w:r><w:t>本文</w:t></w:r>${EN(1)}${FN(2)}</w:p>
+<w:tbl><w:tr><w:tc><w:p><w:r><w:t>セルA</w:t></w:r>${EN(3)}</w:p></w:tc><w:tc><w:p><w:r><w:rPr><w:i/></w:rPr><w:t>斜体</w:t></w:r>${FN(3)}<w:r><w:rPr><w:i/></w:rPr><w:t>続き</w:t></w:r></w:p></w:tc></w:tr>
+<w:tr><w:tc><w:tbl><w:tr><w:tc><w:p><w:r><w:t>内側</w:t></w:r>${FN(4)}</w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>外の続き</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+<w:p><w:r><w:t>表の後</w:t></w:r>${FN(5)}</w:p>${P('参考文献', 'Heading1')}${P('文献A')}<w:sectPr/></w:body></w:document>`;
+const tnEnd = `<?xml version="1.0"?><w:endnotes ${W}><w:endnote w:id="1"><w:p><w:r><w:t>文末1</w:t></w:r></w:p></w:endnote><w:endnote w:id="3"><w:p><w:r><w:t>文末3</w:t></w:r></w:p></w:endnote></w:endnotes>`;
+const tnFoot = `<?xml version="1.0"?><w:footnotes ${W}>${[2, 3, 4, 5].map(i => `<w:footnote w:id="${i}"><w:p><w:r><w:t>脚注${i}</w:t></w:r></w:p></w:footnote>`).join('')}</w:footnotes>`;
+const tnBuilt = buildItems(readDocxManuscript(makeZip([['word/document.xml', tnDoc], ['word/endnotes.xml', tnEnd], ['word/footnotes.xml', tnFoot]]).toString('latin1')), prof);
+const tnTbl = tnBuilt.items.find(x => x.role === 'table');
+check('脚注の番号は本文・表の中を通して出てきた順', tnBuilt.footnotes.map(f => f.text).join(',') === '脚注2,脚注3,脚注5', tnBuilt.footnotes.map(f => f.text).join(','));
+check('表の中の文末脚注は、本文と同じ書き方の注番号をセルに入れる', tnTbl && tnTbl.table.rows[0][0] === 'セルA' + _noteRef(2, prof) &&
+      tnTbl.cellRefs[0][0][0].len === _noteRef(2, prof).length, JSON.stringify(tnTbl && tnTbl.table.rows));
+check('表の中の脚注の位置と番号 (セルの中の飾りの位置はそのまま)', tnTbl && JSON.stringify(tnTbl.cellRefs[0][1]) === JSON.stringify([{ start: 2, len: 0, footnote: 1 }]) &&
+      tnTbl.cellFmt[0][1].some(f => f.italic && f.start === 0 && f.end === 4), JSON.stringify(tnTbl && [tnTbl.cellRefs, tnTbl.cellFmt]));
+check('表の中の表があっても、外の表の行・セルは崩れない', tnTbl && tnTbl.table.rows.length === 2 && tnTbl.table.rows[1][0] === '内側\r外の続き' && tnTbl.table.rows[1][1] === 'B',
+      JSON.stringify(tnTbl && tnTbl.table.rows));
+check('表の中の表の注は警告に出す', tnBuilt.warnings.some(w => w.indexOf('表の中の表') >= 0), JSON.stringify(tnBuilt.warnings));
+check('表の中の文末脚注も《注》に入る', tnBuilt.items.filter(x => x.role === 'note').map(x => x.text.replace(/^.*?[\t　]/, '')).join(',').indexOf('文末3') >= 0,
+      JSON.stringify(tnBuilt.items.filter(x => x.role === 'note').map(x => x.text)));
 const fnRoles = fnBuilt.items.map(x => x.role);
 check('「注・参考文献」は参考文献の見出し、その中の見出しは小見出し、付録は大見出し',
       fnBuilt.items.find(x => x.text === '注・参考文献').role === 'refTitle' &&
