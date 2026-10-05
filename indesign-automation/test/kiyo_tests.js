@@ -788,6 +788,36 @@ check('1行だけの枠は題目の枠にしない', frontScore(memoBox) < 0, fr
 check('見出しのある枠は題目の枠にしない', frontScore(bodyLike) < FRONT_MIN_SCORE, frontScore(bodyLike));
 check('柱・キャプションのスタイルの枠は題目の枠にしない', frontScore(FP([{ text: '幼児期の遊び', style: '柱' }, '山田'])) < 0);
 
+// ---- 英文の論文の紙面 (本文の枠が Abstract から始まる) ----
+console.log('english layout:');
+const enBody = FP([{ text: 'Abstract', style: 'Abstract' }, { text: 'This study reviews the system.', style: 'Abstract' },
+  { text: 'Keywords: Emissions, Allowances', style: 'Abstract' }, { text: '1. Introduction', style: '大見出し' },
+  { text: 'An emissions trading system places a price on emissions.', style: '本文' }, { text: '2. Method', style: '大見出し' },
+  { text: 'Body text.', style: '本文' }, { text: 'References', style: '大見出し' }, { text: 'Smith (2020).', style: '文献本文' }]);
+check('最初にある Abstract は「残す部分」にしない', preserveStart(enBody) === -1, preserveStart(enBody));
+const jaBody = FP([{ text: '１．はじめに', style: '大見出し' }, { text: '　本文です。', style: '本文' }, { text: '参考文献', style: '文献見出し' },
+  { text: '山田（2020）', style: '文献本文' }, { text: 'Abstract', style: '英文要旨タイトル' }, { text: 'This paper...', style: 'Abstract本文' }]);
+check('本文の後ろにある英文要旨は、これまでどおり残す', preserveStart(jaBody) === 4, preserveStart(jaBody));
+const enRoles = classifySequence(enBody);
+check('Abstract から始まるテキストは、要旨の見出し・要旨・キーワード・見出しと判定 (題目にしない)',
+      enRoles.slice(0, 4).join(',') === 'abstractTitle,abstract,keywords,h1', enRoles.join(','));
+check('ゼロ幅スペース付きの「Abstract」も要旨の見出し', RE_ABS_TITLE.test(trimWS('Abstract​')));
+const enFront = FP([{ text: 'Accounting and Disclosure', style: 'タイトル' }, { text: 'Beyond the Net Liability Approach', style: 'サブタイトル' }, { text: 'Haku Ryu', style: '著者名' }]);
+const fset = frontRoleSet(enFront);
+check('題目の枠に要旨がない紙面では、要旨・キーワードは本文の枠に入れる', fset.title && fset.author && !fset['abstract'] && !fset.keywords && !fset.abstractTitle, JSON.stringify(fset));
+const enSplit = splitFrontItems({ items: [{ role: 'title', text: 'T' }, { role: 'author', text: 'A' }, { role: 'blank', forRole: 'abstractTitle', text: '' },
+  { role: 'abstractTitle', text: 'Abstract' }, { role: 'abstract', text: 'x' }, { role: 'keywords', text: 'Keywords: y' }, { role: 'h1', text: '1. I' }] }, fset);
+check('題目と著者だけ題目の枠へ、Abstract からは本文の枠へ', enSplit.front.items.map(i => i.role).join(',') === 'title,author' &&
+      enSplit.body.items.map(i => i.role).join(',') === 'abstractTitle,abstract,keywords,h1',
+      enSplit.front.items.map(i => i.role).join(',') + ' / ' + enSplit.body.items.map(i => i.role).join(','));
+const jaFrontSet = frontRoleSet(realFront);
+check('題目の枠に要旨・キーワードがある紙面では、これまでどおり題目の枠に入れる', jaFrontSet['abstract'] && jaFrontSet.keywords && jaFrontSet.abstractTitle, JSON.stringify(jaFrontSet));
+const zwDoc = `<?xml version="1.0"?><w:document ${W}><w:body>${P('An English Title')}${P('Haku Ryu')}${P('Abstract​')}${P('This study reviews the development.')}
+${P('Keywords: Emissions, Allowances')}${P('')}${P('1. Introduction')}${P('An emissions trading system places a price.')}<w:sectPr/></w:body></w:document>`;
+const zwItems = buildItems(readDocxManuscript(makeZip([['word/document.xml', zwDoc]]).toString('latin1')), defaultProfile()).items.filter(i => i.role !== 'blank');
+check('原稿の「Abstract」+ゼロ幅スペースも要旨の見出しと判定し、要旨・キーワードも正しく判定',
+      zwItems.map(i => i.role).slice(0, 6).join(',') === 'title,author,abstractTitle,abstract,keywords,h1', zwItems.map(i => i.role).join(','));
+
 // ---- InDesign の古い JavaScript で使えない予約語 ----
 console.log('ExtendScript:');
 const reservedHits = require('./es3_reserved')(src);

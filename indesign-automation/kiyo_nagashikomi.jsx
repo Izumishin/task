@@ -1627,7 +1627,8 @@ function roleLabel(role) {
 
 function trimWS(s) {
   if (s === null || s === undefined) return "";
-  return String(s).replace(/^[\s　]+/, "").replace(/[\s　]+$/, "");
+  // ゼロ幅スペースなど見えない文字も除く (Word の原稿に「Abstract」+ゼロ幅スペース、などがある)
+  return String(s).replace(/^[\s　\u200B-\u200D\uFEFF]+/, "").replace(/[\s　\u200B-\u200D\uFEFF]+$/, "");
 }
 
 function toHanDigits(s) {
@@ -1722,6 +1723,9 @@ function classifySequence(items) {
     if (st !== "body" && st !== "done") {
       // 最初の段落が見出しなら、題目などの前付けはこのテキストに含まれていない
       if (!haveTitle && depth > 0) { st = "body"; }
+      // 「Abstract」「キーワード：」から始まるテキストは、題目が別の枠にある (英文の論文の紙面など)
+      else if (!haveTitle && RE_ABS_TITLE.test(t)) { roles.push("abstractTitle"); st = "abstract"; haveTitle = true; continue; }
+      else if (!haveTitle && RE_KEYWORDS.test(t)) { roles.push("keywords"); st = "afterKeywords"; haveTitle = true; continue; }
       else if (!haveTitle) { roles.push("title"); haveTitle = true; continue; }
       else if (depth > 0 && !RE_ABS_TITLE.test(t)) { st = "body"; }
       else if (RE_ABS_TITLE.test(t)) { roles.push("abstractTitle"); st = "abstract"; continue; }
@@ -1812,6 +1816,46 @@ function frontScore(paras) {
   return sc;
 }
 var FRONT_MIN_SCORE = 3;
+
+// 英文要旨など、前回号のまま残しておく部分の開始段落 (なければ -1)。
+// 本文 (見出し・参考文献) の後ろにある「Abstract」のスタイルの段落から後ろを残す。
+// 英文の論文の紙面のように、テキストの最初にある Abstract は論文の要旨なので残さない
+function preserveStart(paras) {
+  var i, t, seenBody = false;
+  for (i = 0; i < paras.length; i++) {
+    t = trimWS(paras[i].text);
+    if (/Abstract|英文要旨/i.test(paras[i].style || "")) {
+      if (seenBody) return i;
+      continue;
+    }
+    if (t !== "" && (headingDepthByStyle(paras[i].style) > 0 || headingDepthByText(t) > 0 || RE_REF_TITLE.test(t))) seenBody = true;
+  }
+  return -1;
+}
+
+// 前回号で題目などの枠に入っていた種類 (題目・副題・著者・所属はいつも。要旨・キーワードは
+// 前回号でその枠に入っていたときだけ。英文の論文の紙面では要旨が本文の枠にある)
+function frontRoleSet(frontParas) {
+  var set = { title: 1, subtitle: 1, author: 1, affiliation: 1 }, roles = classifySequence(frontParas), i;
+  for (i = 0; i < roles.length; i++) {
+    if (roles[i] === "abstractTitle" || roles[i] === "abstract" || roles[i] === "keywords") set[roles[i]] = 1;
+  }
+  return set;
+}
+
+// 原稿の段落を、題目などの枠に入れる分と本文の枠に入れる分に分ける
+function splitFrontItems(built, set) {
+  var fi = [], bi = [], x, inFront = true, ro;
+  for (x = 0; x < built.items.length; x++) {
+    ro = built.items[x].role === "blank" ? built.items[x].forRole : built.items[x].role;
+    if (inFront && !set[ro]) inFront = false;
+    (inFront ? fi : bi).push(built.items[x]);
+  }
+  while (fi.length > 0 && fi[fi.length - 1].role === "blank") fi.pop();
+  while (bi.length > 0 && bi[0].role === "blank") bi.shift();
+  return { front: { items: fi, notes: 0, footnotes: built.footnotes },
+           body: { items: bi, notes: built.notes, footnotes: built.footnotes, warnings: built.warnings } };
+}
 
 // ------------------------------------------------------------
 // 前回号の紙面から体裁を学習する
@@ -2177,7 +2221,7 @@ function buildItems(ms, p) {
     // 体裁の調整
     var lead = /^[ \t]*/.exec(out)[0].length;
     if (lead > 0) { out = out.substring(lead); for (k = 0; k < refs.length; k++) refs[k].start = Math.max(0, refs[k].start - lead); moveSpans(fm, -lead); }
-    var tr = /[\s　]+$/.exec(out); if (tr) out = out.substring(0, out.length - tr[0].length);
+    var tr = /[\s　\u200B-\u200D\uFEFF]+$/.exec(out); if (tr) out = out.substring(0, out.length - tr[0].length);
     for (k = 0; k < refs.length; k++) if (refs[k].start > out.length) refs[k].start = out.length;
     fm = fitSpans(fm, out.length);
     var shift = 0;
@@ -2808,14 +2852,6 @@ function chooseFrontStory(doc, cands) {
   return null;
 }
 
-// 英文要旨など、残しておく部分の開始段落 (なければ -1)
-function preserveStart(paras) {
-  var i;
-  for (i = 0; i < paras.length; i++) {
-    if (/Abstract|英文要旨/i.test(paras[i].style)) return i;
-  }
-  return -1;
-}
 
 function oldTitleText(paras, roles) {
   var i;
@@ -4025,18 +4061,11 @@ function main() {
   _eachBuiltText(built, function (t) { return unprotectMath(t); });
 
   // 前付けを別ストーリーに分ける
-  var FRONT = { title: 1, subtitle: 1, author: 1, affiliation: 1, abstractTitle: 1, "abstract": 1, keywords: 1 };
   var frontBuilt = null;
   if (front) {
-    var fi = [], bi = [], x, inFront = true;
-    for (x = 0; x < built.items.length; x++) {
-      var ro = built.items[x].role === "blank" ? built.items[x].forRole : built.items[x].role;
-      if (inFront && !FRONT[ro]) inFront = false;
-      (inFront ? fi : bi).push(built.items[x]);
-    }
-    while (bi.length > 0 && bi[0].role === "blank") bi.shift();
-    frontBuilt = { items: fi, notes: 0, footnotes: built.footnotes };
-    built = { items: bi, notes: built.notes, footnotes: built.footnotes, warnings: built.warnings };
+    var parts = splitFrontItems(built, frontRoleSet(front.paras));
+    frontBuilt = parts.front;
+    built = parts.body;
   }
 
   var newTitle = null;
