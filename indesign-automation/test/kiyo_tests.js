@@ -336,6 +336,25 @@ check('表の中の表があっても、外の表の行・セルは崩れない'
 check('表の中の表の注は警告に出す', tnBuilt.warnings.some(w => w.indexOf('表の中の表') >= 0), JSON.stringify(tnBuilt.warnings));
 check('表の中の文末脚注も《注》に入る', tnBuilt.items.filter(x => x.role === 'note').map(x => x.text.replace(/^.*?[\t　]/, '')).join(',').indexOf('文末3') >= 0,
       JSON.stringify(tnBuilt.items.filter(x => x.role === 'note').map(x => x.text)));
+// 脚注の欄から番号の記号だけがコピーされたもの (w:footnoteRef が本文・表にある) は、番号を聞いて上付きの文字にする
+const orDoc = `<?xml version="1.0"?><w:document ${W}><w:body>${P('題目')}${P('１．はじめに', 'Heading1')}
+<w:tbl><w:tr><w:tc><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>境界年収</w:t></w:r><w:r><w:rPr><w:rStyle w:val="FootnoteReference"/><w:b/><w:highlight w:val="yellow"/></w:rPr><w:footnoteRef/></w:r></w:p><w:p><w:r><w:t>（DM）</w:t></w:r></w:p></w:tc></w:tr>
+<w:tr><w:tc><w:p><w:r><w:t>58,000</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+<w:p><w:r><w:t>本文の記号</w:t></w:r><w:r><w:footnoteRef/></w:r><w:r><w:t>です。</w:t></w:r></w:p><w:sectPr/></w:body></w:document>`;
+const orZip = makeZip([['word/document.xml', orDoc]]).toString('latin1');
+const asked = [];
+ORPHAN_MARK_HOOK = (ctx, kind) => { asked.push(ctx); return asked.length === 1 ? '12' : null; };
+const orMs = readDocxManuscript(orZip);
+ORPHAN_MARK_HOOK = null;
+const orBuilt = buildItems(orMs, prof);
+const orTbl = orBuilt.items.find(x => x.role === 'table');
+check('脚注ではない上付きの注番号は、前後の文字を示して番号を聞く', asked.length === 2 && asked[0] === '境界年収' && /本文の記号$/.test(asked[1]), JSON.stringify(asked));
+check('聞いた番号を上付きの文字で入れる (表の中)', orTbl && orTbl.table.rows[0][0] === '境界年収12\r（DM）' &&
+      orTbl.cellFmt[0][0].some(f => f.sup && f.start === 4 && f.end === 6), JSON.stringify(orTbl && [orTbl.table.rows[0], orTbl.cellFmt[0]]));
+const orBody = orBuilt.items.find(x => /本文の記号/.test(x.text));
+check('番号が分からないときは「*」を上付きで入れる (本文)', orBody && /本文の記号\*です。$/.test(orBody.text) && orBody.fmt.some(f => f.sup && orBody.text.substring(f.start, f.end) === '*'),
+      JSON.stringify(orBody && [orBody.text, orBody.fmt]));
+check('注番号の記号は脚注として数えない', orBuilt.footnotes.length === 0 && orMs.orphanMarks.length === 2);
 const fnRoles = fnBuilt.items.map(x => x.role);
 check('「注・参考文献」は参考文献の見出し、その中の見出しは小見出し、付録は大見出し',
       fnBuilt.items.find(x => x.text === '注・参考文献').role === 'refTitle' &&

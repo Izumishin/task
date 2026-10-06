@@ -925,6 +925,10 @@ function addFmtSpan(list, start, end, f) {
   list.push(span);
 }
 
+// 脚注の欄から本文や表にコピーされた「番号だけの記号」の番号を決める関数 (InDesign では
+// 読み込みのときに番号を聞く)。(前後の文字, "footnote"|"endnote") → 番号の文字 / null
+var ORPHAN_MARK_HOOK = null;
+
 // ---- Word の数式 (挿入 > 数式 で作ったもの = OMML) を文字にする ----
 // InDesign には数式の機能がないので、1行の文字にして、下付き・上付き・イタリックは
 // 文字の飾りとして当てる。縦に組んだ分数・Σ の上下の範囲・行列など、1行では
@@ -1312,7 +1316,7 @@ function docxHeadingLevel(styles, styleId) {
 function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
   var blocks = [], pos = 0, n = xml.length, lt, gt, tag, name, selfClose, closeIdx;
   var para = null, skip = 0, inTabs = 0, fallback = 0, txbx = 0;
-  var inPPr = 0, runFmt = null, inRPr = false, ruby = null, inRt = 0, pprChange = 0, mathPara = 0, mathCount = 0;
+  var inPPr = 0, runFmt = null, inRPr = false, ruby = null, inRt = 0, pprChange = 0, mathPara = 0, mathCount = 0, orphanMarks = [];
   var numState = numbering ? createNumState(numbering) : null;
 
   // 自動の番号・記号を段落の頭に文字として入れ、注番号・飾りの位置をずらす
@@ -1537,6 +1541,23 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
       if (bt !== "page" && bt !== "column") para.text += "\n";
       continue;
     }
+    // 脚注の欄から本文や表にコピーされた「番号だけの記号」(対応する脚注の文がない)。
+    // Word では上付きの数字に見えるので、その番号を聞いて上付きの文字として入れる
+    if ((name === "w:footnoteRef" || name === "w:endnoteRef") && !collectNotes) {
+      var ctxText = para.text.length > 20 ? para.text.substring(para.text.length - 20) : para.text;
+      if (cell !== null && cell.paras.length > 0 && ctxText.length < 6) ctxText = cell.paras[cell.paras.length - 1] + " " + ctxText;
+      var onum = typeof ORPHAN_MARK_HOOK === "function" ? ORPHAN_MARK_HOOK(ctxText, name === "w:endnoteRef" ? "endnote" : "footnote") : null;
+      if (onum === null || onum === undefined || String(onum) === "") onum = "*";
+      onum = String(onum);
+      var of = {}, ok2;
+      if (runFmt !== null) for (ok2 in runFmt) if (runFmt.hasOwnProperty(ok2) && runFmt[ok2] === true) of[ok2] = true;
+      delete of.sub; of.sup = true;
+      var o0 = para.text.length;
+      para.text += onum;
+      addFmtSpan(para.fmt, o0, para.text.length, of);
+      orphanMarks.push({ context: ctxText, number: onum });
+      continue;
+    }
     if (name === "w:endnoteReference" || name === "w:footnoteReference") {
       para.refs.push({ pos: para.text.length, kind: name === "w:endnoteReference" ? "endnote" : "footnote", id: xmlAttr(tag, "w:id") });
       continue;
@@ -1547,6 +1568,7 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
   flushPara();
   if (collectNotes) return notes;
   blocks.mathCount = mathCount;
+  blocks.orphanMarks = orphanMarks;
   return blocks;
 }
 
@@ -1610,6 +1632,7 @@ function readDocxParts(getText, onProgress) {
   return {
     blocks: bodyBlocks,
     mathCount: bodyBlocks.mathCount || 0,
+    orphanMarks: bodyBlocks.orphanMarks || [],
     endnotes: endXml ? parseDocxBody(endXml, styles, true, null, numbering) : {},
     footnotes: footXml ? parseDocxBody(footXml, styles, true, null, numbering) : {},
     rels: rels,
@@ -4126,6 +4149,15 @@ function main() {
   if (!src) return;
   var docxName = decodeURI(src.name);
   var ms, built;
+  // 脚注ではない上付きの注番号 (脚注の欄からコピーされた番号の記号) は、Word での番号を聞く
+  ORPHAN_MARK_HOOK = function (context, kind) {
+    hideProgress();
+    var v = prompt("Word 原稿の「…" + context + "」の後ろに、" + (kind === "endnote" ? "文末脚注" : "脚注") +
+                   "ではない上付きの注番号があります\n(脚注の欄から番号だけがコピーされたもので、対応する注の文がありません)。\n\n" +
+                   "Word の画面で表示されている番号を入力してください (空のままなら「*」を入れます):", "");
+    showProgress("Word 原稿を解析しています…");
+    return v === null ? "" : String(v).replace(/^\s+|\s+$/g, "");
+  };
   try {
     ms = loadDocx(src, docxName);
     _loadStep = "段落の種類の判定";
@@ -4133,6 +4165,7 @@ function main() {
     built = buildItems(ms, profile);
   } catch (e2) {
     hideProgress();
+    ORPHAN_MARK_HOOK = null;
     if (ms && ms.folder) removeFolder(ms.folder);
     alert(explainLoadError(e2, docxName));
     return;
@@ -4145,6 +4178,12 @@ function main() {
   if (profile.learnedFrom === 0) notes.push("※ 前回号の体裁を学習できなかったため、スタイル名から推測しています。");
   if (front) notes.push("※ 題目〜キーワードは、別のテキストボックス(前回号で題目があった所)に入れます。");
   if (tailStart >= 0) notes.push("※ 英文要旨の部分は原稿にないため、前回号のまま残します。");
+  ORPHAN_MARK_HOOK = null;
+  var orphanReport = [], om;
+  for (om = 0; om < (ms.orphanMarks || []).length; om++) {
+    orphanReport.push("「…" + ms.orphanMarks[om].context + "」の後ろ: " + ms.orphanMarks[om].number);
+  }
+  if (orphanReport.length > 0) notes.push("※ 脚注ではない上付きの注番号 " + orphanReport.length + " 個を、上付きの数字で入れます。");
   var mathInfo = countMath(built);
   if (mathInfo.total > 0) {
     notes.push("※ Word の数式 " + mathInfo.total + " 個を文字にして入れます (別の行の式 " + mathInfo.display + " 個は「数式 (別行)」)。" +
@@ -4211,6 +4250,10 @@ function main() {
   catch (eMP) { hideProgress(); mathReport.push("[注意] 数式の PDF を作れませんでした (" + eMP.message + ")。文字の式で入れます。"); }
 
   var report = punctReport.concat(mathReport);
+  if (orphanReport.length > 0) {
+    report.push("[確認] 脚注ではない上付きの注番号 " + orphanReport.length + " 個を、上付きの数字で入れました (どの注を指すか校正で確認してください):");
+    for (om = 0; om < orphanReport.length && om < 5; om++) report.push("　・" + orphanReport[om]);
+  }
   _ctx = {
     doc: doc, story: story, tailStart: tailStart, built: built,
     styleNames: resolveStyleNames(built.items, profile, styleMap),
