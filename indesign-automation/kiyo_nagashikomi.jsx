@@ -3623,17 +3623,115 @@ function addPageForOverflow(doc, story) {
     try { if (auto.characters.length === 0 && lastContainer(story).overflows) { np.remove(); return "stuck"; } } catch (eA) {}
     return true;
   }
-  var conts = story.textContainers, ref = null, k;
-  for (k = conts.length - 1; k >= 0; k--) {
-    var pg = conts[k].parentPage;
-    if (pg && pg.side === np.side && pg.id !== np.id) { ref = conts[k]; break; }
+  // 前回号の本文がいっぱいに入っていたページ (同じ側) の枠を、つながりの順にすべて写す。
+  // 2段組で枠が左右2つに分かれている紙面でも、1つの枠が2段の紙面でも、同じ形になる
+  var layout = pickLayoutPage(story, np), refs = layout ? layout.frames : [last], k;
+  var npb = np.bounds, rpb = layout ? layout.page.bounds : last.parentPage.bounds, made = [], prev = last;
+  for (k = 0; k < refs.length; k++) {
+    var nf = copyFrameTo(refs[k], np, rpb, npb, story);
+    if (nf === null) continue;
+    try {
+      prev.nextTextFrame = nf;
+      made.push(nf);
+      prev = nf;
+    } catch (e6) {
+      try { nf.remove(); } catch (e7) {}
+    }
   }
-  if (ref === null) ref = last;
-  var rb = ref.geometricBounds, rpb = ref.parentPage.bounds, npb = np.bounds;
-  var nb = [npb[0] + (rb[0] - rpb[0]), npb[1] + (rb[1] - rpb[1]), npb[0] + (rb[2] - rpb[0]), npb[1] + (rb[3] - rpb[1])];
-  var nf = null, dupOK = false;
+  if (made.length === 0) { try { np.remove(); } catch (e8) {} return false; }
+  // 枠に入りきらない大きな表・図があると、ページを足しても何も流れ込まない。
+  // そのときは足したページを消して止める (空のページが延々と増えないように)
+  try { story.recompose(); } catch (e9) {}
   try {
-    // 枠の設定(段組・グリッドなど)を引き継ぐため、同じ側のページの枠を複製して使う
+    var empty = true;
+    for (k = 0; k < made.length; k++) if (made[k].characters.length > 0) empty = false;
+    if (empty && lastContainer(story).overflows) {
+      try { last.nextTextFrame = NothingEnum.NOTHING; } catch (e10) {}
+      np.remove();
+      return "stuck";
+    }
+  } catch (e11) {}
+  return true;
+}
+
+// 新しいページに写す枠の見本にするページ。本文の枠があるページのうち、枠の面積がいちばん大きい
+// (本文がいっぱいに入っていた) ページを選ぶ。題目のある最初のページや、本文の最後で枠を短くした
+// ページは選ばれにくい。できるだけ新しいページと同じ側 (左・右) のページから選ぶ
+// 戻り値: { page, frames (つながりの順) } / null
+function pickLayoutPage(story, np) {
+  var conts = story.textContainers, pages = {}, keys = [], k, f, pg, gb, key;
+  for (k = 0; k < conts.length; k++) {
+    f = conts[k];
+    try {
+      if (f.constructor.name !== "TextFrame") continue;
+      pg = f.parentPage;
+      if (!pg || !pg.isValid || pg.id === np.id || pg.parent.constructor.name === "MasterSpread") continue;
+      key = "p" + pg.id;
+      if (!pages[key]) { pages[key] = { page: pg, frames: [], area: 0, off: pg.documentOffset, same: pg.side === np.side }; keys.push(key); }
+      gb = f.geometricBounds;
+      pages[key].area += Math.abs((gb[2] - gb[0]) * (gb[3] - gb[1]));
+      pages[key].frames.push(f);
+    } catch (e) {}
+  }
+  if (keys.length === 0) return null;
+  function best(onlySame) {
+    var max = 0, out = null, i, c;
+    for (i = 0; i < keys.length; i++) { c = pages[keys[i]]; if ((!onlySame || c.same) && c.area > max) max = c.area; }
+    // 面積がほぼ同じ (97% 以上) なら、後ろのほうのページ
+    for (i = 0; i < keys.length; i++) {
+      c = pages[keys[i]];
+      if ((!onlySame || c.same) && c.area >= max * 0.97 && (out === null || c.off > out.off)) out = c;
+    }
+    return out;
+  }
+  return best(true) || best(false);
+}
+
+// 前回号の本文の最後のページで、枠が短くしてあることがある (段の高さをそろえるためなど)。
+// 今回の本文がそのページより後ろへ続くときは、見本のページと同じ高さに伸ばす。
+// 伸ばす所にほかのもの (図など) があるときは伸ばさない。戻り値: 伸ばした枠の数
+function extendShortFrames(story) {
+  var page = lastStoryPage(story);
+  if (!page) return 0;
+  var layout = pickLayoutPage(story, page);
+  if (!layout) return 0;
+  var mine = [], conts = story.textContainers, k, j, n = 0;
+  for (k = 0; k < conts.length; k++) {
+    try { if (conts[k].parentPage && conts[k].parentPage.id === page.id) mine.push(conts[k]); } catch (e) {}
+  }
+  if (mine.length !== layout.frames.length) return 0;
+  var pb = page.bounds, lb = layout.page.bounds, others = [];
+  try { others = page.allPageItems; } catch (e0) {}
+  for (k = 0; k < mine.length; k++) {
+    var gb = mine[k].geometricBounds, rb = layout.frames[k].geometricBounds;
+    var top = pb[0] + (rb[0] - lb[0]), left = pb[1] + (rb[1] - lb[1]), bottom = pb[0] + (rb[2] - lb[0]), right = pb[1] + (rb[3] - lb[1]);
+    // 同じ段の枠 (上と左右がほぼ同じ) で、下だけが短いときだけ
+    if (Math.abs(gb[1] - left) > 2 || Math.abs(gb[3] - right) > 2 || gb[0] < top - 2 || bottom - gb[2] < 5) continue;
+    var blocked = false;
+    for (j = 0; j < others.length; j++) {
+      try {
+        var o = others[j];
+        if (o.id === mine[k].id || o.parent.constructor.name === "Character") continue;
+        var isMine = false, q;
+        for (q = 0; q < mine.length; q++) if (mine[q].id === o.id) isMine = true;
+        if (isMine) continue;
+        var ob = o.geometricBounds;
+        if (ob[0] < bottom && ob[2] > gb[2] && ob[1] < gb[3] && ob[3] > gb[1]) { blocked = true; break; }
+      } catch (e1) {}
+    }
+    if (blocked) continue;
+    try { mine[k].geometricBounds = [gb[0], gb[1], bottom, gb[3]]; n++; } catch (e2) {}
+  }
+  return n;
+}
+
+// 見本の枠を新しいページの同じ位置に写す (段組・グリッド・オブジェクトスタイルなどを引き継ぐ)。
+// 写した枠は空にして返す。写せなければ新しく作る
+function copyFrameTo(ref, np, rpb, npb, story) {
+  var rb, nb, nf = null, dupOK = false;
+  try { rb = ref.geometricBounds; } catch (e0) { return null; }
+  nb = [npb[0] + (rb[0] - rpb[0]), npb[1] + (rb[1] - rpb[1]), npb[0] + (rb[2] - rpb[0]), npb[1] + (rb[3] - rpb[1])];
+  try {
     nf = ref.duplicate(np);
     if (nf && nf.isValid && nf.parentStory.id !== story.id) {
       nf.parentStory.contents = "";
@@ -3641,30 +3739,17 @@ function addPageForOverflow(doc, story) {
       dupOK = true;
     }
   } catch (e1) {}
-  if (!dupOK) {
-    try { if (nf && nf.isValid) nf.remove(); } catch (e2) {}
+  if (dupOK) return nf;
+  try { if (nf && nf.isValid) nf.remove(); } catch (e2) {}
+  try {
     nf = np.textFrames.add({ geometricBounds: nb });
     try { nf.appliedObjectStyle = ref.appliedObjectStyle; } catch (e3) {}
     try { nf.textFramePreferences.textColumnCount = ref.textFramePreferences.textColumnCount; } catch (e4) {}
     try { nf.textFramePreferences.textColumnGutter = ref.textFramePreferences.textColumnGutter; } catch (e5) {}
-  }
-  try {
-    last.nextTextFrame = nf;
+    return nf;
   } catch (e6) {
-    try { np.remove(); } catch (e7) {}
-    return false;
+    return null;
   }
-  // 枠に入りきらない大きな表・図があると、ページを足しても何も流れ込まない。
-  // そのときは足したページを消して止める (空のページが延々と増えないように)
-  try { story.recompose(); } catch (e8) {}
-  try {
-    if (nf.characters.length === 0 && lastContainer(story).overflows) {
-      try { last.nextTextFrame = NothingEnum.NOTHING; } catch (e9) {}
-      np.remove();
-      return "stuck";
-    }
-  } catch (e10) {}
-  return true;
 }
 
 // 本文のつながりがページの順になっているか確かめ、なっていなければページの順につなぎ直す。
@@ -3705,6 +3790,10 @@ function flowOverflow(doc, story, report) {
   try {
     var fixed = fixThreadOrder(story);
     if (fixed > 0) report.push("[修正] 本文のつながりがページの順になっていなかったため、ページの順につなぎ直しました (" + fixed + " 個の枠)。");
+    if (lastContainer(story).overflows) {
+      var ext = extendShortFrames(story);
+      if (ext > 0) report.push("[調整] 前回号の本文の最後のページで短くなっていた枠 " + ext + " 個を、ほかのページと同じ高さに伸ばしました。");
+    }
     while (lastContainer(story).overflows && guard++ < 300) {
       r = addPageForOverflow(doc, story);
       if (r !== true) break;
