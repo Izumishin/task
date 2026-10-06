@@ -3586,13 +3586,43 @@ function lastContainer(story) {
   return c[c.length - 1];
 }
 
+// 本文の枠があるページのうち、いちばん後ろのページ (ページの順で)
+function lastStoryPage(story) {
+  var conts = story.textContainers, best = null, bestOff = -1, k, pg;
+  for (k = 0; k < conts.length; k++) {
+    try { pg = conts[k].parentPage; } catch (e) { pg = null; }
+    if (pg && pg.isValid && pg.parent.constructor.name !== "MasterSpread" && pg.documentOffset > bestOff) { best = pg; bestOff = pg.documentOffset; }
+  }
+  return best;
+}
+
+// そのページにある、このストーリーの枠 (InDesign が自動でつないだ枠) / なければ null
+function storyFrameOnPage(page, story) {
+  var tfs, k;
+  try { tfs = page.textFrames; } catch (e) { return null; }
+  for (k = 0; k < tfs.length; k++) {
+    try { if (tfs[k].parentStory.id === story.id) return tfs[k]; } catch (e2) {}
+  }
+  return null;
+}
+
 function addPageForOverflow(doc, story) {
   var last = lastContainer(story);
   if (!last || !last.isValid) return false;
-  var page = last.parentPage;
+  // 新しいページは、本文の最後のページ (ページの順で) の直後に入れる。
+  // 本文の後ろにある独立したページ (英文要旨など) の前に入る
+  var page = lastStoryPage(story);
+  if (!page) { page = last.parentPage; }
   if (!page || !page.isValid) return false;
   var np = doc.pages.add(LocationOptions.AFTER, page);
   try { np.appliedMaster = page.appliedMaster; } catch (e0) {}
+  // マスターの主テキストフレームなどで、InDesign が自動で枠をつないだときは、それを使う
+  try { story.recompose(); } catch (eR) {}
+  var auto = storyFrameOnPage(np, story);
+  if (auto !== null) {
+    try { if (auto.characters.length === 0 && lastContainer(story).overflows) { np.remove(); return "stuck"; } } catch (eA) {}
+    return true;
+  }
   var conts = story.textContainers, ref = null, k;
   for (k = conts.length - 1; k >= 0; k--) {
     var pg = conts[k].parentPage;
@@ -3637,12 +3667,54 @@ function addPageForOverflow(doc, story) {
   return true;
 }
 
+// 本文のつながりがページの順になっているか確かめ、なっていなければページの順につなぎ直す。
+// (前回号の作りや InDesign の自動の処理で、p.29 → p.32 → p.30 のようになることがある)
+// 戻り値: つなぎ直した枠の数
+function fixThreadOrder(story) {
+  var conts = story.textContainers, frames = [], i, k0 = -1;
+  for (i = 0; i < conts.length; i++) {
+    if (conts[i].constructor.name !== "TextFrame") return 0;   // パスの上の文字などがあるときは触らない
+    var off = -1;
+    try { var pg = conts[i].parentPage; if (pg && pg.isValid) off = pg.documentOffset; } catch (e) {}
+    var top = 0, left = 0;
+    try { top = conts[i].geometricBounds[0]; left = conts[i].geometricBounds[1]; } catch (e1) {}
+    frames.push({ f: conts[i], off: off, top: top, left: left, idx: i });
+  }
+  // ページの外 (ペーストボード) の枠があるときは、順番を決められないので触らない
+  for (i = 0; i < frames.length; i++) if (frames[i].off < 0) return 0;
+  // 並べ替えるのはページの順だけ (同じページの中の枠の順は、元のつながりのまま)
+  var sorted = frames.slice(0);
+  sorted.sort(function (a, b) { return (a.off - b.off) || (a.idx - b.idx); });
+  for (i = 0; i < frames.length; i++) if (sorted[i].idx !== frames[i].idx) { k0 = i; break; }
+  if (k0 < 1) return 0;
+  // k0 から後ろのつながりを切ってから (後ろから切ると、それぞれ空の枠になる)、ページの順につなぐ
+  for (i = frames.length - 1; i >= k0; i--) {
+    try { frames[i - 1].f.nextTextFrame = NothingEnum.NOTHING; } catch (e2) {}
+  }
+  for (i = k0; i < sorted.length; i++) {
+    try { sorted[i - 1].f.nextTextFrame = sorted[i].f; } catch (e3) { return -1; }
+  }
+  return frames.length - k0;
+}
+
 function flowOverflow(doc, story, report) {
   var added = 0, guard = 0, r = true;
-  while (lastContainer(story).overflows && guard++ < 300) {
-    r = addPageForOverflow(doc, story);
-    if (r !== true) break;
-    added++;
+  // InDesign の「スマートテキストのリフロー処理」が自動でページを足すと、つながりの順が乱れるので止めておく
+  var oldReflow = null;
+  try { oldReflow = doc.textPreferences.smartTextReflow; doc.textPreferences.smartTextReflow = false; } catch (eS) {}
+  try {
+    var fixed = fixThreadOrder(story);
+    if (fixed > 0) report.push("[修正] 本文のつながりがページの順になっていなかったため、ページの順につなぎ直しました (" + fixed + " 個の枠)。");
+    while (lastContainer(story).overflows && guard++ < 300) {
+      r = addPageForOverflow(doc, story);
+      if (r !== true) break;
+      added++;
+    }
+    fixed = fixThreadOrder(story);
+    if (fixed > 0) report.push("[修正] ページを足したあと、本文のつながりをページの順につなぎ直しました (" + fixed + " 個の枠)。");
+    else if (fixed < 0) report.push("[注意] 本文のつながりの順番を直せませんでした。最後のほうのページの順番を確認してください。");
+  } finally {
+    if (oldReflow !== null) { try { doc.textPreferences.smartTextReflow = oldReflow; } catch (eS2) {} }
   }
   if (added > 0) report.push("文字があふれたため " + added + " ページ追加しました。");
   if (r === "stuck") report.push("[注意] 枠に入りきらない大きな表か図があるため、ページの追加を途中で止めました。表・図の大きさを直してからページを追加してください。");
