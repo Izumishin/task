@@ -290,6 +290,25 @@ kRow(29, { T: '' }); kRow(31, { T: '', U: '' });
 api.importFromKiyoSheet();
 check('戻せる', hikari().status === '再校提出', hikari());
 
+console.log('--- 号の中の小見出し（学科名など）で号が切れない ---');
+// 実物（川口短期大学紀要 第40号）：見出しの下に「ビジネス実務学科」「こども学科」の色付き・結合行があり、その下に論文が続く
+kHead(60, { A: '川口短期大学紀要 第40号\n【23112-000】', B: '掲載本数確定：17本', G: '和泉' });
+kRow(61, { A: '表紙・執筆者紹介・委員会・奥付', F: 928, I: 928, K: 930, L: 1012, T: '郵送' });
+kHead(62, { A: 'ビジネス実務学科' }, '#d9ead3');           // 結合セル：A以外は空で読める
+kRow(63, { A: '円高、円安という語に関する一考察', B: '稲塲　建吾', F: 928, I: 928, K: 930, L: 1012 });
+kRow(64, { A: '人格の召喚と捨象に関する準備的考察', B: '平澤　純子', F: 928, I: 928, K: 930, L: 1012 });
+kHead(65, { A: 'こども学科' }, '#d9ead3');
+kRow(66, { A: '児童館における「居場所」としての意味の変容', B: '佐藤 晃子', F: 928, I: 928, K: 1001, L: 1012 });
+const k5 = api.importFromKiyoSheet();
+const paperSh = ss.getSheetByName('論文明細');
+const kawa = paperSh.data.slice(1).filter(r => r[0] === '23112-000');
+check('小見出しの下の論文も同じ号に紐づく', kawa.length === 4 && kawa.filter(r => r[9] === '本文').length === 3, kawa.map(r => r[1]));
+check('小見出しは号として数えない', k5.unlinked.every(u => u.indexOf('学科') < 0), k5.unlinked);
+check('小見出しの下の論文も初校提出まで読める', kawa.filter(r => r[9] === '本文').every(r => r[3] === '初校提出' && r[8] === '○'), kawa.map(r => r[3]));
+check('診断に小見出しが出る', /ビジネス実務学科（23112-000 の中）/.test(api.diagnoseKiyo()));
+[60, 61, 62, 63, 64, 65, 66].forEach(r => { kiyo.data[r - 1] = []; kiyo.setBg(r, 1, '#ffffff'); });
+api.importFromKiyoSheet();
+
 console.log('--- 組み上がったが未提出の論文を確認中として数える ---');
 kRow(32, { A: '確認待ちの論文', B: '著者X', F: 801, K: 810 });   // 組上がりまで。初校提出はまだ
 api.importFromKiyoSheet();

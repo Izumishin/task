@@ -98,7 +98,7 @@ const script = html.match(/<script>([\s\S]*)<\/script>/)[1];
 const ctx = { document, window, localStorage, google, console,
   setInterval: (f, ms) => { timers.push(f); return 1; }, setTimeout: () => 0, clearTimeout: () => {} };
 const ui = new Function(...Object.keys(ctx), script +
-  '\nreturn { state, render, openPanel, closePanel, savePanel, cardHtml, shortStamp, sortRows };')(...Object.values(ctx));
+  '\nreturn { state, render, openPanel, closePanel, savePanel, cardHtml, shortStamp, sortRows, isOverdue };')(...Object.values(ctx));
 
 console.log('--- 初期描画（担当者ビュー） ---');
 check('データを読み込んだ', !!ui.state.data && ui.state.data.rows.length === 4, ui.state.data && ui.state.data.rows.length);
@@ -228,9 +228,11 @@ check('実績の日付（予定がもう無い）には色を付けない', past
 
 console.log('--- 上部の帯 ---');
 const saveRows = ui.state.data.rows;
+// 元データにも日付が過ぎて超過になる案件があり得るので、件数は「元の超過件数＋1」で見る
+const baseOver = saveRows.filter(r => ui.isOverdue(r)).length;
 ui.state.data.rows = saveRows.concat([mk({ key: 'X1', item: '遅れた号', gehan: D(-1) })]);
 ui.render();
-check('超過があれば上部に件数の帯', el('overNotice').textContent.indexOf('1 件') >= 0 && el('overNotice').textContent.indexOf('遅れた号') >= 0 && !el('overNotice').classes.hidden, el('overNotice').textContent);
+check('超過があれば上部に件数の帯', el('overNotice').textContent.indexOf((baseOver + 1) + ' 件') >= 0 && el('overNotice').textContent.indexOf('遅れた号') >= 0 && !el('overNotice').classes.hidden, el('overNotice').textContent);
 ui.state.data.rows = saveRows.filter(r => !isOverdueRow(r));
 function isOverdueRow(r) { return !r.isDone && ((r.gehan && r.gehan < today && !r.next) || (r.due && r.due < today)); }
 ui.render();

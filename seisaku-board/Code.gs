@@ -929,6 +929,7 @@ function paperStatusOrder_(cfg) {
 function parseKiyoRows_(values, cfg, todayStr, bgs) {
   const groups = [];
   const papers = [];
+  const sections = [];
   let skipped = 0;
   let current = null;
   values.forEach(function (row, i) {
@@ -944,14 +945,21 @@ function parseKiyoRows_(values, cfg, todayStr, bgs) {
     //  1. 【受注番号】がある行（確実）
     //  2. A列に色が付いていて、その行に工程日付が無い行（受注番号を書き足す前の号）
     //  3. 色が取れない場合の保険：論文名だけの行が KIYO_HEADING_PATTERN に当たる
+    // ただし号の中の小見出し（「ビジネス実務学科」「こども学科」など、色付き・行を結合して他に何も書かれていない行）は
+    // 号の見出しではない。号の名前らしくない（KIYO_HEADING_PATTERN に当たらない）ものは、いまの号のまま読み進める。
     let isHeading = !!m;
+    const headingLike = function () { return !!cfg.headingRe && cfg.headingRe.test(toHalfWidth_(title.split(/\r?\n/)[0].trim())); };
     if (!isHeading && title && !anyStage) {
       if (isColoredCell_((bgs || [])[i])) {
+        if (!hasRest && current && !headingLike()) {
+          sections.push({ row: i + 1, title: title.replace(/\s+/g, ' ').trim(), orderNo: current.orderNo });
+          return;
+        }
         isHeading = true;
       } else if (cfg.headingRe) {
         // 見出し行のB列には「7本」「10本・ヨコ組み」のように本数が書かれることがある（著者名ではない）
         const authorLike = author && !/\d+\s*本/.test(toHalfWidth_(author));
-        if (!authorLike) isHeading = cfg.headingRe.test(toHalfWidth_(title.split(/\r?\n/)[0].trim()));
+        if (!authorLike) isHeading = headingLike();
       }
     }
     if (isHeading) {
@@ -1016,7 +1024,7 @@ function parseKiyoRows_(values, cfg, todayStr, bgs) {
       kind: isFront ? PAPER_KIND.FRONT : PAPER_KIND.BODY
     });
   });
-  return { groups: groups, papers: papers, skipped: skipped };
+  return { groups: groups, papers: papers, skipped: skipped, sections: sections };
 }
 
 /**
@@ -1244,6 +1252,12 @@ function diagnoseKiyo() {
       ' → ' + (g.orderNo ? '受注番号 ' + g.orderNo : '番号なし（紐づけない）') + '　論文 ' + g.papers + ' 本' +
       (g.note ? '　B列「' + g.note + '」' : '') + (g.fixed ? '（本数 ' + g.planned + '）' : ''));
   });
+  if (parsed.sections.length > 0) {
+    lines.push('号の中の小見出しとして読み飛ばした行（号の区切りにはしない）：');
+    parsed.sections.forEach(function (sec) {
+      lines.push('  ' + sec.row + '行目：' + sec.title + (sec.orderNo ? '（' + sec.orderNo + ' の中）' : ''));
+    });
+  }
   lines.push('紐づいた論文：' + parsed.papers.length + ' 本　／　論文名だけで中身が無く除外した行：' + parsed.skipped + ' 行');
   parsed.papers.slice(0, 5).forEach(function (p) {
     lines.push('  ' + p.orderNo + '　' + p.title + '／' + p.author + '　' + p.status + ' ' + p.date +
