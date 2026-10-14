@@ -1,0 +1,571 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>校規集チェック</title>
+<style>
+  :root {
+    --bg: #f6f6f3; --panel: #ffffff; --text: #1f2328; --muted: #5d6470; --line: #d9dbd6;
+    --accent: #2f5d8a; --ok: #2e7d4f; --ng: #b3261e; --warn: #9a6400;
+    --ok-bg: #e6f3eb; --ng-bg: #fbe9e7; --warn-bg: #fdf3dc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #17191c; --panel: #202327; --text: #e6e7e9; --muted: #a0a6ae; --line: #363a40;
+      --accent: #8db8e3; --ok: #7cc79a; --ng: #f2938a; --warn: #e5bb63;
+      --ok-bg: #1d3226; --ng-bg: #3a2120; --warn-bg: #3a2f17;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #17191c; --panel: #202327; --text: #e6e7e9; --muted: #a0a6ae; --line: #363a40;
+    --accent: #8db8e3; --ok: #7cc79a; --ng: #f2938a; --warn: #e5bb63;
+    --ok-bg: #1d3226; --ng-bg: #3a2120; --warn-bg: #3a2f17;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.6 "Yu Gothic UI", "Hiragino Sans", "Meiryo", system-ui, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 0 0 12px; }
+  p.lead { color: var(--muted); margin: 0 0 20px; }
+  section.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 16px; margin-bottom: 16px; }
+  #drop { border: 2px dashed var(--line); border-radius: 8px; padding: 28px 16px; text-align: center;
+    color: var(--muted); cursor: pointer; }
+  #drop.over { border-color: var(--accent); color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+  td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  input[type=text], input[type=number] { font: inherit; padding: 4px 8px; border: 1px solid var(--line);
+    border-radius: 4px; background: var(--bg); color: var(--text); width: 100%; min-width: 90px; }
+  button { font: inherit; padding: 8px 18px; border-radius: 6px; border: 1px solid var(--accent);
+    background: var(--accent); color: var(--panel); cursor: pointer; }
+  button.sub { background: transparent; color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 12px; }
+  .settings label { display: block; font-size: 13px; color: var(--muted); }
+  .hint { font-size: 13px; color: var(--muted); }
+  progress { width: 100%; height: 10px; }
+  .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+  .stat { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .stat b { display: block; font-size: 24px; font-variant-numeric: tabular-nums; }
+  .stat span { font-size: 13px; color: var(--muted); }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; white-space: nowrap; }
+  .b-ok { background: var(--ok-bg); color: var(--ok); }
+  .b-ng { background: var(--ng-bg); color: var(--ng); }
+  .b-warn { background: var(--warn-bg); color: var(--warn); }
+  .tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 12px; }
+  .tabs button { background: transparent; color: var(--text); border-color: var(--line); padding: 6px 12px; }
+  .tabs button.on { background: var(--accent); color: var(--panel); border-color: var(--accent); }
+  .scroll { overflow-x: auto; }
+  details summary { cursor: pointer; color: var(--accent); }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>校規集チェック</h1>
+  <p class="lead">完成PDFの「細目次 ↔ 柱・ページ」「索引 ↔ 本文ページ」「ノンブルの連番」をまとめて確認します。PDFはこのパソコンの中だけで読み込み、外部には送信しません。</p>
+
+  <section class="card">
+    <h2>1. PDFを選ぶ（上巻・下巻など複数可）</h2>
+    <div id="drop">ここにPDFをドロップ、またはクリックして選択
+      <input id="file" type="file" accept="application/pdf" multiple class="hidden">
+    </div>
+    <div id="fileTableWrap" class="scroll hidden" style="margin-top:12px">
+      <p class="hint">目次・索引がどのPDFページにあるかを入力してください（PDFビューアのページ番号。例：<code>3-12</code>、複数なら <code>3-12,15</code>）。ないファイルは空欄でOKです。</p>
+      <table>
+        <thead><tr><th>順</th><th>ファイル</th><th>ページ数</th><th>細目次のページ</th><th>索引のページ</th></tr></thead>
+        <tbody id="fileTable"></tbody>
+      </table>
+    </div>
+    <details style="margin-top:12px">
+      <summary>詳細設定（柱・ノンブルの位置、段組）</summary>
+      <div class="settings">
+        <div><label>柱を探す範囲：上端から（ページ高さの%）</label><input id="sHashira" type="number" value="10" min="1" max="50"></div>
+        <div><label>ノンブルを探す範囲：上下端から（%）</label><input id="sNombre" type="number" value="8" min="1" max="50"></div>
+        <div><label>細目次の段数</label><input id="sTocCols" type="number" value="1" min="1" max="4"></div>
+        <div><label>索引の段数</label><input id="sIdxCols" type="number" value="2" min="1" max="4"></div>
+      </div>
+      <p class="hint">結果の「ページ一覧」タブで柱・ノンブルが正しく拾えているか確認し、ずれていたらここを調整してください。</p>
+    </details>
+    <div class="row" style="margin-top:16px">
+      <button id="run" disabled>チェック開始</button>
+      <span id="status" class="hint"></span>
+    </div>
+    <progress id="prog" value="0" max="1" class="hidden" style="margin-top:12px"></progress>
+  </section>
+
+  <section class="card hidden" id="resultCard">
+    <h2>2. 結果</h2>
+    <div class="summary" id="summary"></div>
+    <div id="warns"></div>
+    <div class="row" style="margin:16px 0 8px">
+      <label class="hint"><input type="checkbox" id="onlyNg" checked> 問題のある行だけ表示</label>
+      <button class="sub" id="csv">CSVで保存</button>
+    </div>
+    <div class="tabs" id="tabs"></div>
+    <div class="scroll" id="tableArea"></div>
+  </section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script id="core">
+/* ===== 解析ロジック（ブラウザ・Node共通） ===== */
+var Core = (function () {
+
+  // 全角→半角などをそろえ、空白を除く
+  function norm(s) {
+    return String(s || '').normalize('NFKC').replace(/[\s　]+/g, '');
+  }
+  // 格付けタグ【…】を除いた題名
+  function stripTag(s) {
+    return String(s || '').replace(/【[^】]*】/g, '').trim();
+  }
+  var NUM_ONLY = /^[\s\-－–—()（）]*([0-9０-９]{1,5})[\s\-－–—()（）]*$/;
+
+  // pdf.js のページからテキスト片を取り出す（上端基準の座標に変換）
+  async function extractPage(page) {
+    var vp = page.getViewport({ scale: 1 });
+    var tc = await page.getTextContent();
+    var items = [];
+    tc.items.forEach(function (it) {
+      if (!it.str || !it.str.trim()) return;
+      var p = vp.convertToViewportPoint(it.transform[4], it.transform[5]);
+      var h = Math.hypot(it.transform[2], it.transform[3]) || it.height || 10;
+      items.push({ str: it.str, x: p[0], y: p[1], w: it.width || 0, h: h });
+    });
+    return { w: vp.width, h: vp.height, items: items };
+  }
+
+  // テキスト片を行にまとめる（段組は x 位置で振り分け）
+  function toLines(items, pageW, cols) {
+    cols = Math.max(1, cols || 1);
+    var buckets = [];
+    for (var c = 0; c < cols; c++) buckets.push([]);
+    items.forEach(function (it) {
+      var c = Math.min(cols - 1, Math.max(0, Math.floor(it.x / pageW * cols)));
+      buckets[c].push(it);
+    });
+    var lines = [];
+    buckets.forEach(function (b) {
+      b.sort(function (a, z) { return a.y - z.y || a.x - z.x; });
+      var cur = [];
+      b.forEach(function (it) {
+        if (cur.length && Math.abs(it.y - cur[0].y) > Math.max(it.h, cur[0].h) * 0.5) {
+          lines.push(joinLine(cur)); cur = [];
+        }
+        cur.push(it);
+      });
+      if (cur.length) lines.push(joinLine(cur));
+    });
+    return lines;
+  }
+  function joinLine(items) {
+    items.sort(function (a, z) { return a.x - z.x; });
+    var s = '', prevEnd = null;
+    items.forEach(function (it) {
+      if (prevEnd !== null && it.x - prevEnd > it.h * 0.8) s += ' ';
+      s += it.str;
+      prevEnd = it.x + it.w;
+    });
+    return s;
+  }
+
+  // 1ページ分：柱・ノンブル・本文を判定
+  function analyzePage(pg, opt) {
+    var topLim = pg.h * opt.hashiraPct / 100;
+    var nTop = pg.h * opt.nombrePct / 100, nBot = pg.h * (1 - opt.nombrePct / 100);
+    var nombreCands = [], hashiraItems = [], bodyItems = [];
+    pg.items.forEach(function (it) {
+      var m = it.str.match(NUM_ONLY);
+      if (m && (it.y <= nTop || it.y >= nBot)) {
+        nombreCands.push({ n: parseInt(m[1].normalize('NFKC'), 10), edge: Math.min(it.y, pg.h - it.y) });
+      } else if (it.y <= topLim) {
+        hashiraItems.push(it);
+      } else if (it.y < nBot) {
+        bodyItems.push(it);
+      }
+    });
+    nombreCands.sort(function (a, z) { return a.edge - z.edge; });
+    var hashira = hashiraItems.length ? toLines(hashiraItems, pg.w, 1).join(' ') : '';
+    return {
+      nombre: nombreCands.length ? nombreCands[0].n : null,
+      hashira: hashira.trim(),
+      title: norm(stripTag(hashira)),
+      bodyItems: bodyItems,
+      bodyText: norm(bodyItems.map(function (i) { return i.str; }).join(''))
+    };
+  }
+
+  // ---- 細目次の行を解析 ----
+  var LEADER = '[\\s.…‥・･·•―\\-－_]';
+  var TOC_RE = new RegExp('^(.+?)' + LEADER + '+([0-9]{1,5})$');
+  function parseToc(lines) {
+    var entries = [], pending = [];
+    lines.forEach(function (raw) {
+      var line = String(raw).normalize('NFKC').trim();
+      if (!line) return;
+      var m = line.match(TOC_RE);
+      if (m && norm(m[1]).replace(/[.…‥・･·•―\-_]/g, '')) {
+        var title = m[1].replace(new RegExp(LEADER + '+$'), '').trim();
+        entries.push({ text: (pending.join('') + title).trim(), short: title, page: parseInt(m[2], 10), raw: raw });
+        pending = [];
+      } else {
+        pending.push(line);
+        if (pending.length > 2) pending.shift();
+      }
+    });
+    return entries;
+  }
+
+  // ---- 索引の行を解析 ----
+  var IDX_RE = new RegExp('^(.+?)' + LEADER + '+([0-9][0-9,、，~〜～\\-–・\\s]*)$');
+  function parseIndex(lines) {
+    var entries = [], pending = '';
+    lines.forEach(function (raw) {
+      var line = String(raw).normalize('NFKC').trim();
+      if (!line) return;
+      var m = line.match(IDX_RE);
+      if (m) {
+        var term = (pending + m[1].replace(new RegExp(LEADER + '+$'), '')).trim();
+        var pages = [];
+        m[2].split(/[,、，・\s]+/).forEach(function (tok) {
+          var r = tok.match(/^(\d+)(?:[~〜～\-–](\d+))?$/);
+          if (r) pages.push({ from: +r[1], to: r[2] ? +r[2] : +r[1] });
+        });
+        if (pages.length) entries.push({ term: term, pages: pages, raw: raw });
+        pending = '';
+      } else if (norm(line).length <= 2) {
+        pending = '';            // 「あ」「か」などの見出し
+      } else {
+        pending = line;          // 2行に折り返した語句
+      }
+    });
+    return entries;
+  }
+
+  // 索引語のゆらぎ候補（先頭の―、読み仮名の括弧などを外す）
+  function termVariants(term) {
+    var t = norm(term).replace(/^[―ー\-－—–]+/, '');
+    var v = [t, t.replace(/[(（][^)）]*[)）]/g, '')];
+    return v.filter(function (s, i) { return s && v.indexOf(s) === i; });
+  }
+
+  // ---- 全体チェック ----
+  // docs: [{ name, pages:[{w,h,items}], tocPages:Set(1始まり), idxPages:Set }]
+  function check(docs, opt) {
+    var pageList = [];       // 本文ページ
+    var tocLines = [], idxLines = [];
+    docs.forEach(function (d, di) {
+      d.pages.forEach(function (pg, pi) {
+        var no = pi + 1;
+        var a = analyzePage(pg, opt);
+        var kind = d.tocPages.has(no) ? '目次' : d.idxPages.has(no) ? '索引' : '本文';
+        if (kind !== '本文') {
+          var lines = toLines(a.bodyItems, pg.w, kind === '目次' ? opt.tocCols : opt.idxCols);
+          lines.forEach(function (l) { (kind === '目次' ? tocLines : idxLines).push({ text: l, doc: d.name, pdfPage: no }); });
+        }
+        pageList.push({ doc: d.name, docIndex: di, pdfPage: no, kind: kind,
+          nombre: a.nombre, hashira: a.hashira, title: a.title, bodyText: a.bodyText });
+      });
+    });
+
+    // ノンブル → ページ
+    var byNombre = {};
+    pageList.forEach(function (p) {
+      if (p.kind === '本文' && p.nombre !== null) (byNombre[p.nombre] = byNombre[p.nombre] || []).push(p);
+    });
+    function where(p) { return p.doc + ' p.' + p.pdfPage; }
+
+    // ノンブル連番
+    var nombreRows = [];
+    var body = pageList.filter(function (p) { return p.kind === '本文'; });
+    var prev = null, blanks = 0;
+    body.forEach(function (p) {
+      if (p.nombre === null) {
+        nombreRows.push({ status: 'warn', label: 'ノンブルなし', where: where(p), detail: '白ページ・扉なら問題なし' });
+        blanks++;
+        return;
+      }
+      var gap = prev ? p.nombre - prev.nombre - 1 : 0;
+      if (prev && gap > 0 && gap === blanks) {
+        // 白ページ（隠しノンブル）の分だけ飛んでいるのは正常
+        nombreRows.push({ status: 'ok', label: 'OK', where: where(p), detail: p.nombre + '（直前の白ページ ' + blanks + ' ページ分を含む）' });
+      } else if (prev && p.nombre !== prev.nombre + 1) {
+        nombreRows.push({ status: 'ng', label: p.nombre <= prev.nombre ? '重複・逆戻り' : '飛び',
+          where: where(p), detail: prev.nombre + ' の次が ' + p.nombre + (gap > 0 ? '（' + gap + 'ページ分なし）' : '') });
+      } else {
+        nombreRows.push({ status: 'ok', label: 'OK', where: where(p), detail: String(p.nombre) });
+      }
+      prev = p; blanks = 0;
+    });
+
+    // 柱の変わり目（規程の開始ページ）
+    var starts = [];
+    var last = null;
+    body.forEach(function (p) {
+      if (p.title && p.title !== last) starts.push(p);
+      if (p.title) last = p.title;
+    });
+
+    // 細目次
+    var tocEntries = parseToc(tocLines.map(function (l) { return l.text; }));
+    var matchedStarts = new Set();
+    var tocRows = tocEntries.map(function (e) {
+      var row = { text: e.text, page: e.page, hashira: '', status: 'ng', label: '', where: '' };
+      var hits = byNombre[e.page];
+      if (!hits) { row.label = 'そのノンブルのページがない'; return row; }
+      var p = hits[0];
+      row.where = where(p); row.hashira = p.hashira;
+      var t = norm(e.text), s = norm(e.short);
+      var ok = p.title && (p.title.indexOf(s) >= 0 || t.indexOf(p.title) >= 0 || p.title.indexOf(t) >= 0);
+      if (!ok) { row.label = '柱と題名が違う'; return row; }
+      var before = byNombre[e.page - 1];
+      if (before && before[0].title === p.title) {
+        row.status = 'warn'; row.label = '柱は合っているが開始ページではない（前ページも同じ柱）';
+      } else { row.status = 'ok'; row.label = 'OK'; }
+      starts.forEach(function (st) { if (st.title === p.title) matchedStarts.add(st); });
+      return row;
+    });
+    var missingRows = starts.filter(function (st) { return !matchedStarts.has(st); }).map(function (st) {
+      return { status: 'ng', label: '細目次に見当たらない', hashira: st.hashira, nombre: st.nombre, where: where(st) };
+    });
+
+    // 索引
+    var idxEntries = parseIndex(idxLines.map(function (l) { return l.text; }));
+    var idxRows = [];
+    idxEntries.forEach(function (e) {
+      var vars = termVariants(e.term);
+      e.pages.forEach(function (r) {
+        var found = null, noPage = true;
+        for (var n = r.from; n <= r.to && !found; n++) {
+          (byNombre[n] || []).forEach(function (p) {
+            noPage = false;
+            if (!found && vars.some(function (v) { return p.bodyText.indexOf(v) >= 0; })) found = p;
+          });
+        }
+        var pageLabel = r.from === r.to ? String(r.from) : r.from + '〜' + r.to;
+        if (found) idxRows.push({ status: 'ok', label: 'OK', term: e.term, page: pageLabel, where: where(found) });
+        else if (noPage) idxRows.push({ status: 'ng', label: 'そのノンブルのページがない', term: e.term, page: pageLabel, where: '' });
+        else idxRows.push({ status: 'ng', label: '本文に語句が見つからない', term: e.term, page: pageLabel,
+          where: where(byNombre[r.from] ? byNombre[r.from][0] : byNombre[r.to][0]) });
+      });
+    });
+
+    var dupRows = Object.keys(byNombre).filter(function (k) { return byNombre[k].length > 1; });
+
+    return { pageList: pageList, nombreRows: nombreRows, starts: starts, tocRows: tocRows,
+      missingRows: missingRows, idxRows: idxRows, tocLineCount: tocLines.length,
+      idxLineCount: idxLines.length, dupNombre: dupRows };
+  }
+
+  function parseRange(s) {
+    var set = new Set();
+    String(s || '').normalize('NFKC').split(/[,、\s]+/).forEach(function (tok) {
+      var m = tok.match(/^(\d+)(?:[-~〜](\d+))?$/);
+      if (!m) return;
+      var a = +m[1], b = m[2] ? +m[2] : a;
+      for (var i = Math.min(a, b); i <= Math.max(a, b); i++) set.add(i);
+    });
+    return set;
+  }
+
+  return { norm: norm, stripTag: stripTag, extractPage: extractPage, toLines: toLines,
+    analyzePage: analyzePage, parseToc: parseToc, parseIndex: parseIndex, check: check, parseRange: parseRange };
+})();
+if (typeof module !== 'undefined') module.exports = Core;
+</script>
+
+<script>
+/* ===== 画面 ===== */
+(function () {
+  if (typeof document === 'undefined') return;
+  var PDFJS = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
+  var $ = function (id) { return document.getElementById(id); };
+  var files = [];
+  var result = null, tab = 'toc';
+  if (typeof pdfjsLib === 'undefined') {
+    $('status').textContent = 'PDF読み込み用のライブラリ（pdf.js）を取得できませんでした。インターネットに接続した状態で開き直してください。';
+    return;
+  }
+
+  // ワーカーは同一オリジン制限があるため Blob 経由で読み込む（失敗時は通常指定）
+  var workerReady = fetch(PDFJS + 'pdf.worker.min.js').then(function (r) { return r.text(); })
+    .then(function (code) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
+    }).catch(function () { pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS + 'pdf.worker.min.js'; });
+
+  var drop = $('drop');
+  drop.addEventListener('click', function () { $('file').click(); });
+  $('file').addEventListener('change', function (e) { addFiles(e.target.files); e.target.value = ''; });
+  drop.addEventListener('dragover', function (e) { e.preventDefault(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', function () { drop.classList.remove('over'); });
+  drop.addEventListener('drop', function (e) { e.preventDefault(); drop.classList.remove('over'); addFiles(e.dataTransfer.files); });
+
+  async function addFiles(fileList) {
+    var list = Array.prototype.slice.call(fileList);   // 入力欄をクリアしても消えないよう先にコピー
+    await workerReady;
+    for (var i = 0; i < list.length; i++) {
+      var f = list[i];
+      if (!/\.pdf$/i.test(f.name)) continue;
+      $('status').textContent = f.name + ' を開いています…';
+      var doc = await pdfjsLib.getDocument({ data: await f.arrayBuffer(),
+        cMapUrl: PDFJS + 'cmaps/', cMapPacked: true }).promise;
+      files.push({ name: f.name, doc: doc, toc: '', idx: '' });
+    }
+    files.sort(function (a, b) { return a.name.localeCompare(b.name, 'ja'); });
+    $('status').textContent = '';
+    renderFiles();
+  }
+
+  function renderFiles() {
+    $('fileTableWrap').classList.toggle('hidden', !files.length);
+    $('run').disabled = !files.length;
+    var tb = $('fileTable'); tb.innerHTML = '';
+    files.forEach(function (f, i) {
+      var tr = document.createElement('tr');
+      tr.innerHTML = '<td class="num">' + (i + 1) + '</td><td>' + esc(f.name) + '</td><td class="num">' + f.doc.numPages +
+        '</td><td><input type="text" placeholder="例: 3-12" value="' + esc(f.toc) + '"></td>' +
+        '<td><input type="text" placeholder="例: 1480-1520" value="' + esc(f.idx) + '"></td>';
+      var ins = tr.querySelectorAll('input');
+      ins[0].addEventListener('input', function () { f.toc = this.value; });
+      ins[1].addEventListener('input', function () { f.idx = this.value; });
+      tb.appendChild(tr);
+    });
+  }
+
+  $('run').addEventListener('click', async function () {
+    var btn = this; btn.disabled = true;
+    var prog = $('prog'); prog.classList.remove('hidden');
+    var total = files.reduce(function (s, f) { return s + f.doc.numPages; }, 0), done = 0;
+    prog.max = total; prog.value = 0;
+    try {
+      var docs = [];
+      for (var i = 0; i < files.length; i++) {
+        var f = files[i], pages = [];
+        for (var p = 1; p <= f.doc.numPages; p++) {
+          var page = await f.doc.getPage(p);
+          pages.push(await Core.extractPage(page));
+          page.cleanup();
+          done++;
+          if (done % 10 === 0 || done === total) {
+            prog.value = done;
+            $('status').textContent = '読み込み中… ' + done + ' / ' + total + ' ページ';
+            await new Promise(function (r) { setTimeout(r, 0); });
+          }
+        }
+        docs.push({ name: f.name, pages: pages, tocPages: Core.parseRange(f.toc), idxPages: Core.parseRange(f.idx) });
+      }
+      $('status').textContent = '照合中…';
+      result = Core.check(docs, {
+        hashiraPct: +$('sHashira').value || 10, nombrePct: +$('sNombre').value || 8,
+        tocCols: +$('sTocCols').value || 1, idxCols: +$('sIdxCols').value || 2
+      });
+      $('status').textContent = '完了（' + total + ' ページ）';
+      renderResult();
+    } catch (e) {
+      console.error(e);
+      $('status').textContent = 'エラー：' + e.message;
+    }
+    btn.disabled = false; prog.classList.add('hidden');
+  });
+
+  function count(rows, st) { return rows.filter(function (r) { return r.status === st; }).length; }
+
+  var TABS = {
+    toc: { name: '細目次 ↔ 柱', cols: [['status', '判定'], ['text', '細目次の題名'], ['page', 'ページ'], ['hashira', 'そのページの柱'], ['where', 'PDF位置']],
+      rows: function () { return result.tocRows; } },
+    missing: { name: '細目次にない規程', cols: [['status', '判定'], ['hashira', '柱'], ['nombre', '開始ノンブル'], ['where', 'PDF位置']],
+      rows: function () { return result.missingRows; } },
+    idx: { name: '索引 ↔ 本文', cols: [['status', '判定'], ['term', '索引語'], ['page', 'ページ'], ['where', 'PDF位置']],
+      rows: function () { return result.idxRows; } },
+    nombre: { name: 'ノンブル連番', cols: [['status', '判定'], ['where', 'PDF位置'], ['detail', '内容']],
+      rows: function () { return result.nombreRows; } },
+    pages: { name: 'ページ一覧（検出確認用）', cols: [['doc', 'ファイル'], ['pdfPage', 'PDFページ'], ['kind', '種類'], ['nombre', 'ノンブル'], ['hashira', '柱']],
+      rows: function () { return result.pageList; } }
+  };
+
+  function renderResult() {
+    $('resultCard').classList.remove('hidden');
+    var r = result;
+    var stats = [
+      ['細目次 NG', count(r.tocRows, 'ng'), r.tocRows.length + ' 項目中'],
+      ['細目次 要確認', count(r.tocRows, 'warn'), '開始ページずれの疑い'],
+      ['細目次にない規程', r.missingRows.length, '柱の変わり目 ' + r.starts.length + ' 箇所中'],
+      ['索引 NG', count(r.idxRows, 'ng'), r.idxRows.length + ' 参照中'],
+      ['ノンブル NG', count(r.nombreRows, 'ng'), 'ノンブルなし ' + count(r.nombreRows, 'warn') + ' ページ']
+    ];
+    $('summary').innerHTML = stats.map(function (s) {
+      var cls = s[1] ? 'var(--ng)' : 'var(--ok)';
+      return '<div class="stat"><span>' + s[0] + '</span><b style="color:' + cls + '">' + s[1] + '</b><span>' + s[2] + '</span></div>';
+    }).join('');
+    var warns = [];
+    if (r.tocRows.length === 0) warns.push('細目次の項目を1件も読み取れませんでした。目次ページの指定と段数を確認してください。');
+    if (r.idxRows.length === 0) warns.push('索引の項目を1件も読み取れませんでした。索引ページの指定と段数を確認してください。');
+    if (!r.pageList.some(function (p) { return p.nombre !== null; })) warns.push('ノンブルを1つも検出できませんでした。詳細設定の「ノンブルを探す範囲」を調整してください。');
+    $('warns').innerHTML = warns.length ? '<p class="badge b-warn" style="display:block;margin-top:12px;border-radius:6px;padding:8px 12px">' + warns.join('<br>') + '</p>' : '';
+    $('tabs').innerHTML = '';
+    Object.keys(TABS).forEach(function (k) {
+      var b = document.createElement('button');
+      b.textContent = TABS[k].name;
+      b.className = k === tab ? 'on' : '';
+      b.onclick = function () { tab = k; renderResult(); };
+      $('tabs').appendChild(b);
+    });
+    renderTable();
+  }
+
+  $('onlyNg').addEventListener('change', function () { if (result) renderTable(); });
+
+  function renderTable() {
+    var t = TABS[tab], rows = t.rows();
+    if ($('onlyNg').checked && tab !== 'pages') rows = rows.filter(function (r) { return r.status !== 'ok'; });
+    var LIMIT = 2000;
+    var html = '<table><thead><tr>' + t.cols.map(function (c) { return '<th>' + c[1] + '</th>'; }).join('') + '</tr></thead><tbody>';
+    rows.slice(0, LIMIT).forEach(function (r) {
+      html += '<tr>' + t.cols.map(function (c) {
+        if (c[0] === 'status') {
+          var cls = r.status === 'ok' ? 'b-ok' : r.status === 'warn' ? 'b-warn' : 'b-ng';
+          return '<td><span class="badge ' + cls + '">' + esc(r.label) + '</span></td>';
+        }
+        var v = r[c[0]];
+        return '<td' + (typeof v === 'number' ? ' class="num"' : '') + '>' + esc(v == null ? '—' : v) + '</td>';
+      }).join('') + '</tr>';
+    });
+    html += '</tbody></table>';
+    if (!rows.length) html = '<p class="hint">該当する行はありません。</p>';
+    if (rows.length > LIMIT) html += '<p class="hint">先頭 ' + LIMIT + ' 行のみ表示しています。全件はCSVで確認してください。</p>';
+    $('tableArea').innerHTML = html;
+  }
+
+  $('csv').addEventListener('click', function () {
+    if (!result) return;
+    var out = [];
+    Object.keys(TABS).forEach(function (k) {
+      var t = TABS[k];
+      out.push('■' + t.name);
+      out.push(t.cols.map(function (c) { return c[1]; }).join(','));
+      t.rows().forEach(function (r) {
+        out.push(t.cols.map(function (c) {
+          var v = c[0] === 'status' ? r.label : r[c[0]];
+          return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+        }).join(','));
+      });
+      out.push('');
+    });
+    var blob = new Blob(['﻿' + out.join('\r\n')], { type: 'text/csv' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = '校規集チェック結果.csv'; a.click();
+  });
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; });
+  }
+})();
+</script>
+</body>
+</html>
