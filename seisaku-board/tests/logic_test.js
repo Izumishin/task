@@ -430,5 +430,68 @@ let badThrew = '';
 try { api.saveCase('22970-000', { status: '校正中', name: '和泉' }, PIN); } catch (e) { badThrew = e.message; }
 check('新しく「校正中」は選べない（5つの状態のどれか）', badThrew.indexOf('不正') >= 0, badThrew);
 
+console.log('--- 要確認（●校戻りから4営業日、提出なし＝修正依頼の見落としの疑い） ---');
+check('営業日の数え方：金→翌週木は4日（土日は数えない）', api.businessDaysBetween_('2026/10/09', '2026/10/15') === 4);
+check('金→翌週水は3日', api.businessDaysBetween_('2026/10/09', '2026/10/14') === 3);
+check('同じ日は0日', api.businessDaysBetween_('2026/10/14', '2026/10/14') === 0);
+// 今日から土日を除いて n 日前の日付
+const BD = (n) => { let k = 0, back = 0; while (k < n) { back++; const d = new Date(Number(today.slice(0, 4)), Number(today.slice(5, 7)) - 1, Number(today.slice(8, 10)) - back); if (d.getDay() !== 0 && d.getDay() !== 6) k++; } return D(-back); };
+check('テスト用の日付が正しい', api.businessDaysBetween_(BD(4), today) === 4 && api.businessDaysBetween_(BD(3), today) === 3);
+setRow(20, { D: '中澤', E: '★', K: '★', M: '23200-000', N: '要確認学会', O: '戻りから6日の号', S: 'CTP', T: '篠原', Z: BD(12), AA: BD(10), AB: BD(6), AI: '冊子' });
+setRow(21, { D: '中澤', E: '★', M: '23201-000', N: '要確認学会', O: '戻りから3日の号', S: 'CTP', T: '篠原', Z: BD(12), AA: BD(10), AB: BD(3), AI: '冊子' });
+setRow(22, { D: '中澤', E: '★', M: '23202-000', N: '要確認学会', O: '提出予定だけ入った号', S: 'CTP', T: '篠原', Z: BD(12), AA: BD(10), AB: BD(5), AC: D(2), AI: '冊子' });
+setRow(23, { D: '中澤', E: '★', M: '23203-000', N: '要確認学会', O: '再校を提出済の号', S: 'CTP', T: '篠原', Z: BD(12), AA: BD(10), AB: BD(6), AC: D(-1), AI: '冊子' });
+setRow(24, { D: '中澤', E: '★', M: '23204-000', N: '要確認学会', O: '今日提出した号', S: 'CTP', T: '篠原', Z: BD(12), AA: BD(10), AB: BD(6), AC: today, AI: '冊子' });
+setRow(25, { A: '済', D: '中澤', E: '★', M: '23205-000', N: '要確認学会', O: '済の号', S: 'CTP', T: '篠原', Z: BD(12), AA: BD(10), AB: BD(6), AI: '冊子' });
+api.importFromProductionSheet();
+const rowOf = (key) => api.getBoardData(PIN).rows.find(r => r.key === key);
+const c20 = rowOf('23200-000');
+check('戻りから4営業日以上・提出なし → 要確認', c20.checkItems.length === 1 && c20.checkItems[0].stage === '初校戻り' && c20.checkItems[0].date === BD(6) && c20.checkItems[0].days === 6, c20.checkItems);
+check('戻りから3営業日はまだ出ない', rowOf('23201-000').checkItems.length === 0);
+check('次の提出が予定日（未来）だけなら要確認のまま', rowOf('23202-000').checkItems.length === 1, rowOf('23202-000').checkItems);
+check('次の提出の実績が入れば出ない', rowOf('23203-000').checkItems.length === 0);
+check('今日の日付で提出が入っていれば出ない', rowOf('23204-000').checkItems.length === 0);
+check('済（下版済）には出ない', !rowOf('23205-000') || rowOf('23205-000').checkItems.length === 0);
+check('日数の設定が画面に渡る', api.getBoardData(PIN).checkAfterDays === 4 && c20.checkAfterDays === 4);
+
+let ackThrew = '';
+try { api.ackCheck('23200-000', '和泉', false, {}); } catch (e) { ackThrew = e.message; }
+check('確認済は編集モードの人だけ', !!ackThrew, ackThrew);
+const acked = api.ackCheck('23200-000', '和泉', false, PIN);
+check('確認済にすると出なくなる', acked.checkItems.length === 0 && acked.checkAcked === 1 && acked.checkAckDate === BD(6) && acked.checkAckBy.indexOf('和泉') === 0, acked);
+const ackRow = acked.row;
+check('確認済は制作進行シートのAC・AD列に入る', board.cell(ackRow, api.COL.CHECK_ACK) === BD(6) && /^和泉 /.test(board.cell(ackRow, api.COL.CHECK_ACK_BY)), [board.cell(ackRow, 29), board.cell(ackRow, 30)]);
+api.importFromProductionSheet();
+check('取込しても確認済は消えない', rowOf('23200-000').checkItems.length === 0 && rowOf('23200-000').checkAckDate === BD(6));
+ackThrew = '';
+try { api.ackCheck('23201-000', '和泉', false, PIN); } catch (e) { ackThrew = e.message; }
+check('要確認が無い案件は確認済にできない', ackThrew.indexOf('要確認はありません') >= 0, ackThrew);
+setRow(20, { AC: BD(5), AD: BD(4) });     // 再校を出して、再校が戻ってきた（新しい戻り）
+api.importFromProductionSheet();
+const c20b = rowOf('23200-000');
+check('新しい戻りが4営業日たてば、また要確認', c20b.checkItems.length === 1 && c20b.checkItems[0].stage === '再校戻り', c20b.checkItems);
+api.ackCheck('23200-000', '和泉', false, PIN);
+const undone = api.ackCheck('23200-000', '和泉', true, PIN);
+check('確認済を取り消すと、また出る', undone.checkItems.length === 1 && undone.checkAckDate === '', undone);
+
+console.log('--- 要確認：紀要は論文ごと ---');
+setRow(26, { D: '中澤', E: '和泉', K: '★', M: '23210-000', N: '要確認大学', O: '要確認紀要 第1号', S: 'CTP', T: '篠原', Z: BD(20), AA: BD(15), AB: BD(10), AI: '冊子' });
+kHead(80, { A: '要確認紀要 第1号\n【23210-000】', B: '3本' });
+kRow(81, { A: '表紙', F: BD(20), K: BD(18), L: BD(15), M: BD(7) });                     // 表回りも直しは要る
+kRow(82, { A: '戻りから5日の論文', B: '著者A', F: BD(20), K: BD(18), L: BD(15), M: BD(5) });
+kRow(83, { A: '戻りから2日の論文', B: '著者B', F: BD(20), K: BD(18), L: BD(15), M: BD(2) });
+kRow(84, { A: '再校を出した論文', B: '著者C', F: BD(20), K: BD(18), L: BD(15), M: BD(9), N: BD(1) });
+api.importFromProductionSheet();
+api.importFromKiyoSheet();
+const kc = rowOf('23210-000');
+check('紀要は論文ごとに見る（生産表の初校戻りではなく論文明細）', kc.checkItems.length === 2 && kc.checkItems.map(c => c.title).join('|') === '表紙|戻りから5日の論文', kc.checkItems);
+check('戻りからの日数が長い順', kc.checkItems[0].days === 7 && kc.checkItems[1].days === 5, kc.checkItems.map(c => c.days));
+api.ackCheck('23210-000', '和泉', false, PIN);
+check('紀要も確認済にできる', rowOf('23210-000').checkItems.length === 0 && rowOf('23210-000').checkAcked === 2);
+kRow(83, { M: BD(4) });   // 別の論文の戻りが、確認済にした日（BD(5)）より新しくて4営業日たった
+api.importFromKiyoSheet();
+check('確認済より新しい戻りの論文だけ、また出る', rowOf('23210-000').checkItems.length === 1 && rowOf('23210-000').checkItems[0].title === '戻りから2日の論文', rowOf('23210-000').checkItems);
+[80, 81, 82, 83, 84].forEach(r => { kiyo.data[r - 1] = []; kiyo.setBg(r, 1, '#ffffff'); });
+
 console.log(fails === 0 ? '\nすべて成功' : `\n失敗 ${fails} 件`);
 process.exit(fails === 0 ? 0 : 1);

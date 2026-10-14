@@ -25,6 +25,7 @@
       --warn-bg: #3b1b1f; --warn-fg: #ff909a;
       --today-bg: #3a2614; --today-fg: #ffac5c;
       --soon-bg: #35301a; --soon-fg: #f2d65c;
+      --check-bg: #33204a; --check-fg: #d4b2ff; --check-card: #231b2f; --check-line: #6c4f96;
       --manual: #e8b04b;
       --memo: #e8b04b;
       --ok: #4fc98a;
@@ -52,6 +53,7 @@
       --warn-bg: #fdecec; --warn-fg: #b3261e;
       --today-bg: #ffeddc; --today-fg: #a84f00;
       --soon-bg: #fff6cc; --soon-fg: #7a6000;
+      --check-bg: #efe4ff; --check-fg: #6a2fb5; --check-card: #f8f3ff; --check-line: #c9b0ef;
       --manual: #a06b12;
       --memo: #a06b12;
       --ok: #1f7a4d;
@@ -169,6 +171,18 @@
     .when.soon b { color: var(--soon-fg); }
     .card.over { border-left: 4px solid var(--warn-fg); }
     .notice.over { cursor: pointer; }
+    /* 要確認（●校戻りから4営業日、提出なし＝修正依頼の見落としの疑い）：紫。超過（赤）とは別の色 */
+    .card.check { background: var(--check-card); border-color: var(--check-line); }
+    .card.check:not(.over) { border-left: 4px solid var(--check-fg); }
+    .card.check.over { border-left-color: var(--warn-fg); }   /* 超過と重なったら左線は赤（背景は紫のまま） */
+    .card.check.clickable:hover { background: var(--check-card); filter: brightness(1.04); }
+    .checkline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; font-weight: 700; color: var(--check-fg); margin-top: 3px; }
+    .chk-badge { font-size: 12px; font-weight: 700; border-radius: 6px; padding: 0 8px; background: var(--check-fg); color: var(--check-card); white-space: nowrap; }
+    .notice.check { cursor: pointer; color: var(--check-fg); background: var(--check-bg); }
+    .checkbox-panel { border: 1px solid var(--check-line); background: var(--check-card); border-radius: 12px; padding: 10px 12px; margin: 10px 0; font-size: 13px; }
+    .checkbox-panel .head { font-weight: 700; color: var(--check-fg); margin-bottom: 4px; }
+    .checkbox-panel ul { margin: 4px 0 6px; padding-left: 18px; }
+    .checkbox-panel .acked { color: var(--muted); }
     .conflict { font-size: 11.5px; color: var(--manual); }
     .order-no { font-family: "SFMono-Regular", Consolas, "Courier New", monospace; font-size: 12.5px; color: var(--faint); letter-spacing: .02em; }
     .temp-mark { margin-left: 6px; font-size: 11px; color: var(--faint); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; font-family: inherit; }
@@ -265,6 +279,7 @@
   </div>
   <div class="notice hidden" id="notice"></div>
   <div class="notice over hidden" id="overNotice" title="クリックすると最初の案件へ移動します"></div>
+  <div class="notice check hidden" id="checkNotice" title="クリックすると最初の案件へ移動します"></div>
   <div class="notice soft hidden" id="kiyoNotice"></div>
 </header>
 
@@ -406,6 +421,24 @@ function isOverdue(r) {
   return !!(r.due && r.due < state.data.today);
 }
 
+/**
+ * 要確認の一言。生産表の案件：「初校戻り 10/5から5営業日・提出なし」
+ * 紀要：「2本　初校戻りから最長6営業日・提出なし」（1本なら論文名）
+ */
+function hasCheck(r) { return !!(r.checkItems && r.checkItems.length); }
+function checkText(r) {
+  const items = r.checkItems || [];
+  if (!items.length) return '';
+  const top = items[0];
+  if (!r.papers.length) return top.stage + ' ' + shortDate(top.date) + 'から' + top.days + '営業日・提出なし';
+  if (items.length === 1) return '「' + top.title + '」' + top.stage + ' ' + shortDate(top.date) + 'から' + top.days + '営業日・提出なし';
+  return items.length + '本　' + top.stage + 'から最長' + top.days + '営業日・提出なし';
+}
+function checkTitle(r) {
+  return '修正依頼の見落としがないか確認してください（●校戻りの日から土日を除いて' + (r.checkAfterDays || 4) + '日、次の提出の日付が入っていません）' +
+    (r.papers.length ? '\n' + r.checkItems.map(function (c) { return '・' + c.title + '（' + c.stage + ' ' + shortDate(c.date) + '）'; }).join('\n') : '');
+}
+
 function isThisWeek(r) {
   const d = state.data;
   return !!r.gehan && r.gehan >= d.weekStart && r.gehan <= d.weekEnd;
@@ -544,6 +577,15 @@ function render() {
       '）。生産表の予定日の見直しか、A列の「済」を確認してください。'
     : '';
   on.classList.toggle('hidden', overRows.length === 0);
+  // 要確認：●校戻りから4営業日たっても提出の日付が入っていない案件（修正依頼の見落としの疑い）
+  const checkRows = d.rows.filter(hasCheck);
+  const cn = document.getElementById('checkNotice');
+  cn.textContent = checkRows.length
+    ? '要確認：戻りから' + (d.checkAfterDays || 4) + '営業日たっても提出の日付が入っていない案件が ' + checkRows.length + ' 件あります（' +
+      checkRows.slice(0, 3).map(function (r) { return r.item; }).join('、') + (checkRows.length > 3 ? ' ほか' : '') +
+      '）。ChatWork の修正依頼を見落としていないか確認してください。'
+    : '';
+  cn.classList.toggle('hidden', checkRows.length === 0);
 
   const kn = document.getElementById('kiyoNotice');
   const kparts = [];
@@ -654,7 +696,7 @@ function cardHtml(r, group) {
   if (r.manualFields.indexOf('date') >= 0 && r.gehanAuto !== r.gehan) conflicts.push('下版 生産表 ' + (r.gehanAuto ? shortDate(r.gehanAuto) : '—') + ' ／ ボード ' + (r.gehan ? shortDate(r.gehan) : '—'));
   if (r.manualFields.indexOf('output') >= 0 && r.outputAuto !== r.output) conflicts.push('出力 生産表 ' + esc(r.outputAuto || '—') + ' ／ ボード ' + esc(r.output || '—'));
 
-  return '<div class="card clickable' + (r.isDone ? ' done' : '') + (isOverdue(r) ? ' over' : '') + '" data-key="' + esc(r.key) + '" data-search="' + esc((r.orderNo + ' ' + r.customer + ' ' + r.item).toLowerCase()) + '">' +
+  return '<div class="card clickable' + (r.isDone ? ' done' : '') + (isOverdue(r) ? ' over' : '') + (hasCheck(r) ? ' check' : '') + '" data-key="' + esc(r.key) + '" data-search="' + esc((r.orderNo + ' ' + r.customer + ' ' + r.item).toLowerCase()) + '">' +
     '<div class="card-top">' +
       '<span class="status-badge ' + cls + '">' + esc(r.status) + '</span>' +
       whenHtml +
@@ -664,6 +706,7 @@ function cardHtml(r, group) {
       '</span>' +
     '</div>' +
     '<div class="dateline' + (big.past ? ' past' : '') + (bigUrg ? ' ' + bigUrg.cls : '') + '">' + dateHtml + '</div>' +
+    (hasCheck(r) ? '<div class="checkline" title="' + esc(checkTitle(r)) + '"><span class="chk-badge">要確認</span><span>' + esc(checkText(r)) + '</span></div>' : '') +
     (conflicts.length ? '<div class="conflict">' + conflicts.join('　') + '</div>' : '') +
     '<div class="order-no">' + esc(r.orderNo) + (r.isTemp ? '<span class="temp-mark">未採番</span>' : '') + '</div>' +
     '<div class="customer">' + esc(r.customer) + '</div>' +
@@ -715,6 +758,27 @@ function openPanel(key) {
           '<td>' + esc(paperStatusLabel(p.status)) + '</td><td>' + (p.date ? shortDate(p.date) : '') + '</td></tr>';
       }).join('') + '</table>'
     : '';
+
+  // 要確認（見落としの疑い）と、確認済の状態
+  let checkHtml = '';
+  if (hasCheck(r) || r.checkAckDate) {
+    checkHtml = '<div class="checkbox-panel">';
+    if (hasCheck(r)) {
+      checkHtml += '<div class="head">要確認：戻りから' + r.checkAfterDays + '営業日（土日除く）たっても、次の提出の日付が入っていません</div>' +
+        '<div>ChatWork の修正依頼を見落としていないか確認してください。</div>' +
+        '<ul>' + r.checkItems.map(function (c) {
+          return '<li>' + (c.title ? esc(c.title) + '　' : '') + esc(c.stage) + ' ' + shortDate(c.date) + '（' + c.days + '営業日）</li>';
+        }).join('') + '</ul>';
+      if (d.canEdit) checkHtml += '<button class="btn small" id="ackBtn">確認済にする（見落としではない）</button>' +
+        '<span class="hint">　先方待ち・保留など分かったうえで止めているとき。次に新しい戻りが入れば、また要確認になります。</span>';
+    }
+    if (r.checkAckDate) {
+      checkHtml += '<div class="acked">確認済：' + esc(r.checkAckBy) + '（' + shortDate(r.checkAckDate) + 'までの戻り' +
+        (r.checkAcked ? '・' + r.checkAcked + '件を非表示' : '') + '）' +
+        (d.canEdit ? '　<button class="btn small" id="ackUndoBtn">確認済を取り消す</button>' : '') + '</div>';
+    }
+    checkHtml += '</div>';
+  }
 
   const autoNote = function (field, autoText) {
     return r.manualFields.indexOf(field) >= 0 ? '<span class="auto">手動（生産表は ' + esc(autoText || '—') + '）</span>' : '';
@@ -796,7 +860,7 @@ function openPanel(key) {
     '<h2>' + esc(r.item) + '</h2>' +
     '<div class="panel-sub"><span class="order-no">' + esc(r.orderNo) + '</span>' + (r.isTemp ? '（未採番）' : '') + ' ／ ' + esc(r.customer) +
       (r.sales ? ' ／ 【' + esc(r.sales) + '】' : '') + '</div>' +
-    infoHtml + papersHtml + editHtml;
+    checkHtml + infoHtml + papersHtml + editHtml;
   document.getElementById('overlay').classList.remove('hidden');
 
   document.getElementById('panelCancel').addEventListener('click', closePanel);
@@ -820,6 +884,16 @@ function openPanel(key) {
           document.querySelectorAll('.chk-編集').forEach(function (c) { c.checked = r.editAuto.indexOf(c.value) >= 0; });
         }
       });
+    });
+    const ackBtn = document.getElementById('ackBtn');
+    if (ackBtn) ackBtn.addEventListener('click', function () {
+      if (!ensureName()) return;
+      call('ackCheck', [r.key, state.name, false, auth_()], function () { closePanel(); showToast('要確認を確認済にしました'); load(true); });
+    });
+    const ackUndoBtn = document.getElementById('ackUndoBtn');
+    if (ackUndoBtn) ackUndoBtn.addEventListener('click', function () {
+      if (!ensureName()) return;
+      call('ackCheck', [r.key, state.name, true, auth_()], function () { closePanel(); showToast('確認済を取り消しました'); load(true); });
     });
     document.getElementById('mergeBtn').addEventListener('click', function () {
       const to = document.getElementById('mergeTarget').value;
@@ -913,6 +987,10 @@ document.addEventListener('click', function (ev) {
 document.getElementById('q').addEventListener('input', function () { state.search = this.value; applySearch(); });
 document.getElementById('overNotice').addEventListener('click', function () {
   const first = document.querySelector('.card.over');
+  if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+});
+document.getElementById('checkNotice').addEventListener('click', function () {
+  const first = document.querySelector('.card.check');
   if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
 });
 document.getElementById('tabStaff').addEventListener('click', function () { state.view = 'staff'; lsSet('seisaku-view', 'staff'); render(); });

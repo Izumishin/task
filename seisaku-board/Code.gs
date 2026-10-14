@@ -179,16 +179,25 @@ const COL = {
   ISSUE_PLANNED: 25,        // Y 掲載予定本数（自動＝紀要シート見出し行の「7本」。空なら未確定）
   ISSUE_FIXED_MANUAL: 26,   // Z 掲載本数確定（手動：確定／未確定）
   ISSUE_PLANNED_MANUAL: 27, // AA 掲載予定本数（手動）
-  ISSUE_NOTE: 28            // AB 紀要メモ（自動＝紀要シート見出し行B列の文字をそのまま。「未入稿」「確定」「◯◯先生だけ遅れ」など）
+  ISSUE_NOTE: 28,           // AB 紀要メモ（自動＝紀要シート見出し行B列の文字をそのまま。「未入稿」「確定」「◯◯先生だけ遅れ」など）
+  CHECK_ACK: 29,            // AC 要確認の確認済（この日付までの戻りは確認済として要確認を出さない）
+  CHECK_ACK_BY: 30          // AD 要確認を確認済にした人と日時
 };
-const LAST_COL = COL.ISSUE_NOTE;
+const LAST_COL = COL.CHECK_ACK_BY;
 const HEADERS = [
   'キー', '受注番号', '得意先', '品名', '営業担当', 'DTP担当', '編集担当',
   '状態', '状態（手動）', '下版予定日', '下版予定日（手動）', '出力区分', '出力区分（手動）',
   '直近の動き', 'メモ', '手動更新者', '手動更新日時', '取込日時', '完了日',
   '納期', 'DTP担当（手動）', '編集担当（手動）', '手動更新の項目', '次の予定',
-  '掲載予定本数', '掲載本数確定（手動）', '掲載予定本数（手動）', '紀要メモ'
+  '掲載予定本数', '掲載本数確定（手動）', '掲載予定本数（手動）', '紀要メモ',
+  '要確認の確認済（この日までの戻り）', '要確認の確認者'
 ];
+
+/**
+ * 要確認（修正依頼の見落とし防止）：●校戻りの日から、土日を除いて この日数 たっても
+ * 次の提出の日付（実績）が入らない案件・論文。スクリプトプロパティ CHECK_AFTER_DAYS で変えられる。
+ */
+const CHECK_AFTER_DAYS_DEFAULT = 4;
 
 /** `論文明細` シートの列。 */
 const PCOL = { ORDER_NO: 1, TITLE: 2, AUTHOR: 3, STATUS: 4, DATE: 5, IMPORTED_AT: 6,
@@ -397,6 +406,20 @@ function addDays_(ymd, n) {
   return Utilities.formatDate(d, CONFIG.TIMEZONE, CONFIG.DATE_FORMAT);
 }
 
+/** from の翌日から to までの平日（土日以外）の日数。祝日は数える。 */
+function businessDaysBetween_(from, to) {
+  const n = diffDays_(to, from);
+  if (n === null || n <= 0) return 0;
+  const p = from.split('/');
+  const w0 = new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2]))).getUTCDay();
+  let count = 0;
+  for (let i = 1; i <= n; i++) {
+    const w = (w0 + i) % 7;
+    if (w !== 0 && w !== 6) count++;
+  }
+  return count;
+}
+
 /** 全角の数字・ハイフンを半角に（受注番号の照合用）。 */
 function toHalfWidth_(s) {
   return String(s === null || s === undefined ? '' : s)
@@ -517,7 +540,7 @@ function getOrCreateSheet_(ss, name, headers, textCols) {
 function getBoardSheet_(ss) {
   ss = ss || openProductionSpreadsheet_();
   const sh = getOrCreateSheet_(ss, CONFIG.BOARD_SHEET_NAME, HEADERS,
-    [COL.KEY, COL.ORDER_NO, COL.GEHAN, COL.GEHAN_MANUAL, COL.DONE_DATE, COL.DUE, COL.ISSUE_PLANNED, COL.ISSUE_PLANNED_MANUAL]);
+    [COL.KEY, COL.ORDER_NO, COL.GEHAN, COL.GEHAN_MANUAL, COL.DONE_DATE, COL.DUE, COL.ISSUE_PLANNED, COL.ISSUE_PLANNED_MANUAL, COL.CHECK_ACK]);
   return sh;
 }
 function getPaperSheet_(ss) {
@@ -1320,7 +1343,49 @@ function normalizeStatus_(s, auto) {
   return (auto === STATUS.CLIENT || auto === STATUS.FIXING) ? auto : STATUS.CLIENT;
 }
 
-function buildRecord_(values, rowNumber, papers, doneWords) {
+function checkAfterDays_() {
+  const n = Number(getProp_('CHECK_AFTER_DAYS', CHECK_AFTER_DAYS_DEFAULT));
+  return n > 0 ? Math.floor(n) : CHECK_AFTER_DAYS_DEFAULT;
+}
+
+/**
+ * 要確認（修正依頼の見落としの疑い）。●校戻りの日から土日を除いて CHECK_AFTER_DAYS 日たっても、
+ * 次の提出の日付（実績）が入っていないもの。
+ *  - 紀要（論文明細がある案件）：論文ごと。状態が ●校戻り のまま（＝その右の提出が空）の論文
+ *  - それ以外：生産表の直近の実績（N列）が ●校戻り のまま。次の提出は予定日だけ入っていても実績ではないので要確認
+ *    （今日の日付で提出が入っていれば、今日提出したものとして出さない）
+ * 「確認済」にした日（AC列）までの戻りは出さない。それより新しい戻りが要確認になれば、また出る。
+ */
+function checkAlert_(values, papers, isDone, todayStr) {
+  const ackDate = toDateString_(values[COL.CHECK_ACK - 1]);
+  const ackBy = toText_(values[COL.CHECK_ACK_BY - 1]);
+  const limit = checkAfterDays_();
+  const out = { items: [], acked: 0, ackDate: ackDate, ackBy: ackBy, limit: limit };
+  if (isDone) return out;
+  const cand = [];
+  if (papers && papers.length) {
+    papers.forEach(function (p) {
+      if (/校戻り$/.test(p.status) && p.date && p.date <= todayStr) {
+        cand.push({ title: p.title, author: p.author, kind: p.kind, stage: p.status, date: p.date });
+      }
+    });
+  } else {
+    const m = toText_(values[COL.RECENT - 1]).match(/^(\S*戻り)\s+(\d{4}\/\d{2}\/\d{2})$/);
+    const nx = toText_(values[COL.NEXT - 1]).match(/^(\S+?)予定\s+(\d{4}\/\d{2}\/\d{2})$/);
+    const submittedToday = nx && nx[2] === todayStr && /提出|下版/.test(nx[1]);
+    if (m && !submittedToday) cand.push({ title: '', author: '', kind: '', stage: m[1], date: m[2] });
+  }
+  cand.forEach(function (c) {
+    c.days = businessDaysBetween_(c.date, todayStr);
+    if (c.days < limit) return;
+    if (ackDate && c.date <= ackDate) out.acked++;
+    else out.items.push(c);
+  });
+  out.items.sort(function (a, b) { return b.days - a.days; });
+  return out;
+}
+
+function buildRecord_(values, rowNumber, papers, doneWords, todayStr) {
   const e = effective_(values);
   const due = toDateString_(values[COL.DUE - 1]);
   const doneDate = toDateString_(values[COL.DONE_DATE - 1]);
@@ -1341,6 +1406,7 @@ function buildRecord_(values, rowNumber, papers, doneWords) {
   const issueAuto = issueAuto_(values);
   const statusAuto = kiyoTurnStatus_(autoStatus_(values), list, doneWords);
   const status = e.manual.status ? normalizeStatus_(e.status, statusAuto) : statusAuto;
+  const check = checkAlert_(values, list, status === STATUS.DONE, todayStr || today_());
   return {
     row: rowNumber,
     key: toText_(values[COL.KEY - 1]),
@@ -1377,7 +1443,12 @@ function buildRecord_(values, rowNumber, papers, doneWords) {
     issuePlanned: e.issue.planned,      // 掲載予定本数（有効値。未確定なら ''）
     issueFixedAuto: issueAuto.fixed,    // 紀要シートから読んだ値
     issuePlannedAuto: issueAuto.planned,
-    issueNote: toText_(values[COL.ISSUE_NOTE - 1])   // 紀要シート見出し行B列の文字（そのまま）
+    issueNote: toText_(values[COL.ISSUE_NOTE - 1]),  // 紀要シート見出し行B列の文字（そのまま）
+    checkItems: check.items,     // 要確認：[{title, author, kind, stage, date, days}]（戻りから日数の長い順）
+    checkAcked: check.acked,     // 確認済にしたので出していない件数
+    checkAckDate: check.ackDate, // この日付までの戻りは確認済
+    checkAckBy: check.ackBy,
+    checkAfterDays: check.limit
   };
 }
 
@@ -1433,7 +1504,7 @@ function getBoardData(options) {
   const rows = [];
   values.forEach(function (v, i) {
     if (!toText_(v[COL.KEY - 1])) return;
-    const rec = buildRecord_(v, i + 2, papers[toText_(v[COL.ORDER_NO - 1])], cfg.doneWords);
+    const rec = buildRecord_(v, i + 2, papers[toText_(v[COL.ORDER_NO - 1])], cfg.doneWords, todayStr);
     if (rec.isDone) {
       if (!rec.doneDate || rec.doneDate < weekStart) return;
     }
@@ -1459,6 +1530,7 @@ function getBoardData(options) {
     submitLabel: cfg.submitStage,
     paperKinds: [PAPER_KIND.BODY, PAPER_KIND.FRONT],
     issueFixedValues: [ISSUE_FIXED.FIXED, ISSUE_FIXED.UNFIXED],
+    checkAfterDays: checkAfterDays_(),
     lastImportAt: getProp_('LAST_IMPORT_AT', ''),
     lastKiyoImportAt: getProp_('LAST_KIYO_IMPORT_AT', ''),
     kiyoError: getProp_('LAST_KIYO_ERROR', ''),
@@ -1603,7 +1675,7 @@ function resetToProduction(key, fields, auth) {
     if (name) v[COL.MANUAL_BY - 1] = name;
     v[COL.MANUAL_AT - 1] = nowStamp_();
     sh.getRange(row, 1, 1, LAST_COL).setValues([v]);
-    return buildRecord_(v, row, readPapers_()[toText_(v[COL.ORDER_NO - 1])]);
+    return buildRecord_(v, row, readPapers_()[toText_(v[COL.ORDER_NO - 1])], kiyoDoneWords_());
   });
 }
 
@@ -1634,6 +1706,10 @@ function mergeCases(fromKey, toKey, auth) {
       }
     });
     const fromMemo = toText_(from[COL.MEMO - 1]), toMemo = toText_(to[COL.MEMO - 1]);
+    if (toText_(from[COL.CHECK_ACK - 1]) && !toText_(to[COL.CHECK_ACK - 1])) {
+      to[COL.CHECK_ACK - 1] = from[COL.CHECK_ACK - 1];
+      to[COL.CHECK_ACK_BY - 1] = from[COL.CHECK_ACK_BY - 1];
+    }
     if (fromMemo && !toMemo) to[COL.MEMO - 1] = fromMemo;
     else if (fromMemo && toMemo && fromMemo !== toMemo) to[COL.MEMO - 1] = toMemo + ' ／ ' + fromMemo;
     to[COL.MANUAL_FIELDS - 1] = manualFieldsString_(tm);
@@ -1644,6 +1720,38 @@ function mergeCases(fromKey, toKey, auth) {
     sh.deleteRow(fromRow);
     console.log('案件を統合: %s → %s', fromKey, toKey);
     return { fromKey: fromKey, toKey: toKey };
+  });
+}
+
+/**
+ * 要確認の「確認済」。いま要確認に出ている戻りのうち一番新しい日付までを確認済にする（AC列）。
+ * それより新しい戻りが要確認になれば、また出る。undo=true で確認済を取り消す。
+ */
+function ackCheck(key, name, undo, auth) {
+  assertEditor_(auth);
+  const who = toText_(name) || toText_(auth && auth.name);
+  if (!who) throw new Error('だれが確認したか分かるよう、名前を選んでください。');
+  return withLock_(function () {
+    const sh = getBoardSheet_();
+    const row = findRowByKey_(sh, key);
+    if (!row) throw new Error('案件 ' + key + ' が見つかりません。');
+    const v = sh.getRange(row, 1, 1, LAST_COL).getValues()[0];
+    const papersNow = readPapers_()[toText_(v[COL.ORDER_NO - 1])];
+    const doneWords = kiyoDoneWords_();
+    const todayStr = today_();
+    if (undo) {
+      v[COL.CHECK_ACK - 1] = '';
+      v[COL.CHECK_ACK_BY - 1] = '';
+    } else {
+      const rec = buildRecord_(v, row, papersNow, doneWords, todayStr);
+      if (rec.checkItems.length === 0) throw new Error('この案件にいま要確認はありません。');
+      let latest = toDateString_(v[COL.CHECK_ACK - 1]);
+      rec.checkItems.forEach(function (c) { if (!latest || c.date > latest) latest = c.date; });
+      v[COL.CHECK_ACK - 1] = latest;
+      v[COL.CHECK_ACK_BY - 1] = who + ' ' + nowStamp_();
+    }
+    sh.getRange(row, COL.CHECK_ACK, 1, 2).setValues([[v[COL.CHECK_ACK - 1], v[COL.CHECK_ACK_BY - 1]]]);
+    return buildRecord_(v, row, papersNow, doneWords, todayStr);
   });
 }
 

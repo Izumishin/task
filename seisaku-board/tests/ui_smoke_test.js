@@ -254,5 +254,38 @@ check('紀要でない案件は今までどおり工程名を出す', plainCard.
 const gehanRow = Object.assign({}, kiyoRow, { next: '下版予定 ' + D(3) });
 check('紀要の案件でも「下版予定」はそのまま', ui.cardHtml(gehanRow, 'DTP').indexOf('<span class="evt">下版予定</span>') >= 0);
 
+console.log('--- 要確認（戻りから4営業日、提出なし） ---');
+const chkItem = { title: '', author: '', kind: '', stage: '初校戻り', date: D(-8), days: 6 };
+const chkCard = ui.cardHtml(mk({ checkItems: [chkItem], checkAfterDays: 4 }), 'DTP');
+check('要確認のカードは色が変わる（card … check）', / check"/.test(chkCard.match(/<div class="card[^"]*"/)[0]), chkCard.match(/<div class="card[^"]*"/)[0]);
+check('「要確認」バッジと理由', chkCard.indexOf('<span class="chk-badge">要確認</span>') >= 0 && chkCard.indexOf('から6営業日・提出なし') >= 0, chkCard.match(/checkline.*?<\/div>/));
+check('要確認でなければ出ない', ui.cardHtml(mk({ checkItems: [] }), 'DTP').indexOf('checkline') < 0 && ui.cardHtml(mk({}), 'DTP').indexOf(' check"') < 0);
+const kiyoChk = ui.cardHtml(Object.assign({}, kiyoRow, { checkItems: [
+  { title: '論文A', stage: '再校戻り', date: D(-9), days: 7 }, { title: '論文B', stage: '初校戻り', date: D(-7), days: 5 }], checkAfterDays: 4 }), 'DTP');
+check('紀要は本数と最長日数', kiyoChk.indexOf('2本　再校戻りから最長7営業日・提出なし') >= 0, kiyoChk.match(/checkline.*?<\/div>/));
+check('紀要は論文名をツールチップに', kiyoChk.indexOf('・論文A（再校戻り') >= 0);
+const kiyoChk1 = ui.cardHtml(Object.assign({}, kiyoRow, { checkItems: [{ title: '論文A', stage: '再校戻り', date: D(-9), days: 7 }], checkAfterDays: 4 }), 'DTP');
+check('紀要で1本なら論文名', kiyoChk1.indexOf('「論文A」再校戻り') >= 0);
+const saveRows2 = ui.state.data.rows;
+ui.state.data.rows = saveRows2.concat([mk({ key: 'C1', item: '見落とし号', checkItems: [chkItem], checkAfterDays: 4 })]);
+ui.state.data.checkAfterDays = 4;
+ui.render();
+const baseChk = saveRows2.filter(r => r.checkItems && r.checkItems.length).length;
+check('上部の帯に要確認の件数', el('checkNotice').textContent.indexOf((baseChk + 1) + ' 件') >= 0 && el('checkNotice').textContent.indexOf('見落とし号') >= 0 && !el('checkNotice').classes.hidden, el('checkNotice').textContent);
+ui.openPanel('C1');
+let cp = el('panel').innerHTML;
+check('詳細に要確認の理由と確認済ボタン（編集モード）', cp.indexOf('checkbox-panel') >= 0 && cp.indexOf('初校戻り') >= 0 && cp.indexOf('id="ackBtn"') >= 0);
+ui.closePanel();
+ui.state.data.rows = saveRows2.concat([mk({ key: 'C2', item: '確認済の号', checkItems: [], checkAcked: 1, checkAckDate: D(-8), checkAckBy: '和泉 2026/10/14 17:20' })]);
+ui.openPanel('C2');
+cp = el('panel').innerHTML;
+check('確認済の表示と取り消しボタン', cp.indexOf('確認済：和泉') >= 0 && cp.indexOf('id="ackUndoBtn"') >= 0 && cp.indexOf('id="ackBtn"') < 0);
+ui.closePanel();
+ui.state.data.rows = saveRows2.filter(r => !(r.checkItems && r.checkItems.length));
+ui.render();
+check('要確認が無ければ帯は出ない', !!el('checkNotice').classes.hidden);
+ui.state.data.rows = saveRows2;
+ui.render();
+
 console.log(fails === 0 ? '\nすべて成功' : `\n失敗 ${fails} 件`);
 process.exit(fails === 0 ? 0 : 1);
