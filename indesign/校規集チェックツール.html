@@ -88,7 +88,7 @@
         <div><label>柱を探す範囲：上端から（ページ高さの%）</label><input id="sHashira" type="number" value="10" min="1" max="50"></div>
         <div><label>ノンブルを探す範囲：上下端から（%）</label><input id="sNombre" type="number" value="8" min="1" max="50"></div>
         <div><label>細目次の段数</label><input id="sTocCols" type="number" value="1" min="1" max="4"></div>
-        <div><label>索引の段数</label><input id="sIdxCols" type="number" value="2" min="1" max="4"></div>
+        <div><label>索引の段数</label><input id="sIdxCols" type="number" value="1" min="1" max="4"></div>
       </div>
       <p class="hint">結果の「ページ一覧」タブで柱・ノンブルが正しく拾えているか確認し、ずれていたらここを調整してください。</p>
     </details>
@@ -119,7 +119,7 @@ var Core = (function () {
 
   // 全角→半角などをそろえ、空白を除く
   function norm(s) {
-    return String(s || '').normalize('NFKC').replace(/[\s　]+/g, '');
+    return String(s || '').normalize('NFKC').replace(/[\s　○〇◯]+/g, '');
   }
   // 格付けタグ【…】を除いた題名
   function stripTag(s) {
@@ -179,12 +179,15 @@ var Core = (function () {
   function analyzePage(pg, opt) {
     var topLim = pg.h * opt.hashiraPct / 100;
     var nTop = pg.h * opt.nombrePct / 100, nBot = pg.h * (1 - opt.nombrePct / 100);
-    var nombreCands = [], hashiraItems = [], bodyItems = [];
+    var nombreCands = [], hashiraItems = [], bodyItems = [], contentItems = [];
     pg.items.forEach(function (it) {
       var m = it.str.match(NUM_ONLY);
       if (m && (it.y <= nTop || it.y >= nBot)) {
         nombreCands.push({ n: parseInt(m[1].normalize('NFKC'), 10), edge: Math.min(it.y, pg.h - it.y) });
-      } else if (it.y <= topLim) {
+        return;
+      }
+      contentItems.push(it);   // ノンブル以外すべて（目次・索引ページ用）
+      if (it.y <= topLim) {
         hashiraItems.push(it);
       } else if (it.y < nBot) {
         bodyItems.push(it);
@@ -197,18 +200,21 @@ var Core = (function () {
       hashira: hashira.trim(),
       title: norm(stripTag(hashira)),
       bodyItems: bodyItems,
+      contentItems: contentItems,
       bodyText: norm(bodyItems.map(function (i) { return i.str; }).join(''))
     };
   }
 
   // ---- 細目次の行を解析 ----
-  var LEADER = '[\\s.…‥・･·•―\\-－_]';
-  var TOC_RE = new RegExp('^(.+?)' + LEADER + '+([0-9]{1,5})$');
+  var LEADER = '[\\s.…‥・･·•―\\-－_\\u0008\\uFFFD]';
+  // 末尾の「上」「下」（巻の表記）は読み飛ばす
+  var TOC_RE = new RegExp('^(.+?)' + LEADER + '+([0-9]{1,5})(?:\\s*[上下])?$');
   function parseToc(lines) {
     var entries = [], pending = [];
     lines.forEach(function (raw) {
       var line = String(raw).normalize('NFKC').trim();
       if (!line) return;
+      if (/^[○〇◯]/.test(line)) pending = [];   // ○から新しい項目
       var m = line.match(TOC_RE);
       if (m && norm(m[1]).replace(/[.…‥・･·•―\-_]/g, '')) {
         var title = m[1].replace(new RegExp(LEADER + '+$'), '').trim();
@@ -223,12 +229,13 @@ var Core = (function () {
   }
 
   // ---- 索引の行を解析 ----
-  var IDX_RE = new RegExp('^(.+?)' + LEADER + '+([0-9][0-9,、，~〜～\\-–・\\s]*)$');
+  var IDX_RE = new RegExp('^(.+?)' + LEADER + '+([0-9][0-9,、，~〜～\\-–・\\s]*?)(?:\\s*[上下])?$');
   function parseIndex(lines) {
     var entries = [], pending = '';
     lines.forEach(function (raw) {
       var line = String(raw).normalize('NFKC').trim();
       if (!line) return;
+      if (/^[○〇◯]/.test(line)) pending = '';
       var m = line.match(IDX_RE);
       if (m) {
         var term = (pending + m[1].replace(new RegExp(LEADER + '+$'), '')).trim();
@@ -266,7 +273,7 @@ var Core = (function () {
         var a = analyzePage(pg, opt);
         var kind = d.tocPages.has(no) ? '目次' : d.idxPages.has(no) ? '索引' : '本文';
         if (kind !== '本文') {
-          var lines = toLines(a.bodyItems, pg.w, kind === '目次' ? opt.tocCols : opt.idxCols);
+          var lines = toLines(a.contentItems, pg.w, kind === '目次' ? opt.tocCols : opt.idxCols);
           lines.forEach(function (l) { (kind === '目次' ? tocLines : idxLines).push({ text: l, doc: d.name, pdfPage: no }); });
         }
         pageList.push({ doc: d.name, docIndex: di, pdfPage: no, kind: kind,
@@ -463,7 +470,7 @@ if (typeof module !== 'undefined') module.exports = Core;
       $('status').textContent = '照合中…';
       result = Core.check(docs, {
         hashiraPct: +$('sHashira').value || 10, nombrePct: +$('sNombre').value || 8,
-        tocCols: +$('sTocCols').value || 1, idxCols: +$('sIdxCols').value || 2
+        tocCols: +$('sTocCols').value || 1, idxCols: +$('sIdxCols').value || 1
       });
       $('status').textContent = '完了（' + total + ' ページ）';
       renderResult();
