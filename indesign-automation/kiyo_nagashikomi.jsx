@@ -1316,6 +1316,9 @@ function docxHeadingLevel(styles, styleId) {
 function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
   var blocks = [], pos = 0, n = xml.length, lt, gt, tag, name, selfClose, closeIdx;
   var para = null, skip = 0, inTabs = 0, fallback = 0, txbx = 0;
+  // 本文の段落に置いた文字ボックス (テキストボックス) の中身: 読んでいる間は、付いている段落を
+  // boxSave にしまっておき、中身の段落は boxBlocks にためる。付いている段落の直後に入れる
+  var boxSave = null, boxBlocks = null, boxNo = 0, pendingBoxes = [];
   var inPPr = 0, runFmt = null, inRPr = false, ruby = null, inRt = 0, pprChange = 0, mathPara = 0, mathCount = 0, orphanMarks = [];
   var numState = numbering ? createNumState(numbering) : null;
 
@@ -1376,7 +1379,16 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
       if (noteParas !== null) { noteParas.push(para.text); noteParas.fmt.push(para.fmt); }
     } else {
       para.level = docxHeadingLevel(styles, para.styleId);
-      blocks.push(para);
+      if (boxBlocks !== null) {
+        para.box = boxNo;
+        boxBlocks.push(para);
+      } else {
+        blocks.push(para);
+        // この段落に付いていた文字ボックスの中身を、段落の直後に入れる
+        var pb;
+        for (pb = 0; pb < pendingBoxes.length; pb++) blocks.push(pendingBoxes[pb]);
+        pendingBoxes = [];
+      }
     }
     para = null;
   }
@@ -1407,7 +1419,16 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
         ruby = null;
       }
       else if (name === "mc:Fallback") { if (fallback > 0) fallback--; }
-      else if (name === "w:txbxContent") { if (txbx > 0) txbx--; }
+      else if (name === "w:txbxContent") {
+        if (txbx > 0) txbx--;
+        else if (boxSave !== null) {
+          flushPara();
+          var bk;
+          for (bk = 0; bk < boxBlocks.length; bk++) pendingBoxes.push(boxBlocks[bk]);
+          para = boxSave.para; runFmt = boxSave.runFmt; inRPr = boxSave.inRPr; ruby = boxSave.ruby; inRt = boxSave.inRt; inPPr = boxSave.inPPr;
+          boxSave = null; boxBlocks = null;
+        }
+      }
       else if (fallback > 0 || txbx > 0) continue;
       else if (name === "w:p") flushPara();
       else if (name === "w:tc") {
@@ -1432,7 +1453,8 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
           tbl = null;
         }
         if (tbl === null) {
-          blocks.push({ type: "table", rows: done.rows, fmts: done.fmts, widths: done.widths, refs: done.refs, lostRefs: done.lostRefs || 0 });
+          (boxBlocks !== null ? boxBlocks : blocks).push({ type: "table", rows: done.rows, fmts: done.fmts, widths: done.widths, refs: done.refs,
+                                                          lostRefs: done.lostRefs || 0, box: boxBlocks !== null ? boxNo : 0 });
         } else {
           // 表の中の表の注は取り込めない (文字だけ親のセルに入れる)
           var lr = 0, r2, c2;
@@ -1454,9 +1476,21 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
     }
     name = _tagName(tag);
     selfClose = tag.charAt(tag.length - 1) === "/";
-    // Word の互換用の重複データ・テキストボックスの中身は読まない
+    // Word の互換用の重複データ (mc:Fallback) は読まない。
+    // 本文の段落に置いた文字ボックスの中身は読む (表の中・注の中・ボックスの中のボックスは読まない)
     if (name === "mc:Fallback") { if (!selfClose) fallback++; continue; }
-    if (name === "w:txbxContent") { if (!selfClose) txbx++; continue; }
+    if (name === "w:txbxContent") {
+      if (selfClose) continue;
+      if (fallback === 0 && txbx === 0 && boxSave === null && !collectNotes && tbl === null && cell === null && para !== null) {
+        boxNo++;
+        boxSave = { para: para, runFmt: runFmt, inRPr: inRPr, ruby: ruby, inRt: inRt, inPPr: inPPr };
+        para = null; runFmt = null; inRPr = false; ruby = null; inRt = 0; inPPr = 0;
+        boxBlocks = [];
+      } else {
+        txbx++;
+      }
+      continue;
+    }
     if (fallback > 0 || txbx > 0) continue;
     if (name === "w:instrText" || name === "w:delText") { if (!selfClose) skip++; continue; }
     if (name === "w:tabs") { if (!selfClose) inTabs++; continue; }
@@ -1488,8 +1522,10 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
       if (selfClose) continue;
       closeIdx = xml.indexOf("</m:oMath>", pos);
       if (closeIdx < 0) break;
-      if (!collectNotes) mathCount++;
-      if (skip === 0) addMath(para, xml.substring(pos, closeIdx), mathPara > 0, collectNotes ? 0 : mathCount);
+      // Word の本文の数式の番号 (文字ボックスの中の数式は Word では別に数えるので、番号を付けない)
+      var inMain = !collectNotes && boxSave === null;
+      if (inMain) mathCount++;
+      if (skip === 0) addMath(para, xml.substring(pos, closeIdx), mathPara > 0, inMain ? mathCount : 0);
       pos = closeIdx + 10;
       continue;
     }
@@ -1567,7 +1603,11 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
   }
   flushPara();
   if (collectNotes) return notes;
+  // 付いている段落が見つからなかった文字ボックスの中身も、最後に入れる (消さない)
+  var lp;
+  for (lp = 0; lp < pendingBoxes.length; lp++) blocks.push(pendingBoxes[lp]);
   blocks.mathCount = mathCount;
+  blocks.boxCount = boxNo;
   blocks.orphanMarks = orphanMarks;
   return blocks;
 }
@@ -1633,6 +1673,7 @@ function readDocxParts(getText, onProgress) {
     blocks: bodyBlocks,
     mathCount: bodyBlocks.mathCount || 0,
     orphanMarks: bodyBlocks.orphanMarks || [],
+    boxCount: bodyBlocks.boxCount || 0,
     endnotes: endXml ? parseDocxBody(endXml, styles, true, null, numbering) : {},
     footnotes: footXml ? parseDocxBody(footXml, styles, true, null, numbering) : {},
     rels: rels,
@@ -1656,7 +1697,7 @@ function readDocxManuscript(bin, onProgress) {
 var ROLES = [
   ["title", "題目"], ["subtitle", "副題"], ["author", "著者名"], ["affiliation", "所属"],
   ["abstractTitle", "要旨の見出し"], ["abstract", "要旨"], ["keywords", "キーワード"],
-  ["h1", "大見出し"], ["h2", "中見出し"], ["h3", "小見出し"], ["body", "本文"], ["list", "箇条書き"], ["math", "数式 (別行)"],
+  ["h1", "大見出し"], ["h2", "中見出し"], ["h3", "小見出し"], ["body", "本文"], ["list", "箇条書き"], ["math", "数式 (別行)"], ["box", "文字ボックス"],
   ["figCaption", "図表のタイトル"], ["table", "表"], ["figure", "図(画像)"], ["figSource", "図表の出典・注"],
   ["noteTitle", "注の見出し"], ["note", "注"],
   ["refTitle", "参考文献の見出し"], ["refSub", "参考文献の小見出し"], ["ref", "参考文献"]
@@ -1735,6 +1776,16 @@ function headingDepthByText(t) {
   return 0;
 }
 
+// Word の原稿の段落全体 (9割以上) が太字か
+function _wholeBold(it) {
+  var b = it.block, t, core, cov = 0, i;
+  if (!b || !b.fmt || !b.text) return false;
+  t = b.text; core = t.replace(/[\s　]/g, "").length;
+  if (core === 0) return false;
+  for (i = 0; i < b.fmt.length; i++) if (b.fmt[i].bold) cov += t.substring(b.fmt[i].start, b.fmt[i].end).replace(/[\s　]/g, "").length;
+  return cov / core >= 0.9;
+}
+
 // 前回号の段落スタイル名から見出しの深さを読む (大見出し/中見出し/小見出し)。見出しでなければ 0
 function headingDepthByStyle(name) {
   if (!name || /Abstract|注|要旨|表|図/i.test(name)) return 0;
@@ -1754,9 +1805,13 @@ function classifySequence(items) {
     if (it.isTable) { roles.push("table"); lastFig = i; if (st === "front") st = "body"; continue; }
     if (it.isImage && t === "") { roles.push("figure"); lastFig = i; if (st === "front") st = "body"; continue; }
     if (t === "") { roles.push("empty"); continue; }
+    // 文字ボックスの中身 (前付け・本文の判定の流れには影響させない)
+    if (it.isBox) { roles.push("box"); continue; }
     // 別の行に立てた数式
     if (it.isMath && (haveTitle || st === "body")) { roles.push("math"); continue; }
     depth = headingDepthByText(t);
+    // 長い見出し (50字を超える) でも、番号で始まり段落全体が太字なら見出し (Word の原稿)
+    if (depth === 0 && t.length > 50 && t.length <= 120 && !/[。．]$/.test(t) && _wholeBold(it)) depth = headingDepthByText(t.substring(0, 50));
     // 全角スペースで字下げした長めの段落は本文
     if (depth > 0 && it.text.charAt(0) === "　" && t.length > 15) depth = 0;
     // Word の箇条書き (「1. データの収集」など) は、見出しスタイルでなければ見出しにしない
@@ -2177,7 +2232,7 @@ function buildItems(ms, p) {
   for (i = 0; i < blocks.length; i++) {
     b = blocks[i];
     if (b.type === "table") seq.push({ text: "", level: 0, isTable: true, isImage: false, block: b });
-    else seq.push({ text: b.text, level: b.level, isTable: false, isImage: !!b.image, isList: !!b.isList, isMath: !!b.mathDisplay, block: b });
+    else seq.push({ text: b.text, level: b.level, isTable: false, isImage: !!b.image, isList: !!b.isList, isMath: !!b.mathDisplay, isBox: !!b.box, block: b });
   }
   // 題目の段落に改行があれば、題目と副題に分ける
   var firstIdx = -1;
@@ -2317,6 +2372,12 @@ function buildItems(ms, p) {
     if (b.mathSpecial) item.mathSpecial = true;
     if (role === "keywords") { var km = RE_KEYWORDS.exec(out); if (km) item.label = { start: 0, len: km[0].length }; }
     if (role === "figSource") { var sm = RE_FIG_SOURCE.exec(out); if (sm) item.label = { start: 0, len: sm[0].length }; }
+    if (role === "box") {
+      // 別々の文字ボックスが続くときは、空行で区切る (段落の囲み罫などが1つにつながらないように)
+      item.box = b.box;
+      var pvb = items.length > 0 ? items[items.length - 1] : null;
+      if (pvb && pvb.role === "box" && pvb.box !== b.box) items.push({ role: "blank", forRole: "box", text: "", refs: [] });
+    }
     if (role === "title" || role === "subtitle") {
       var dre = /[―—─]+/g, dm; item.dash = [];
       while ((dm = dre.exec(out)) !== null) item.dash.push({ start: dm.index, len: dm[0].length });
@@ -2440,6 +2501,7 @@ var STYLE_GUESS = {
   body: [[/本文/], /Abstract|注|要旨|表/i],
   list: [[/箇条|リスト|list/i], /Abstract/i],
   math: [[/数式/, /^式$|式[（(]?別行|ディスプレイ|display/i], /Abstract/i],
+  box: [[/囲み|コラム|ボックス|BOX|枠/i, /引用/], /Abstract|表|図|見出し|タイトル/i],
   figCaption: [[/図表タイトル|表タイトル|図タイトル|キャプション/], /Abstract/i],
   figSource: [[/図表注|出典|図注|表注/], /Abstract/i],
   table: [[/^図表$/, /図表[^タ注]*$/], /Abstract/i],
@@ -2453,7 +2515,7 @@ var STYLE_GUESS = {
 var STYLE_FALLBACK = {
   subtitle: "title", affiliation: "author", abstractTitle: "abstract", keywords: "abstract",
   h3: "h2", figSource: "note", table: "figCaption", figure: "table", refTitle: "noteTitle",
-  refSub: "ref", ref: "note", noteTitle: "h2", note: "body", figCaption: "body", list: "body", math: "body"
+  refSub: "ref", ref: "note", noteTitle: "h2", note: "body", figCaption: "body", list: "body", math: "body", box: "body"
 };
 
 function guessStyleName(role, names) {
@@ -4345,6 +4407,7 @@ function main() {
     orphanReport.push("「…" + ms.orphanMarks[om].context + "」の後ろ: " + ms.orphanMarks[om].number);
   }
   if (orphanReport.length > 0) notes.push("※ 脚注ではない上付きの注番号 " + orphanReport.length + " 個を、上付きの数字で入れます。");
+  if (ms.boxCount > 0) notes.push("※ Word の文字ボックス " + ms.boxCount + " 個の中身を、ボックスが付いている段落の後ろに「文字ボックス」の種類で入れます。");
   var mathInfo = countMath(built);
   if (mathInfo.total > 0) {
     notes.push("※ Word の数式 " + mathInfo.total + " 個を文字にして入れます (別の行の式 " + mathInfo.display + " 個は「数式 (別行)」)。" +

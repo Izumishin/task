@@ -831,6 +831,43 @@ check('1行だけの枠は題目の枠にしない', frontScore(memoBox) < 0, fr
 check('見出しのある枠は題目の枠にしない', frontScore(bodyLike) < FRONT_MIN_SCORE, frontScore(bodyLike));
 check('柱・キャプションのスタイルの枠は題目の枠にしない', frontScore(FP([{ text: '幼児期の遊び', style: '柱' }, '山田'])) < 0);
 
+// ---- 本文の段落に置いた文字ボックス (テキストボックス) ----
+console.log('text boxes:');
+const BOXW = W + ' xmlns:wps="wps" xmlns:wp="wp" xmlns:v="v" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"';
+const boxRun = (paras) => {
+  const inner = paras.map(t => `<w:p><w:r><w:t>${t}</w:t></w:r></w:p>`).join('');
+  // Word は新しい形 (mc:Choice) と古い形 (mc:Fallback) の両方に同じ中身を入れる
+  return `<w:r><mc:AlternateContent><mc:Choice Requires="wps"><w:drawing><wp:anchor><wp:extent cx="1800000" cy="1800000"/><wps:wsp><wps:txbx><w:txbxContent>${inner}</w:txbxContent></wps:txbx></wps:wsp></wp:anchor></w:drawing></mc:Choice>` +
+         `<mc:Fallback><w:pict><v:rect><v:textbox><w:txbxContent>${inner}</w:txbxContent></v:textbox></v:rect></w:pict></mc:Fallback></mc:AlternateContent></w:r>`;
+};
+const boxDoc = `<?xml version="1.0"?><w:document ${BOXW}><w:body>${P('ボックスのある論文')}${P('１．はじめに', 'Heading1')}
+<w:p>${boxRun(['引用の一段落目。', '引用の二段落目。'])}<w:r><w:t>１、サバアの洪水の物語</w:t></w:r></w:p>
+${P('　本文の段落です。')}
+<w:p>${boxRun(['二つ目のボックス。'])}</w:p><w:p>${boxRun(['三つ目のボックス。'])}</w:p>
+<w:p><w:r><w:pict><v:shape><v:textbox><w:txbxContent><w:p><w:r><w:t>古い形だけのボックス。</w:t></w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r><w:r><w:t>　ボックスのある本文。</w:t></w:r></w:p>
+<w:p><m:oMathPara><m:oMath><m:r><m:t>x=1</m:t></m:r></m:oMath></m:oMathPara></w:p>
+${P('本文の続き。')}<w:sectPr/></w:body></w:document>`;
+const boxMs = readDocxManuscript(makeZip([['word/document.xml', boxDoc]]).toString('latin1'));
+const boxItems = buildItems(boxMs, prof).items;
+const bseq = boxItems.map(x => x.role + (x.box ? '#' + x.box : '') + ':' + x.text.replace(/^　/, '')).filter(x => !/^blank:$/.test(x) || true);
+const bi = s => bseq.findIndex(x => x.indexOf(s) >= 0);
+check('文字ボックスの中身が消えない (互換用の重複は1回だけ)', bseq.filter(x => x.indexOf('引用の一段落目') >= 0).length === 1 && bi('二つ目のボックス') >= 0 &&
+      bi('三つ目のボックス') >= 0 && bi('古い形だけのボックス') >= 0, bseq.join(' / '));
+check('ボックスの中身は、付いている段落の直後に「文字ボックス」として入る', bi('サバアの洪水') >= 0 && bi('引用の一段落目') === bi('サバアの洪水') + 1 &&
+      bseq[bi('引用の一段落目')].indexOf('box#1') === 0 && bseq[bi('引用の二段落目')].indexOf('box#1') === 0 && bi('ボックスのある本文') + 1 === bi('古い形だけのボックス'),
+      bseq.join(' / '));
+check('別々のボックスが続くときは空行で区切る', bseq[bi('二つ目のボックス') + 1] === 'blank:' && bi('三つ目のボックス') === bi('二つ目のボックス') + 2, bseq.join(' / '));
+check('ボックスの数を数える', boxMs.boxCount === 4, boxMs.boxCount);
+check('ボックスがあっても本文の数式の番号はずれない', boxMs.mathCount === 1);
+check('ボックスの中身は前付けの判定を乱さない (題目・見出し)', boxItems[0].role === 'title' && boxItems.find(x => x.text.indexOf('はじめに') >= 0).role === 'h1');
+// 番号で始まり段落全体が太字の長い見出し
+const longH = `<?xml version="1.0"?><w:document ${W}><w:body>${P('題目')}${P('１．はじめに', 'Heading1')}${P('　本文です。')}
+<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>４、多神教徒によるクルアーンの否定と、審判の日に迷える者たちと彼らを迷わせた者たちとの間の対話（31−33）</w:t></w:r></w:p>
+<w:p><w:r><w:t>４、ここは太字ではない長い段落なので見出しにはしない。番号で始まるが本文として扱うべき段落の例で、六十字を超える長さにしてあります</w:t></w:r></w:p><w:sectPr/></w:body></w:document>`;
+const longItems = buildItems(readDocxManuscript(makeZip([['word/document.xml', longH]]).toString('latin1')), prof).items;
+check('番号で始まり段落全体が太字なら、長くても見出し (太字でなければ本文)', longItems.find(x => /多神教徒/.test(x.text)).role === 'h1' &&
+      longItems.find(x => /太字ではない/.test(x.text)).role !== 'h1', longItems.map(x => x.role).join(','));
+
 // ---- 英文の論文の紙面 (本文の枠が Abstract から始まる) ----
 console.log('english layout:');
 const enBody = FP([{ text: 'Abstract', style: 'Abstract' }, { text: 'This study reviews the system.', style: 'Abstract' },
