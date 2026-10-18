@@ -42,7 +42,7 @@ function normTitle(s) {
     s = toHalfWidth(s.replace(/\.pdf$/i, ""));
     s = s.replace(/^[\s　]*[0-9]+[\s　_\-.、)]*/, ""); // ファイル名先頭の番号
     s = s.replace(/【[^】]*】/g, "");                 // 格付けタグ
-    s = s.replace(/[○〇◯\s　]/g, "");
+    s = s.replace(/[○〇◯\s\u00A0\u2000-\u200B\u202F\u205F\u3000]/g, "");
     return s;
 }
 function stripPrefix(s) {
@@ -84,25 +84,46 @@ function collectStarts(target) {
 }
 
 // ---------- 段落を解析 ----------
-// 例: "○学校法人明治大学寄附行為<タブ>1 上"  → title / ページ位置 / 巻
-// ページ数の位置（3番目のかっこ）は次のどれでもよい
-//   ・仮の記号（●、⬤ など文字の種類は問わない）       例: "● 上"   → "28 上"
-//   ・仮の記号＋数字（一度入力したあとの再実行）       例: "● 28 上" → "28 上"
-//   ・数字だけ（昨年のデータ）／空欄
-var LINE_RE = /^([\s　]*[○〇◯][^\t\u0008…‥]*)([\s\S]*?)((?:[^\s　0-9０-９上下\t\u0008…‥]+(?:[ 　]+(?=[0-9０-９]))?)?[0-9０-９]*)([ 　]*)([上下]?)([ 　]*)\r?$/;
-// 題名とページ数の区切り（タブ・右インデントタブ・リーダー文字）
-var SEP = /[\t\u0008…‥]/;
+// 例: "○学校法人明治大学寄附行為<右インデントタブ>●<半角スペース>上"
+//   ・題名 … 最初の区切り（タブ・右インデントタブ・リーダー文字）より前
+//   ・ページ数の位置 … 最後の区切りの直後から「上／下」の前の空白までを丸ごと置き換える
+//       "●　上" → "28　上"、"● 28 上" → "28 上"、" 99 上" → "28 上"、" 上" → "28 上"
+// 区切り（タブ・右インデントタブ・リーダー文字）
+var SEP = /[\t\u0008\u2026\u2025]/;
+// 空白（InDesignの特殊スペース＝半角・全角・四分・二分・細いスペース等を含む）
+var SP = "[\\s\\u00A0\\u2000-\\u200B\\u202F\\u205F\\u3000]";
+var TAIL_RE = new RegExp("^([\\s\\S]*?)(" + SP + "*([上下]?)" + SP + "*)$");
 
 function isEntryStart(text) {
-    return typeof text === "string" && /^[\s　]*[○〇◯]/.test(text);
+    return typeof text === "string" && /^[\s\u3000]*[○〇◯]/.test(text);
 }
 
 function parseLine(text) {
-    var m = text.match(LINE_RE);
+    var body = text.replace(/[\r\n]+$/, "");
+    var first = -1, last = -1;
+    for (var i = 0; i < body.length; i++) {
+        if (SEP.test(body.charAt(i))) {
+            if (first < 0) first = i;
+            last = i;
+        }
+    }
+    if (first < 0) return null;
+    var head = body.substring(0, first).replace(/[・.\s\u3000]+$/, "");
+    var tail = body.substring(last + 1);
+    var m = tail.match(TAIL_RE);
     if (!m) return null;
-    var head = m[1].replace(/[・…‥.\s　]+$/, "");
-    var numStart = m[1].length + m[2].length;
-    return { title: head, numStart: numStart, numLen: m[3].length, num: m[3], vol: m[5] };
+    // 前回の誤入力「●<空白>28上」のように、数字と「上／下」の間の空白が数字の前にある場合は後ろへ戻す
+    var keep = "";
+    var mm = m[1].match(new RegExp("^[^0-9０-９]*?(" + SP + "+)[0-9０-９]+$"));
+    if (mm && m[3] && !new RegExp("^" + SP).test(m[2])) keep = mm[1];
+    return { title: head, numStart: last + 1, numLen: m[1].length, num: m[1], vol: m[3], tail: tail, keep: keep };
+}
+
+// 文字コード表示（ログの確認用）
+function codes(s) {
+    var out = [];
+    for (var i = 0; i < s.length; i++) out.push("U+" + ("0000" + s.charCodeAt(i).toString(16).toUpperCase()).slice(-4));
+    return out.join(" ");
 }
 
 function volOf(docName) {
@@ -167,11 +188,12 @@ function apply(plan) {
         var it = plan.items[i];
         if (!it.rec) continue;
         var info = it.info, para = it.para;
-        if (info.num === it.rec.page) continue;
+        var newText = it.rec.page + info.keep;
+        if (info.num === newText) continue;
         if (info.numLen > 0) {
-            para.characters.itemByRange(info.numStart, info.numStart + info.numLen - 1).contents = it.rec.page;
+            para.characters.itemByRange(info.numStart, info.numStart + info.numLen - 1).contents = newText;
         } else {
-            para.insertionPoints[info.numStart].contents = it.rec.page;
+            para.insertionPoints[info.numStart].contents = newText;
         }
     }
 }
@@ -184,9 +206,10 @@ function writeLog(plan, starts, written) {
         if (it.rec) {
             var change = it.info.num === it.rec.page ? "変更なし" : (it.info.num || "空欄") + " → " + it.rec.page;
             lines.push((it.how === "一致" ? "OK" : "OK（表記ゆれ）") + "\t" + it.info.title + "\t" + change +
-                       "\t" + it.rec.file + "\t" + it.note);
+                       "\t" + it.rec.file + "\t" + it.note + "\t[元の文字: " + codes(it.info.tail) + "]");
         } else {
-            lines.push("要確認：本文に該当する規程なし\t" + it.info.title + "\t" + (it.info.num || "空欄"));
+            lines.push("要確認：本文に該当する規程なし\t" + it.info.title + "\t" + (it.info.num || "空欄") +
+                       "\t[元の文字: " + codes(it.info.tail) + "]");
         }
     }
     lines.push("", "■ 本文にあるが、目次・索引のどこにも出てこない規程");
