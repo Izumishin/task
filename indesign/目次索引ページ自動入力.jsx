@@ -40,11 +40,17 @@ function toHalfWidth(s) {
 function normTitle(s) {
     s = String(s);
     s = toHalfWidth(s.replace(/\.pdf$/i, ""));
-    s = s.replace(/^[\s　]*[0-9]+[\s　_\-.、)]*/, ""); // ファイル名先頭の番号
+    s = s.replace(/^[\s\u3000]*[0-9]+[\s\u3000_\-.、)]*/, ""); // ファイル名先頭の番号
     s = s.replace(/【[^】]*】/g, "");                 // 格付けタグ
-    s = s.replace(/[○〇◯\s\u00A0\u2000-\u200B\u202F\u205F\u3000]/g, "");
+    // ○、空白、改行（段落・強制・任意改行）、制御文字・特殊文字など見えない文字をすべて除く
+    s = s.replace(/[○〇◯\s\u0000-\u001F\u007F\u00A0\u00AD\u2000-\u200F\u2028-\u202F\u205F-\u206F\u3000\uFEFF\uFFFC]/g, "");
     return s;
 }
+// 括弧書きを除く（例: "健康保険組合規約(令和2年7月改正)" → "健康保険組合規約"）
+function noParen(s) {
+    return s.replace(/\([^()]*\)/g, "");
+}
+
 function stripPrefix(s) {
     for (var i = 0; i < OMIT_PREFIXES.length; i++) {
         var p = OMIT_PREFIXES[i];
@@ -54,33 +60,121 @@ function stripPrefix(s) {
 }
 
 // ---------- 本文から開始ページを集める ----------
+// 本文に配置したPDFごとに「開始ページ」と「照合用の名前（ファイル名・柱）」を記録する
 function collectStarts(target) {
-    var map = {}, loose = {}, list = [], count = 0;
+    var byFile = {}, list = [];
     for (var d = 0; d < app.documents.length; d++) {
         var doc = app.documents[d];
         if (doc.name === target.name) continue;   // 目次・索引ファイル自身は除く
         var pages = doc.pages;
         for (var p = 0; p < pages.length; p++) {
-            var graphics = pages[p].allGraphics;
+            var page = pages[p];
+            var graphics = page.allGraphics;
             for (var g = 0; g < graphics.length; g++) {
                 var link = graphics[g].itemLink;
                 if (!link || !link.isValid || !/\.pdf$/i.test(link.name)) continue;
-                var key = normTitle(link.name);
-                if (!key) continue;
-                var num = String(pages[p].name).match(/\d+/);
-                if (!map[key]) {
-                    var rec = { key: key, file: link.name, doc: doc.name,
-                                page: num ? num[0] : pages[p].name, used: false };
-                    map[key] = rec;
+                var rec = byFile[link.name];
+                if (!rec) {
+                    var num = String(page.name).match(/\d+/);
+                    rec = { file: link.name, key: normTitle(link.name), doc: doc.name,
+                            page: num ? num[0] : page.name, hashira: [], seen: 0, used: false };
+                    byFile[link.name] = rec;
                     list.push(rec);
-                    var lk = stripPrefix(key);
-                    loose[lk] = loose[lk] ? "DUP" : rec;
-                    count++;
+                }
+                // 柱は各PDFの最初の2ページ分だけ読む（左右で柱が違う場合に備える）
+                if (rec.seen < 2 && rec.doc === doc.name) {
+                    addHashira(rec, page);
+                    rec.seen++;
                 }
             }
         }
     }
-    return { map: map, loose: loose, list: list, count: count };
+    return buildIndex(list);
+}
+
+// ページ上の柱（親ページの文字＋ページ上の文字）を照合用の名前として追加
+function addHashira(rec, page) {
+    var items = [];
+    try { var mp = page.masterPageItems; for (var i = 0; i < mp.length; i++) items.push(mp[i]); } catch (e) {}
+    try { var tf = page.textFrames; for (var j = 0; j < tf.length; j++) items.push(tf[j]); } catch (e) {}
+    for (var k = 0; k < items.length; k++) {
+        var t;
+        try {
+            if (items[k].constructor.name !== "TextFrame") continue;
+            t = items[k].contents;
+        } catch (e) { continue; }
+        if (typeof t !== "string" || t.length > 100) continue;
+        var n = normTitle(t);
+        if (n.length < 2 || /^[0-9\-]+$/.test(n)) continue;          // ノンブルなどは除く
+        pushUnique(rec.hashira, n);
+        pushUnique(rec.hashira, n.replace(/^付録/, ""));
+        var m = n.match(/\(([^()]+)\)/g);                           // 「付録（○○規約）」の括弧の中
+        if (m) for (var q = 0; q < m.length; q++) pushUnique(rec.hashira, m[q].replace(/[()]/g, ""));
+    }
+}
+function pushUnique(arr, v) {
+    if (!v) return;
+    for (var i = 0; i < arr.length; i++) if (arr[i] === v) return;
+    arr.push(v);
+}
+
+// 照合用の索引を作る（同じ名前が別のPDFにもあれば "DUP" として使わない）
+function buildIndex(list) {
+    var lv = { file: {}, noParen: {}, hashira: {} }, loose = { file: {}, noParen: {}, hashira: {} };
+    function put(map, key, rec) {
+        if (!key) return;
+        if (!map[key]) map[key] = rec;
+        else if (map[key] !== rec) map[key] = "DUP";
+    }
+    for (var i = 0; i < list.length; i++) {
+        var r = list[i];
+        put(lv.file, r.key, r);
+        put(lv.noParen, noParen(r.key), r);
+        for (var h = 0; h < r.hashira.length; h++) put(lv.hashira, r.hashira[h], r);
+        // 「学校法人明治大学」「明治大学」などを除いた名前でも引けるようにする
+        put(loose.file, stripPrefix(r.key), r);
+        put(loose.noParen, stripPrefix(noParen(r.key)), r);
+        for (var h2 = 0; h2 < r.hashira.length; h2++) put(loose.hashira, stripPrefix(r.hashira[h2]), r);
+    }
+    return { list: list, count: list.length, lv: lv, loose: loose };
+}
+
+// 目次・索引の題名から本文のPDFを探す
+//   戻り値: { rec, how }  見つからなければ rec は null
+function findRec(starts, title) {
+    var t = normTitle(title);
+    var tries = [t, noParen(t)];
+    var levels = [["file", "一致"], ["noParen", "ファイル名の括弧書きを除いて一致"], ["hashira", "柱で一致"]];
+    for (var l = 0; l < levels.length; l++) {
+        var map = starts.lv[levels[l][0]];
+        for (var i = 0; i < tries.length; i++) {
+            var r = map[tries[i]];
+            if (r && r !== "DUP") return { rec: r, how: levels[l][1] };
+        }
+        // 「学校法人明治大学」「明治大学」などの有無だけの違い
+        var lmap = starts.loose[levels[l][0]];
+        for (var j = 0; j < tries.length; j++) {
+            var r2 = lmap[stripPrefix(tries[j])];
+            if (r2 && r2 !== "DUP") return { rec: r2, how: levels[l][1] + "（明治大学等の有無）" };
+        }
+    }
+    // 最後の手段：部分一致（候補が1つだけのとき）
+    var hit = null, many = false;
+    for (var k = 0; k < starts.list.length; k++) {
+        var rec = starts.list[k];
+        var names = [noParen(rec.key)].concat(rec.hashira);
+        for (var n = 0; n < names.length; n++) {
+            var a = names[n], b = noParen(t);
+            var shorter = a.length < b.length ? a : b;
+            if (shorter.length >= 6 && (a.indexOf(b) >= 0 || b.indexOf(a) >= 0)) {
+                if (hit && hit !== rec) many = true;
+                hit = rec;
+                break;
+            }
+        }
+    }
+    if (hit && !many) return { rec: hit, how: "部分一致（要確認）" };
+    return { rec: null, how: "" };
 }
 
 // ---------- 段落を解析 ----------
@@ -133,7 +227,7 @@ function volOf(docName) {
 }
 
 function makePlan(target, starts) {
-    var plan = { items: [], ok: 0, ng: 0, fuzzy: 0, volWarn: 0 };
+    var plan = { items: [], ok: 0, ng: 0, fuzzy: 0, partial: 0, volWarn: 0 };
     var stories = target.stories;
     for (var s = 0; s < stories.length; s++) {
         var paras = stories[s].paragraphs;
@@ -158,12 +252,10 @@ function makePlan(target, starts) {
             if (!info) continue;
             info.numStart -= text.length - para.contents.length;   // 最後の段落内での位置に直す
             if (info.numStart < 0) continue;
-            var key = normTitle(info.title);
-            var rec = starts.map[key], how = "一致";
-            if (!rec) {
-                var l = starts.loose[stripPrefix(key)];
-                if (l && l !== "DUP") { rec = l; how = "表記ゆれで一致"; plan.fuzzy++; }
-            }
+            var found2 = findRec(starts, info.title);
+            var rec = found2.rec, how = found2.how;
+            if (rec && how !== "一致") plan.fuzzy++;
+            if (rec && how.indexOf("要確認") >= 0) plan.partial++;
             var item = { para: para, info: info, rec: rec, how: how, note: "" };
             if (rec) {
                 rec.used = true;
@@ -205,7 +297,7 @@ function writeLog(plan, starts, written) {
         var it = plan.items[i];
         if (it.rec) {
             var change = it.info.num === it.rec.page ? "変更なし" : (it.info.num || "空欄") + " → " + it.rec.page;
-            lines.push((it.how === "一致" ? "OK" : "OK（表記ゆれ）") + "\t" + it.info.title + "\t" + change +
+            lines.push((it.how.indexOf("要確認") >= 0 ? "要確認：" : "OK：") + it.how + "\t" + it.info.title + "\t" + change +
                        "\t" + it.rec.file + "\t" + it.note + "\t[元の文字: " + codes(it.info.tail) + "]");
         } else {
             lines.push("要確認：本文に該当する規程なし\t" + it.info.title + "\t" + (it.info.num || "空欄") +
@@ -256,7 +348,9 @@ function main() {
 
     var msg = "本文から見つかった規程: " + starts.count + " 件\n\n" +
               "目次・索引の対象行: " + plan.items.length + " 行\n" +
-              "　ページ数を入力: " + plan.ok + " 行（うち表記ゆれで一致 " + plan.fuzzy + " 行）\n" +
+              "　ページ数を入力: " + plan.ok + " 行\n" +
+              "　　うちファイル名以外（括弧書き除外・柱など）で一致: " + plan.fuzzy + " 行\n" +
+              "　　うち部分一致（要確認）: " + plan.partial + " 行\n" +
               "　照合できず（要確認）: " + plan.ng + " 行\n" +
               "　上下巻の表記が違う（要確認）: " + plan.volWarn + " 行\n\n" +
               "「" + target.name + "」に書き込みますか？";
