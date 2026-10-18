@@ -302,8 +302,36 @@ function apply(plan) {
 }
 
 // ---------- ログ ----------
+// ---------- 題名が違うときの候補探し ----------
+// 2文字ずつの組（バイグラム）がどれだけ共通しているかで似ている度合いを測る（0〜1）
+function bigrams(s) {
+    var b = {}, n = 0;
+    for (var i = 0; i < s.length - 1; i++) { var k = s.substr(i, 2); b[k] = (b[k] || 0) + 1; n++; }
+    return { map: b, n: n };
+}
+function similarity(a, b) {
+    var A = bigrams(a), B = bigrams(b), common = 0;
+    if (!A.n || !B.n) return 0;
+    for (var k in A.map) if (A.map.hasOwnProperty(k) && B.map[k]) common += Math.min(A.map[k], B.map[k]);
+    return 2 * common / (A.n + B.n);
+}
+// いちばん似ている本文の規程を返す（似ている度合い50%未満なら null）
+function suggest(starts, title) {
+    var t = stripPrefix(noParen(normTitle(title))), best = null, bestScore = 0.5, bestName = "";
+    for (var i = 0; i < starts.list.length; i++) {
+        var r = starts.list[i];
+        var names = [noParen(r.key)].concat(r.hashira);
+        for (var n = 0; n < names.length; n++) {
+            var sc = similarity(t, stripPrefix(names[n]));
+            if (sc > bestScore) { bestScore = sc; best = r; bestName = names[n]; }
+        }
+    }
+    return best ? { rec: best, name: bestName, score: Math.round(bestScore * 100) } : null;
+}
+
 function writeLog(plan, starts, written) {
     var lines = [written ? "【書き込み済み】" : "【書き込み中止：照合結果のみ】", ""];
+    var diffs = [];
     for (var i = 0; i < plan.items.length; i++) {
         var it = plan.items[i];
         if (it.rec) {
@@ -311,9 +339,18 @@ function writeLog(plan, starts, written) {
             lines.push((it.how.indexOf("要確認") >= 0 ? "要確認：" : "OK：") + it.how + "\t" + it.info.title + "\t" + change +
                        "\t" + it.rec.file + "\t" + it.note + "\t[元の文字: " + codes(it.info.tail) + "]");
         } else {
-            lines.push("要確認：本文に該当する規程なし\t" + it.info.title + "\t" + (it.info.num || "空欄") +
+            var sg = suggest(starts, it.info.title);
+            var cand = sg ? "候補: " + sg.name + "（" + sg.rec.page + "ページ・" + sg.rec.file + "・似ている度合い" + sg.score + "%）"
+                          : "候補なし";
+            lines.push("要確認：本文に該当する規程なし\t" + it.info.title + "\t" + (it.info.num || "空欄") + "\t" + cand +
                        "\t[元の文字: " + codes(it.info.tail) + "]");
+            if (sg) diffs.push(it.info.title + "\t→ 本文: " + sg.name + "\t" + sg.rec.page + "ページ\t（" + sg.score + "%）");
         }
+    }
+    // 題名違いの候補を一覧にして先頭へ（先方への確認用）
+    if (diffs.length) {
+        var head = ["■ 題名が本文と違う可能性がある行（目次・索引の題名 → 本文でいちばん似ている規程）"].concat(diffs, [""]);
+        lines = head.concat(lines);
     }
     lines.push("", "■ 本文にあるが、目次・索引のどこにも出てこない規程");
     for (var j = 0; j < starts.list.length; j++) {
