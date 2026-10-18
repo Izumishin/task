@@ -30,39 +30,6 @@ var OMIT_PREFIXES = ["学校法人明治大学", "明治大学付属明治", "�
 
 var log = [];
 
-(function () {
-    if (app.documents.length < 2) {
-        alert("本文のファイル（上巻・下巻）と、目次・索引のファイルを両方開いてから実行してください。");
-        return;
-    }
-    var target = app.activeDocument;
-
-    // 1. 本文ファイルから規程の開始ページを集める
-    var starts = collectStarts(target);
-    if (starts.count === 0) {
-        alert("本文ファイルに配置されたPDFが見つかりませんでした。");
-        return;
-    }
-
-    // 2. 目次・索引の段落を照合（まだ書き換えない）
-    var plan = makePlan(target, starts);
-
-    var msg = "本文から見つかった規程: " + starts.count + " 件\n\n" +
-              "目次・索引の対象行: " + plan.items.length + " 行\n" +
-              "　ページ数を入力: " + plan.ok + " 行（うち表記ゆれで一致 " + plan.fuzzy + " 行）\n" +
-              "　照合できず（要確認）: " + plan.ng + " 行\n" +
-              "　上下巻の表記が違う（要確認）: " + plan.volWarn + " 行\n\n" +
-              "「" + target.name + "」に書き込みますか？";
-    var go = confirm(msg);
-
-    if (go) {
-        app.doScript(function () { apply(plan); }, ScriptLanguage.JAVASCRIPT, undefined,
-                     UndoModes.ENTIRE_SCRIPT, "目次・索引のページ数を入力");
-    }
-    writeLog(plan, starts, go);
-    alert((go ? "書き込みました。" : "書き込みを中止しました。") +
-          "\nデスクトップの「目次索引ページ入力ログ.txt」で「要確認」の行を確認してください。");
-})();
 
 // ---------- 題名の正規化 ----------
 function toHalfWidth(s) {
@@ -91,7 +58,7 @@ function collectStarts(target) {
     var map = {}, loose = {}, list = [], count = 0;
     for (var d = 0; d < app.documents.length; d++) {
         var doc = app.documents[d];
-        if (doc === target) continue;
+        if (doc.name === target.name) continue;   // 目次・索引ファイル自身は除く
         var pages = doc.pages;
         for (var p = 0; p < pages.length; p++) {
             var graphics = pages[p].allGraphics;
@@ -243,3 +210,40 @@ function save(name, lines) {
         f.close();
     } catch (e) {}
 }
+
+function main() {
+    if (app.documents.length < 2) {
+        alert("本文のファイル（上巻・下巻）と、目次・索引のファイルを両方開いてから実行してください。");
+        return;
+    }
+    var target = app.activeDocument;
+
+    // 1. 本文ファイルから規程の開始ページを集める
+    var starts = collectStarts(target);
+    if (starts.count === 0) {
+        alert("本文ファイルに配置されたPDFが見つかりませんでした。");
+        return;
+    }
+
+    // 2. 目次・索引の段落を照合（まだ書き換えない）
+    var plan = makePlan(target, starts);
+
+    var msg = "本文から見つかった規程: " + starts.count + " 件\n\n" +
+              "目次・索引の対象行: " + plan.items.length + " 行\n" +
+              "　ページ数を入力: " + plan.ok + " 行（うち表記ゆれで一致 " + plan.fuzzy + " 行）\n" +
+              "　照合できず（要確認）: " + plan.ng + " 行\n" +
+              "　上下巻の表記が違う（要確認）: " + plan.volWarn + " 行\n\n" +
+              "「" + target.name + "」に書き込みますか？";
+    var go = confirm(msg);
+
+    if (go) {
+        app.doScript(function () { apply(plan); }, ScriptLanguage.JAVASCRIPT, undefined,
+                     UndoModes.ENTIRE_SCRIPT, "目次・索引のページ数を入力");
+    }
+    writeLog(plan, starts, go);
+    alert((go ? "書き込みました。" : "書き込みを中止しました。") +
+          "\nデスクトップの「目次索引ページ入力ログ.txt」で「要確認」の行を確認してください。");
+}
+
+// すべての定義を読み込んだあとで実行する
+main();
