@@ -93,15 +93,26 @@ function collectStarts(target) {
 }
 
 // ページ上の柱（親ページの文字＋ページ上の文字）を照合用の名前として追加
+//   ・親ページは見開き全体、グループの中、元にしている親ページ（親の親）まで読む
 function addHashira(rec, page) {
     var items = [];
-    try { var mp = page.masterPageItems; for (var i = 0; i < mp.length; i++) items.push(mp[i]); } catch (e) {}
-    try { var tf = page.textFrames; for (var j = 0; j < tf.length; j++) items.push(tf[j]); } catch (e) {}
+    function addAll(coll) {
+        try { var arr = coll.allPageItems; for (var i = 0; i < arr.length; i++) items.push(arr[i]); } catch (e) {}
+    }
+    try {
+        var master = page.appliedMaster;
+        for (var depth = 0; master && master.isValid && depth < 5; depth++) {
+            addAll(master);
+            master = master.basedOn;
+        }
+    } catch (e) {}
+    addAll(page);
     for (var k = 0; k < items.length; k++) {
         var t;
         try {
-            if (items[k].constructor.name !== "TextFrame") continue;
-            t = items[k].contents;
+            var el = items[k].getElements ? items[k].getElements()[0] : items[k];
+            if (el.constructor.name !== "TextFrame") continue;
+            t = el.contents;
         } catch (e) { continue; }
         if (typeof t !== "string" || t.length > 100) continue;
         var n = normTitle(t);
@@ -307,14 +318,14 @@ function writeLog(plan, starts, written) {
     lines.push("", "■ 本文にあるが、目次・索引のどこにも出てこない規程");
     for (var j = 0; j < starts.list.length; j++) {
         var r = starts.list[j];
-        if (!r.used) lines.push("要確認\t" + r.file + "\t" + r.page + "\t" + r.doc);
+        if (!r.used) lines.push("要確認\t" + r.file + "\t" + r.page + "\t" + r.doc + "\t柱: " + (r.hashira.join(" / ") || "（読み取れず）"));
     }
     save("目次索引ページ入力ログ.txt", lines);
 
-    var list = ["規程名（ファイル名から）\t開始ページ\tファイル\tInDesign"];
+    var list = ["規程名（ファイル名から）\t開始ページ\tファイル\tInDesign\t読み取った柱"];
     for (var k = 0; k < starts.list.length; k++) {
         var x = starts.list[k];
-        list.push(x.key + "\t" + x.page + "\t" + x.file + "\t" + x.doc);
+        list.push(x.key + "\t" + x.page + "\t" + x.file + "\t" + x.doc + "\t" + x.hashira.join(" / "));
     }
     save("規程開始ページ一覧.txt", list);
 }
