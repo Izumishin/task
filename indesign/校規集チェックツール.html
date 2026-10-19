@@ -311,19 +311,30 @@ var Core = (function () {
       return true;
     }
 
+    // 柱の「第○編」「付録」の部分（編またぎの判定用）
+    function hen(p) {
+      var m = norm(p.hashira).match(/^(第\d+編|付録)/);
+      return m ? m[1] : '';
+    }
+
     // ノンブル連番
     var nombreRows = [];
     var body = pageList.filter(function (p) { return p.kind === '本文'; });
     var prev = null, blanks = 0;
     body.forEach(function (p) {
       if (p.nombre === null) {
-        nombreRows.push({ status: 'warn', label: 'ノンブルなし', where: where(p), detail: '白ページ・扉なら問題なし' });
+        if (!p.hashira && !p.bodyText) nombreRows.push({ status: 'ok', label: '白ページ', where: where(p), detail: 'ノンブルなしの白ページ' });
+        else nombreRows.push({ status: 'warn', label: 'ノンブルなし', where: where(p), detail: '扉などなら問題なし' });
         blanks++;
         return;
       }
       var gap = prev ? p.nombre - prev.nombre - 1 : 0;
       if (prev && gap > 0 && gap === blanks) {
         nombreRows.push({ status: 'ok', label: 'OK', where: where(p), detail: p.nombre + '（直前の白ページ ' + blanks + ' ページ分を含む）' });
+      } else if (prev && gap === blanks + 1 && prev.nombre % 2 === 1 && hen(prev) !== hen(p)) {
+        // 編の最後が奇数ページで終わり、偶数ページにノンブルなしの白ページを入れている
+        nombreRows.push({ status: 'ok', label: 'OK', where: where(p),
+          detail: prev.nombre + ' の次が ' + p.nombre + '（編末の白ページ分）' });
       } else if (prev && p.nombre !== prev.nombre + 1) {
         nombreRows.push({ status: 'ng', label: p.nombre <= prev.nombre ? '重複・逆戻り' : '飛び',
           where: where(p), detail: prev.nombre + ' の次が ' + p.nombre + (gap > 0 ? '（' + gap + 'ページ分なし）' : '') });
@@ -360,9 +371,29 @@ var Core = (function () {
       starts.forEach(function (st) { if (st.title === p.title) matchedStarts.add(st); });
       return row;
     });
-    var missingRows = tocEntries.length ? starts.filter(function (st) { return !matchedStarts.has(st); }).map(function (st) {
+    // 柱の「（ ）」の中＝規程名。括弧のない柱（編扉など）は規程の開始とみなさない
+    function regName(p) {
+      var m = norm(stripTag(p.hashira)).match(/^[^(]*\((.*)\)$/);
+      return m ? m[1] : '';
+    }
+    var tocNames = tocEntries.map(function (e) { return [norm(e.text), norm(e.short)]; });
+    function inToc(name) {
+      return tocNames.some(function (pair) {
+        return pair.some(function (t) { return t && (t === name || t.indexOf(name) >= 0 || name.indexOf(t) >= 0); });
+      });
+    }
+    // 同じ規程名が続く間は1つとして数える（別表などで柱が少し変わっても同じ規程）
+    var regStarts = [], lastName = null;
+    body.forEach(function (p) {
+      var n = regName(p);
+      if (n && n !== lastName) regStarts.push({ p: p, name: n });
+      if (n) lastName = n;
+    });
+    var missingRows = tocEntries.length ? regStarts.filter(function (x) { return !inToc(x.name); }).map(function (x) {
+      var st = x.p;
       return { status: 'ng', label: '細目次に見当たらない', hashira: st.hashira, nombre: st.nombre, where: where(st) };
     }) : [];
+    starts = regStarts.map(function (x) { return x.p; });
 
     // 索引（本文の文字か、そのページの柱に題名があればOK）
     var idxEntries = parseIndex(idxLines).filter(mine);
