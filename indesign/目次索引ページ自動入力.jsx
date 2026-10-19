@@ -247,7 +247,9 @@ function findRec(starts, title) {
         common = next;
     }
     var shared = false;
-    for (var c2 in common) if (common && common.hasOwnProperty(c2)) { shared = true; break; }
+    if (common !== null) {   // InDesign では null に for-in を使うとエラーになるので先に確認
+        for (var c2 in common) if (common.hasOwnProperty(c2)) { shared = true; break; }
+    }
     if (hits.length && shared && contiguous(hits)) return { rec: earliest(hits), group: hits, how: "部分一致（要確認）" + note(hits) };
     return { rec: null, group: [], how: "" };
 }
