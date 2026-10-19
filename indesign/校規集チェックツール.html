@@ -530,7 +530,7 @@ if (typeof module !== 'undefined') module.exports = Core;
       $('status').textContent = f.name + ' を開いています…';
       var doc = await pdfjsLib.getDocument({ data: await f.arrayBuffer(),
         cMapUrl: PDFJS + 'cmaps/', cMapPacked: true }).promise;
-      files.push({ name: f.name, doc: doc, toc: '7-13', idx: '23-33', vol: Core.guessVol(f.name) });
+      files.push({ name: f.name, doc: doc, toc: '7-18', idx: '23-34', vol: Core.guessVol(f.name) });
     }
     files.sort(function (a, b) { return a.name.localeCompare(b.name, 'ja'); });
     $('status').textContent = '';
