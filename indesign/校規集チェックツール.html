@@ -276,11 +276,11 @@ var Core = (function () {
   // docs: [{ name, vol:'上'|'下'|'', pages:[{w,h,items}], tocPages:Set(1始まり), idxPages:Set }]
   // 巻ごとに独立してチェックする（上巻PDFでは「上」の行だけ、下巻PDFでは「下」の行だけ）
   function check(docs, opt) {
-    var out = { pageList: [], nombreRows: [], starts: [], tocRows: [], missingRows: [], idxRows: [], tocReadRows: [],
+    var out = { pageList: [], nombreRows: [], starts: [], tocRows: [], missingRows: [], idxRows: [], tocReadRows: [], rangeWarnings: [],
       tocLineCount: 0, idxLineCount: 0, dupNombre: [], skippedOtherVol: 0 };
     docs.forEach(function (d, di) {
       var r = checkDoc(d, di, opt);
-      ['pageList', 'nombreRows', 'starts', 'tocRows', 'missingRows', 'idxRows', 'tocReadRows', 'dupNombre'].forEach(function (k) {
+      ['pageList', 'nombreRows', 'starts', 'tocRows', 'missingRows', 'idxRows', 'tocReadRows', 'rangeWarnings', 'dupNombre'].forEach(function (k) {
         out[k] = out[k].concat(r[k]);
       });
       out.tocLineCount += r.tocLineCount; out.idxLineCount += r.idxLineCount; out.skippedOtherVol += r.skippedOtherVol;
@@ -290,7 +290,7 @@ var Core = (function () {
 
   function checkDoc(d, di, opt) {
     var pageList = [];
-    var tocLines = [], idxLines = [], tocLineInfo = [];
+    var tocLines = [], idxLines = [], tocLineInfo = [], rangeWarnings = [];
     var volLabel = d.vol ? '（' + d.vol + '巻）' : '';
     d.pages.forEach(function (pg, pi) {
       var no = pi + 1;
@@ -300,6 +300,13 @@ var Core = (function () {
         var lines = toLines(a.contentItems, pg.w, kind === '目次' ? opt.tocCols : opt.idxCols);
         lines.forEach(function (l) { (kind === '目次' ? tocLines : idxLines).push(l); });
         if (kind === '目次') lines.forEach(function (l) { tocLineInfo.push({ text: l, pdfPage: no }); });
+      }
+      // 範囲の外にある前付けページで、「題名……ページ」の行が3行以上あれば細目次・索引の可能性
+      if (kind === '前付') {
+        var n = toLines(a.contentItems, pg.w, 1).filter(function (l) {
+          return TOC_RE.test(String(l).normalize('NFKC').trim());
+        }).length;
+        if (n >= 3) rangeWarnings.push(d.name + ' の p.' + no + ' も細目次か索引のようです（指定した範囲の外）。ページ指定を確認してください。');
       }
       pageList.push({ doc: d.name, docIndex: di, pdfPage: no, kind: kind,
         nombre: a.nombre, hashira: a.hashira, title: a.title, bodyText: a.bodyText });
@@ -460,7 +467,7 @@ var Core = (function () {
       .map(function (k) { return d.name + ':' + k; });
 
     return { pageList: pageList, nombreRows: nombreRows, starts: starts, tocRows: tocRows,
-      missingRows: missingRows, idxRows: idxRows, tocReadRows: tocReadRows, tocLineCount: tocLines.length,
+      missingRows: missingRows, idxRows: idxRows, tocReadRows: tocReadRows, rangeWarnings: rangeWarnings, tocLineCount: tocLines.length,
       idxLineCount: idxLines.length, dupNombre: dupRows, skippedOtherVol: skipped };
   }
 
@@ -523,7 +530,7 @@ if (typeof module !== 'undefined') module.exports = Core;
       $('status').textContent = f.name + ' を開いています…';
       var doc = await pdfjsLib.getDocument({ data: await f.arrayBuffer(),
         cMapUrl: PDFJS + 'cmaps/', cMapPacked: true }).promise;
-      files.push({ name: f.name, doc: doc, toc: '', idx: '', vol: Core.guessVol(f.name) });
+      files.push({ name: f.name, doc: doc, toc: '7-13', idx: '23-33', vol: Core.guessVol(f.name) });
     }
     files.sort(function (a, b) { return a.name.localeCompare(b.name, 'ja'); });
     $('status').textContent = '';
@@ -617,7 +624,7 @@ if (typeof module !== 'undefined') module.exports = Core;
       var cls = s[1] ? 'var(--ng)' : 'var(--ok)';
       return '<div class="stat"><span>' + s[0] + '</span><b style="color:' + cls + '">' + s[1] + '</b><span>' + s[2] + '</span></div>';
     }).join('');
-    var warns = [];
+    var warns = r.rangeWarnings.slice();
     if (r.tocRows.length === 0) warns.push('細目次の項目を1件も読み取れませんでした。目次ページの指定と段数を確認してください。');
     if (r.idxRows.length === 0) warns.push('索引の項目を1件も読み取れませんでした。索引ページの指定と段数を確認してください。');
     if (!r.pageList.some(function (p) { return p.nombre !== null; })) warns.push('ノンブルを1つも検出できませんでした。詳細設定の「ノンブルを探す範囲」を調整してください。');
