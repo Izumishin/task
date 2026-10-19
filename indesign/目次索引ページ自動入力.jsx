@@ -94,7 +94,7 @@ function collectStarts(target) {
 }
 
 // ページ上の柱（親ページの文字＋ページ上の文字）を照合用の名前として追加
-//   ・親ページは見開き全体、グループの中、元にしている親ページ（親の親）まで読む
+//   ・親ページは「そのページと同じ側（左／右）」だけを読む。グループの中、親の親まで読む
 function addHashira(rec, page) {
     var items = [];
     function addAll(coll) {
@@ -103,7 +103,7 @@ function addHashira(rec, page) {
     try {
         var master = page.appliedMaster;
         for (var depth = 0; master && master.isValid && depth < 5; depth++) {
-            addAll(master);
+            addAll(sidePage(master, page));
             master = master.basedOn;
         }
     } catch (e) {}
@@ -125,6 +125,16 @@ function addHashira(rec, page) {
         var m = n.match(/^[^(]*\((.*)\)$/);
         if (m) pushUnique(rec.hashira, m[1]);
     }
+}
+// 親ページ見開きのうち、本文ページと同じ側（左／右）のページを返す（分からなければ見開き全体）
+function sidePage(master, page) {
+    try {
+        var mp = master.pages;
+        if (mp.length === 1) return mp[0];
+        if (page.side == PageSideOptions.LEFT_HAND) return mp[0];
+        if (page.side == PageSideOptions.RIGHT_HAND) return mp[mp.length - 1];
+    } catch (e) {}
+    return master;
 }
 function pushUnique(arr, v) {
     if (!v) return;
@@ -168,11 +178,20 @@ function contiguous(arr) {
     for (var i = 0; i < arr.length; i++) { min = Math.min(min, arr[i].order); max = Math.max(max, arr[i].order); }
     return max - min + 1 === arr.length;
 }
-function lookup(map, key) {
+function lookup(map, key, title) {
     if (!key || !map.hasOwnProperty(key)) return null;
     var arr = map[key];
-    if (!arr.length || !contiguous(arr)) return null;
-    return { rec: earliest(arr), group: arr };
+    if (!arr.length) return null;
+    if (contiguous(arr)) return { rec: earliest(arr), group: arr, extra: "" };
+    // 離れた複数のPDFに同じ名前（柱）がある：ファイル名が題名にいちばん近いものを選ぶ
+    var t = stripPrefix(noParen(normTitle(title))), best = null, bestSc = 0.8, second = 0;
+    for (var i = 0; i < arr.length; i++) {
+        var sc = similarity(t, stripPrefix(noParen(arr[i].key)));
+        if (sc > bestSc) { second = bestSc; bestSc = sc; best = arr[i]; }
+        else if (sc > second) second = sc;
+    }
+    if (best && bestSc - second >= 0.05) return { rec: best, group: [best], extra: "（同じ柱が複数・ファイル名の近いものを採用・要確認）" };
+    return null;
 }
 // 同じ柱（いちばん長い＝編名と規程名を含む柱）を持つPDFを、同じ規程として使用済みにする
 function markUsed(starts, group) {
@@ -196,14 +215,14 @@ function findRec(starts, title) {
     for (var l = 0; l < levels.length; l++) {
         var map = starts.lv[levels[l][0]];
         for (var i = 0; i < tries.length; i++) {
-            var f = lookup(map, tries[i]);
-            if (f) return { rec: f.rec, group: f.group, how: levels[l][1] + note(f.group) };
+            var f = lookup(map, tries[i], title);
+            if (f) return { rec: f.rec, group: f.group, how: levels[l][1] + f.extra + note(f.group) };
         }
         // 「学校法人明治大学」「明治大学」などの有無だけの違い
         var lmap = starts.loose[levels[l][0]];
         for (var j = 0; j < tries.length; j++) {
-            var f2 = lookup(lmap, stripPrefix(tries[j]));
-            if (f2) return { rec: f2.rec, group: f2.group, how: levels[l][1] + "（明治大学等の有無）" + note(f2.group) };
+            var f2 = lookup(lmap, stripPrefix(tries[j]), title);
+            if (f2) return { rec: f2.rec, group: f2.group, how: levels[l][1] + "（明治大学等の有無）" + f2.extra + note(f2.group) };
         }
     }
     // 最後の手段：部分一致（題名の一方がもう一方を含む）。
@@ -314,7 +333,7 @@ function makePlan(target, starts) {
             var found2 = findRec(starts, info.title);
             var rec = found2.rec, how = found2.how;
             if (rec && how.indexOf("一致") !== 0) plan.fuzzy++;
-            if (rec && how.indexOf("要確認") >= 0) plan.partial++;
+            if (rec && how.indexOf("要確認") >= 0) plan.partial++;   // 部分一致・同じ柱が複数など
             var item = { para: para, info: info, rec: rec, how: how, note: "" };
             if (rec) {
                 markUsed(starts, found2.group);
@@ -446,7 +465,7 @@ function main() {
               "目次・索引の対象行: " + plan.items.length + " 行\n" +
               "　ページ数を入力: " + plan.ok + " 行\n" +
               "　　うちファイル名以外（括弧書き除外・柱など）で一致: " + plan.fuzzy + " 行\n" +
-              "　　うち部分一致（要確認）: " + plan.partial + " 行\n" +
+              "　　うち部分一致など（要確認）: " + plan.partial + " 行\n" +
               "　照合できず（要確認）: " + plan.ng + " 行\n" +
               "　上下巻の表記が違う（要確認）: " + plan.volWarn + " 行\n\n" +
               "「" + target.name + "」に書き込みますか？";
