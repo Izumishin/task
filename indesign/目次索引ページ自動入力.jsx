@@ -78,6 +78,7 @@ function collectStarts(target) {
                     var num = String(page.name).match(/\d+/);
                     rec = { file: link.name, key: normTitle(link.name), doc: doc.name,
                             page: num ? num[0] : page.name, hashira: [], seen: 0, used: false };
+                    rec.order = list.length;            // 本文での登場順（小さいほど前）
                     byFile[link.name] = rec;
                     list.push(rec);
                 }
@@ -119,8 +120,10 @@ function addHashira(rec, page) {
         if (n.length < 2 || /^[0-9\-]+$/.test(n)) continue;          // ノンブルなどは除く
         pushUnique(rec.hashira, n);
         pushUnique(rec.hashira, n.replace(/^付録/, ""));
-        var m = n.match(/\(([^()]+)\)/g);                           // 「付録（○○規約）」の括弧の中
-        if (m) for (var q = 0; q < m.length; q++) pushUnique(rec.hashira, m[q].replace(/[()]/g, ""));
+        // 「第９編　人　事（○○（ポスト・ドクター）の処遇に関する規程）」のような柱は、
+        // 最初の「（」から最後の「）」までを取り出す（中に括弧があってもよい）
+        var m = n.match(/^[^(]*\((.*)\)$/);
+        if (m) pushUnique(rec.hashira, m[1]);
     }
 }
 function pushUnique(arr, v) {
@@ -129,13 +132,17 @@ function pushUnique(arr, v) {
     arr.push(v);
 }
 
-// 照合用の索引を作る（同じ名前が別のPDFにもあれば "DUP" として使わない）
+// 照合用の索引を作る
+//   同じ名前が複数のPDFにある場合（1つの規程を本文・別表などに分けて配置しているとき）は
+//   ひとまとめにして、いちばん前のPDFの開始ページを使う
 function buildIndex(list) {
     var lv = { file: {}, noParen: {}, hashira: {} }, loose = { file: {}, noParen: {}, hashira: {} };
     function put(map, key, rec) {
         if (!key) return;
-        if (!map[key]) map[key] = rec;
-        else if (map[key] !== rec) map[key] = "DUP";
+        if (!map.hasOwnProperty(key)) map[key] = [];
+        var arr = map[key];
+        for (var i = 0; i < arr.length; i++) if (arr[i] === rec) return;
+        arr.push(rec);
     }
     for (var i = 0; i < list.length; i++) {
         var r = list[i];
@@ -149,6 +156,36 @@ function buildIndex(list) {
     }
     return { list: list, count: list.length, lv: lv, loose: loose };
 }
+// 同じ名前のPDF群から、いちばん前のものを返す
+function earliest(arr) {
+    var best = null;
+    for (var i = 0; i < arr.length; i++) if (!best || arr[i].order < best.order) best = arr[i];
+    return best;
+}
+// まとめてよいのは、本文で連続して並んでいるPDFどうしだけ（離れていれば別の規程の可能性）
+function contiguous(arr) {
+    var min = Infinity, max = -Infinity;
+    for (var i = 0; i < arr.length; i++) { min = Math.min(min, arr[i].order); max = Math.max(max, arr[i].order); }
+    return max - min + 1 === arr.length;
+}
+function lookup(map, key) {
+    if (!key || !map.hasOwnProperty(key)) return null;
+    var arr = map[key];
+    if (!arr.length || !contiguous(arr)) return null;
+    return { rec: earliest(arr), group: arr };
+}
+// 同じ柱（いちばん長い＝編名と規程名を含む柱）を持つPDFを、同じ規程として使用済みにする
+function markUsed(starts, group) {
+    for (var g = 0; g < group.length; g++) {
+        var r = group[g];
+        r.used = true;
+        var longest = "";
+        for (var h = 0; h < r.hashira.length; h++) if (r.hashira[h].length > longest.length) longest = r.hashira[h];
+        if (!longest || !starts.lv.hashira.hasOwnProperty(longest)) continue;
+        var same = starts.lv.hashira[longest];
+        if (contiguous(same)) for (var k = 0; k < same.length; k++) same[k].used = true;
+    }
+}
 
 // 目次・索引の題名から本文のPDFを探す
 //   戻り値: { rec, how }  見つからなければ rec は null
@@ -159,33 +196,44 @@ function findRec(starts, title) {
     for (var l = 0; l < levels.length; l++) {
         var map = starts.lv[levels[l][0]];
         for (var i = 0; i < tries.length; i++) {
-            var r = map[tries[i]];
-            if (r && r !== "DUP") return { rec: r, how: levels[l][1] };
+            var f = lookup(map, tries[i]);
+            if (f) return { rec: f.rec, group: f.group, how: levels[l][1] + note(f.group) };
         }
         // 「学校法人明治大学」「明治大学」などの有無だけの違い
         var lmap = starts.loose[levels[l][0]];
         for (var j = 0; j < tries.length; j++) {
-            var r2 = lmap[stripPrefix(tries[j])];
-            if (r2 && r2 !== "DUP") return { rec: r2, how: levels[l][1] + "（明治大学等の有無）" };
+            var f2 = lookup(lmap, stripPrefix(tries[j]));
+            if (f2) return { rec: f2.rec, group: f2.group, how: levels[l][1] + "（明治大学等の有無）" + note(f2.group) };
         }
     }
-    // 最後の手段：部分一致（候補が1つだけのとき）
-    var hit = null, many = false;
+    // 最後の手段：部分一致（題名の一方がもう一方を含む）。
+    // 当てはまるPDFがすべて同じ名前（＝同じ規程の本文・別表など）のときだけ採用する
+    // （当てはまった名前に、全PDF共通のものが1つでもあれば同じ規程とみなす）
+    var b = noParen(t), hits = [], common = null;
     for (var k = 0; k < starts.list.length; k++) {
         var rec = starts.list[k];
-        var names = [noParen(rec.key)].concat(rec.hashira);
+        var names = [noParen(rec.key)];
+        for (var h = 0; h < rec.hashira.length; h++) names.push(noParen(rec.hashira[h]));
+        var matched = {}, any = false;
         for (var n = 0; n < names.length; n++) {
-            var a = names[n], b = noParen(t);
+            var a = names[n];
             var shorter = a.length < b.length ? a : b;
-            if (shorter.length >= 6 && (a.indexOf(b) >= 0 || b.indexOf(a) >= 0)) {
-                if (hit && hit !== rec) many = true;
-                hit = rec;
-                break;
-            }
+            if (shorter.length >= 6 && (a.indexOf(b) >= 0 || b.indexOf(a) >= 0)) { matched[a] = true; any = true; }
         }
+        if (!any) continue;
+        hits.push(rec);
+        if (common === null) { common = matched; continue; }
+        var next = {};
+        for (var c in common) if (common.hasOwnProperty(c) && matched[c]) next[c] = true;
+        common = next;
     }
-    if (hit && !many) return { rec: hit, how: "部分一致（要確認）" };
-    return { rec: null, how: "" };
+    var shared = false;
+    for (var c2 in common) if (common && common.hasOwnProperty(c2)) { shared = true; break; }
+    if (hits.length && shared && contiguous(hits)) return { rec: earliest(hits), group: hits, how: "部分一致（要確認）" + note(hits) };
+    return { rec: null, group: [], how: "" };
+}
+function note(group) {
+    return group.length > 1 ? "（PDF " + group.length + " 件をまとめて最初のページ）" : "";
 }
 
 // ---------- 段落を解析 ----------
@@ -265,11 +313,11 @@ function makePlan(target, starts) {
             if (info.numStart < 0) continue;
             var found2 = findRec(starts, info.title);
             var rec = found2.rec, how = found2.how;
-            if (rec && how !== "一致") plan.fuzzy++;
+            if (rec && how.indexOf("一致") !== 0) plan.fuzzy++;
             if (rec && how.indexOf("要確認") >= 0) plan.partial++;
             var item = { para: para, info: info, rec: rec, how: how, note: "" };
             if (rec) {
-                rec.used = true;
+                markUsed(starts, found2.group);
                 plan.ok++;
                 var v = volOf(rec.doc);
                 if (v && info.vol && v !== info.vol) {
