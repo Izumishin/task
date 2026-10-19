@@ -177,30 +177,31 @@ var Core = (function () {
   }
 
   // 1ページ分：柱・ノンブル・本文を判定
+  //   ノンブルは、上下の範囲内にある「数字だけ」の文字のうち、いちばんページの端に近い1つだけ。
+  //   ほかの数字（細目次の行末のページ数や本文の数字）は消さずに残す
   function analyzePage(pg, opt) {
     var topLim = pg.h * opt.hashiraPct / 100;
     var nTop = pg.h * opt.nombrePct / 100, nBot = pg.h * (1 - opt.nombrePct / 100);
-    var nombreCands = [], hashiraItems = [], bodyItems = [], contentItems = [];
+    var nombreItem = null, nombreN = null, edgeBest = Infinity;
     pg.items.forEach(function (it) {
+      if (it.y > nTop && it.y < nBot) return;
       var m = it.str.match(NUM_ONLY);
-      if (m && (it.y <= nTop || it.y >= nBot)) {
-        nombreCands.push({ n: parseInt(m[1].normalize('NFKC'), 10), edge: Math.min(it.y, pg.h - it.y),
-          front: /[()（）]/.test(it.str) });
-        return;
-      }
-      contentItems.push(it);   // ノンブル以外すべて（目次・索引ページ用）
-      if (it.y <= topLim) {
-        hashiraItems.push(it);
-      } else if (it.y < nBot) {
-        bodyItems.push(it);
-      }
+      if (!m) return;
+      var edge = Math.min(it.y, pg.h - it.y);
+      if (edge < edgeBest) { edgeBest = edge; nombreItem = it; nombreN = parseInt(m[1].normalize('NFKC'), 10); }
     });
-    nombreCands.sort(function (a, z) { return a.edge - z.edge; });
+    var hashiraItems = [], bodyItems = [], contentItems = [];
+    pg.items.forEach(function (it) {
+      if (it === nombreItem) return;
+      contentItems.push(it);   // ノンブル以外すべて（目次・索引ページ用）
+      if (it.y <= topLim) hashiraItems.push(it);
+      else if (it.y < nBot) bodyItems.push(it);
+    });
     // 柱は範囲内のいちばん上の行だけ（その下の格付けタグや本文は含めない）
     var hashira = hashiraItems.length ? toLines(hashiraItems, pg.w, 1)[0] : '';
     return {
-      nombre: nombreCands.length ? nombreCands[0].n : null,
-      front: nombreCands.length ? nombreCands[0].front : false,
+      nombre: nombreN,
+      front: nombreItem ? /[()（）]/.test(nombreItem.str) : false,
       hashira: hashira.trim(),
       title: norm(stripTag(hashira)),
       bodyItems: bodyItems,
@@ -331,7 +332,7 @@ var Core = (function () {
       var gap = prev ? p.nombre - prev.nombre - 1 : 0;
       if (prev && gap > 0 && gap === blanks) {
         nombreRows.push({ status: 'ok', label: 'OK', where: where(p), detail: p.nombre + '（直前の白ページ ' + blanks + ' ページ分を含む）' });
-      } else if (prev && gap === blanks + 1 && prev.nombre % 2 === 1 && hen(prev) !== hen(p)) {
+      } else if (prev && gap === blanks + 1 && prev.nombre % 2 === 1 && (hen(prev) !== hen(p) || !hen(prev) || !hen(p))) {
         // 編の最後が奇数ページで終わり、偶数ページにノンブルなしの白ページを入れている
         nombreRows.push({ status: 'ok', label: 'OK', where: where(p),
           detail: prev.nombre + ' の次が ' + p.nombre + '（編末の白ページ分）' });
