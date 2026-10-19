@@ -337,16 +337,14 @@ var Core = (function () {
         return;
       }
       var gap = prev ? p.nombre - prev.nombre - 1 : 0;
-      if (prev && gap > 0 && gap === blanks) {
-        nombreRows.push({ status: 'ok', label: 'OK', where: where(p), detail: p.nombre + '（直前の白ページ ' + blanks + ' ページ分を含む）' });
+      if (prev && gap > 0 && gap <= blanks) {
+        // 間にあるノンブルなしのページ（扉・白ページ）の枚数以内の飛びは正常（扉は番号を数えないこともある）
+        nombreRows.push({ status: 'ok', label: 'OK', where: where(p),
+          detail: prev.nombre + ' の次が ' + p.nombre + '（間に扉・白ページ ' + blanks + ' ページ）' });
       } else if (prev && gap === blanks + 1 && prev.nombre % 2 === 1 && (hen(prev) !== hen(p) || !hen(prev) || !hen(p))) {
         // 編の最後が奇数ページで終わり、偶数ページにノンブルなしの白ページを入れている
         nombreRows.push({ status: 'ok', label: 'OK', where: where(p),
           detail: prev.nombre + ' の次が ' + p.nombre + '（編末の白ページ分）' });
-      } else if (prev && gap === blanks + 1 && prev.nombre % 2 === 1 && bi - lastBlankAt <= 3) {
-        // 扉・白ページ（ノンブルなし）のすぐ後で、偶数ページ1枚分だけ飛んでいる（白ページ・扉裏の分）
-        nombreRows.push({ status: 'ok', label: 'OK', where: where(p),
-          detail: prev.nombre + ' の次が ' + p.nombre + '（扉・白ページの分）' });
       } else if (prev && p.nombre !== prev.nombre + 1) {
         nombreRows.push({ status: 'ng', label: p.nombre <= prev.nombre ? '重複・逆戻り' : '飛び',
           where: where(p), detail: prev.nombre + ' の次が ' + p.nombre + (gap > 0 ? '（' + gap + 'ページ分なし）' : '') });
