@@ -276,11 +276,11 @@ var Core = (function () {
   // docs: [{ name, vol:'上'|'下'|'', pages:[{w,h,items}], tocPages:Set(1始まり), idxPages:Set }]
   // 巻ごとに独立してチェックする（上巻PDFでは「上」の行だけ、下巻PDFでは「下」の行だけ）
   function check(docs, opt) {
-    var out = { pageList: [], nombreRows: [], starts: [], tocRows: [], missingRows: [], idxRows: [],
+    var out = { pageList: [], nombreRows: [], starts: [], tocRows: [], missingRows: [], idxRows: [], tocReadRows: [],
       tocLineCount: 0, idxLineCount: 0, dupNombre: [], skippedOtherVol: 0 };
     docs.forEach(function (d, di) {
       var r = checkDoc(d, di, opt);
-      ['pageList', 'nombreRows', 'starts', 'tocRows', 'missingRows', 'idxRows', 'dupNombre'].forEach(function (k) {
+      ['pageList', 'nombreRows', 'starts', 'tocRows', 'missingRows', 'idxRows', 'tocReadRows', 'dupNombre'].forEach(function (k) {
         out[k] = out[k].concat(r[k]);
       });
       out.tocLineCount += r.tocLineCount; out.idxLineCount += r.idxLineCount; out.skippedOtherVol += r.skippedOtherVol;
@@ -290,7 +290,7 @@ var Core = (function () {
 
   function checkDoc(d, di, opt) {
     var pageList = [];
-    var tocLines = [], idxLines = [];
+    var tocLines = [], idxLines = [], tocLineInfo = [];
     var volLabel = d.vol ? '（' + d.vol + '巻）' : '';
     d.pages.forEach(function (pg, pi) {
       var no = pi + 1;
@@ -299,6 +299,7 @@ var Core = (function () {
       if (kind === '目次' || kind === '索引') {
         var lines = toLines(a.contentItems, pg.w, kind === '目次' ? opt.tocCols : opt.idxCols);
         lines.forEach(function (l) { (kind === '目次' ? tocLines : idxLines).push(l); });
+        if (kind === '目次') lines.forEach(function (l) { tocLineInfo.push({ text: l, pdfPage: no }); });
       }
       pageList.push({ doc: d.name, docIndex: di, pdfPage: no, kind: kind,
         nombre: a.nombre, hashira: a.hashira, title: a.title, bodyText: a.bodyText });
@@ -326,9 +327,10 @@ var Core = (function () {
     // ノンブル連番
     var nombreRows = [];
     var body = pageList.filter(function (p) { return p.kind === '本文'; });
-    var prev = null, blanks = 0;
-    body.forEach(function (p) {
+    var prev = null, blanks = 0, lastBlankAt = -99;
+    body.forEach(function (p, bi) {
       if (p.nombre === null) {
+        lastBlankAt = bi;
         if (!p.hashira && !p.bodyText) nombreRows.push({ status: 'ok', label: '白ページ', where: where(p), detail: 'ノンブルなしの白ページ' });
         else nombreRows.push({ status: 'warn', label: 'ノンブルなし', where: where(p), detail: '扉などなら問題なし' });
         blanks++;
@@ -341,6 +343,10 @@ var Core = (function () {
         // 編の最後が奇数ページで終わり、偶数ページにノンブルなしの白ページを入れている
         nombreRows.push({ status: 'ok', label: 'OK', where: where(p),
           detail: prev.nombre + ' の次が ' + p.nombre + '（編末の白ページ分）' });
+      } else if (prev && gap === blanks + 1 && prev.nombre % 2 === 1 && bi - lastBlankAt <= 3) {
+        // 扉・白ページ（ノンブルなし）のすぐ後で、偶数ページ1枚分だけ飛んでいる（白ページ・扉裏の分）
+        nombreRows.push({ status: 'ok', label: 'OK', where: where(p),
+          detail: prev.nombre + ' の次が ' + p.nombre + '（扉・白ページの分）' });
       } else if (prev && p.nombre !== prev.nombre + 1) {
         nombreRows.push({ status: 'ng', label: p.nombre <= prev.nombre ? '重複・逆戻り' : '飛び',
           where: where(p), detail: prev.nombre + ' の次が ' + p.nombre + (gap > 0 ? '（' + gap + 'ページ分なし）' : '') });
@@ -395,10 +401,32 @@ var Core = (function () {
       if (n && n !== lastName) regStarts.push({ p: p, name: n });
       if (n) lastName = n;
     });
+    var tocAllText = norm(tocLines.join(''));
     var missingRows = tocEntries.length ? regStarts.filter(function (x) { return !inToc(x.name); }).map(function (x) {
       var st = x.p;
+      if (tocAllText.indexOf(x.name) >= 0) {
+        return { status: 'warn', label: '細目次の行を読み取れず（要確認）', hashira: st.hashira, nombre: st.nombre, where: where(st) };
+      }
       return { status: 'ng', label: '細目次に見当たらない', hashira: st.hashira, nombre: st.nombre, where: where(st) };
     }) : [];
+
+    // 細目次の読み取り結果（確認用）：1行ずつ
+    var tocReadRows = tocLineInfo.map(function (l) {
+      var line = String(l.text).normalize('NFKC').trim();
+      var m = line.match(TOC_RE);
+      var isEntry = /^[○〇◯]/.test(line);
+      var row = { doc: d.name, pdfPage: l.pdfPage, text: l.text, page: '', vol: '' };
+      if (m && norm(m[1]).replace(/[.…‥・･·•―\-_]/g, '')) {
+        row.page = parseInt(m[2], 10); row.vol = m[3] || '';
+        if (d.vol && row.vol && row.vol !== d.vol) { row.status = 'ok'; row.label = '読めた（別の巻）'; }
+        else { row.status = 'ok'; row.label = '読めた'; }
+      } else if (isEntry) {
+        row.status = 'warn'; row.label = 'ページ数を読めず（2行に分かれた題名なら問題なし）';
+      } else {
+        row.status = 'ok'; row.label = '見出しなど';
+      }
+      return row;
+    });
     starts = regStarts.map(function (x) { return x.p; });
 
     // 索引（本文の文字か、そのページの柱に題名があればOK）
@@ -434,7 +462,7 @@ var Core = (function () {
       .map(function (k) { return d.name + ':' + k; });
 
     return { pageList: pageList, nombreRows: nombreRows, starts: starts, tocRows: tocRows,
-      missingRows: missingRows, idxRows: idxRows, tocLineCount: tocLines.length,
+      missingRows: missingRows, idxRows: idxRows, tocReadRows: tocReadRows, tocLineCount: tocLines.length,
       idxLineCount: idxLines.length, dupNombre: dupRows, skippedOtherVol: skipped };
   }
 
@@ -571,6 +599,8 @@ if (typeof module !== 'undefined') module.exports = Core;
       rows: function () { return result.idxRows; } },
     nombre: { name: 'ノンブル連番', cols: [['status', '判定'], ['where', 'PDF位置'], ['detail', '内容']],
       rows: function () { return result.nombreRows; } },
+    tocread: { name: '細目次の読み取り（確認用）', cols: [['status', '判定'], ['text', '読み取った行'], ['page', 'ページ'], ['vol', '巻'], ['pdfPage', 'PDFページ'], ['doc', 'ファイル']],
+      rows: function () { return result.tocReadRows; } },
     pages: { name: 'ページ一覧（検出確認用）', cols: [['doc', 'ファイル'], ['pdfPage', 'PDFページ'], ['kind', '種類'], ['nombre', 'ノンブル'], ['hashira', '柱']],
       rows: function () { return result.pageList; } }
   };
@@ -581,7 +611,7 @@ if (typeof module !== 'undefined') module.exports = Core;
     var stats = [
       ['細目次 NG', count(r.tocRows, 'ng'), r.tocRows.length + ' 項目中'],
       ['細目次 要確認', count(r.tocRows, 'warn'), '開始ページずれの疑い'],
-      ['細目次にない規程', r.missingRows.length, '柱の変わり目 ' + r.starts.length + ' 箇所中'],
+      ['細目次にない規程', count(r.missingRows, 'ng'), '行を読み取れず ' + count(r.missingRows, 'warn') + '（柱の変わり目 ' + r.starts.length + ' 箇所中）'],
       ['索引 NG', count(r.idxRows, 'ng'), r.idxRows.length + ' 参照中（要確認 ' + count(r.idxRows, 'warn') + '）'],
       ['ノンブル NG', count(r.nombreRows, 'ng'), 'ノンブルなし ' + count(r.nombreRows, 'warn') + ' ページ']
     ];
