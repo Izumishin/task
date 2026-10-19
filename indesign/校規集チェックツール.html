@@ -86,7 +86,7 @@
       <summary>詳細設定（柱・ノンブルの位置、段組）</summary>
       <div class="settings">
         <div><label>柱を探す範囲：上端から（ページ高さの%）</label><input id="sHashira" type="number" value="10" min="1" max="50"></div>
-        <div><label>ノンブルを探す範囲：上下端から（%）</label><input id="sNombre" type="number" value="8" min="1" max="50"></div>
+        <div><label>ノンブルを探す範囲：上下端から（%）</label><input id="sNombre" type="number" value="10" min="1" max="50"></div>
         <div><label>細目次の段数</label><input id="sTocCols" type="number" value="1" min="1" max="4"></div>
         <div><label>索引の段数</label><input id="sIdxCols" type="number" value="1" min="1" max="4"></div>
       </div>
@@ -182,13 +182,18 @@ var Core = (function () {
   function analyzePage(pg, opt) {
     var topLim = pg.h * opt.hashiraPct / 100;
     var nTop = pg.h * opt.nombrePct / 100, nBot = pg.h * (1 - opt.nombrePct / 100);
-    var nombreItem = null, nombreN = null, edgeBest = Infinity;
+    // 候補の優先順位：①「―1159―」「(3)」のように飾りが付いている ②左右中央にある ③ページの端に近い
+    var nombreItem = null, nombreN = null, best = null;
     pg.items.forEach(function (it) {
       if (it.y > nTop && it.y < nBot) return;
       var m = it.str.match(NUM_ONLY);
       if (!m) return;
-      var edge = Math.min(it.y, pg.h - it.y);
-      if (edge < edgeBest) { edgeBest = edge; nombreItem = it; nombreN = parseInt(m[1].normalize('NFKC'), 10); }
+      var decorated = /[\-－–—―‐‑‒─━()（）]/.test(it.str) ? 0 : 1;
+      var centered = Math.abs(it.x + it.w / 2 - pg.w / 2) < pg.w * 0.1 ? 0 : 1;
+      var score = [decorated, centered, Math.min(it.y, pg.h - it.y)];
+      if (!best || score[0] < best[0] || (score[0] === best[0] && (score[1] < best[1] || (score[1] === best[1] && score[2] < best[2])))) {
+        best = score; nombreItem = it; nombreN = parseInt(m[1].normalize('NFKC'), 10);
+      }
     });
     var hashiraItems = [], bodyItems = [], contentItems = [];
     pg.items.forEach(function (it) {
@@ -543,7 +548,7 @@ if (typeof module !== 'undefined') module.exports = Core;
       }
       $('status').textContent = '照合中…';
       result = Core.check(docs, {
-        hashiraPct: +$('sHashira').value || 10, nombrePct: +$('sNombre').value || 8,
+        hashiraPct: +$('sHashira').value || 10, nombrePct: +$('sNombre').value || 10,
         tocCols: +$('sTocCols').value || 1, idxCols: +$('sIdxCols').value || 1
       });
       $('status').textContent = '完了（' + total + ' ページ）';
