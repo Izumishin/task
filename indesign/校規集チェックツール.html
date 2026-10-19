@@ -38,7 +38,7 @@
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { color: var(--muted); font-weight: 600; white-space: nowrap; }
   td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
-  input[type=text], input[type=number] { font: inherit; padding: 4px 8px; border: 1px solid var(--line);
+  input[type=text], input[type=number], select { font: inherit; padding: 4px 8px; border: 1px solid var(--line);
     border-radius: 4px; background: var(--bg); color: var(--text); width: 100%; min-width: 90px; }
   button { font: inherit; padding: 8px 18px; border-radius: 6px; border: 1px solid var(--accent);
     background: var(--accent); color: var(--panel); cursor: pointer; }
@@ -76,9 +76,9 @@
       <input id="file" type="file" accept="application/pdf" multiple class="hidden">
     </div>
     <div id="fileTableWrap" class="scroll hidden" style="margin-top:12px">
-      <p class="hint">目次・索引がどのPDFページにあるかを入力してください（PDFビューアのページ番号。例：<code>3-12</code>、複数なら <code>3-12,15</code>）。ないファイルは空欄でOKです。</p>
+      <p class="hint">「巻」はファイル名から自動で選ばれます（上巻PDFでは目次・索引の「上」の行だけ、下巻PDFでは「下」の行だけをチェック）。目次・索引がどのPDFページにあるかを入力してください（PDFビューアのページ番号。例：<code>3-12</code>、複数なら <code>3-12,15</code>）。ないファイルは空欄でOKです。</p>
       <table>
-        <thead><tr><th>順</th><th>ファイル</th><th>ページ数</th><th>細目次のページ</th><th>索引のページ</th></tr></thead>
+        <thead><tr><th>順</th><th>ファイル</th><th>ページ数</th><th>巻</th><th>細目次のページ</th><th>索引のページ</th></tr></thead>
         <tbody id="fileTable"></tbody>
       </table>
     </div>
@@ -125,7 +125,8 @@ var Core = (function () {
   function stripTag(s) {
     return String(s || '').replace(/【[^】]*】/g, '').trim();
   }
-  var NUM_ONLY = /^[\s\-－–—()（）]*([0-9０-９]{1,5})[\s\-－–—()（）]*$/;
+  // ノンブル：「―1159―」「- 12 -」「(3)」など。括弧付きは前付け（目次など）のノンブルとして区別する
+  var NUM_ONLY = /^[\s\-－–—―‐‑‒─━()（）]*([0-9０-９]{1,5})[\s\-－–—―‐‑‒─━()（）]*$/;
 
   // pdf.js のページからテキスト片を取り出す（上端基準の座標に変換）
   async function extractPage(page) {
@@ -183,7 +184,8 @@ var Core = (function () {
     pg.items.forEach(function (it) {
       var m = it.str.match(NUM_ONLY);
       if (m && (it.y <= nTop || it.y >= nBot)) {
-        nombreCands.push({ n: parseInt(m[1].normalize('NFKC'), 10), edge: Math.min(it.y, pg.h - it.y) });
+        nombreCands.push({ n: parseInt(m[1].normalize('NFKC'), 10), edge: Math.min(it.y, pg.h - it.y),
+          front: /[()（）]/.test(it.str) });
         return;
       }
       contentItems.push(it);   // ノンブル以外すべて（目次・索引ページ用）
@@ -194,9 +196,11 @@ var Core = (function () {
       }
     });
     nombreCands.sort(function (a, z) { return a.edge - z.edge; });
-    var hashira = hashiraItems.length ? toLines(hashiraItems, pg.w, 1).join(' ') : '';
+    // 柱は範囲内のいちばん上の行だけ（その下の格付けタグや本文は含めない）
+    var hashira = hashiraItems.length ? toLines(hashiraItems, pg.w, 1)[0] : '';
     return {
       nombre: nombreCands.length ? nombreCands[0].n : null,
+      front: nombreCands.length ? nombreCands[0].front : false,
       hashira: hashira.trim(),
       title: norm(stripTag(hashira)),
       bodyItems: bodyItems,
@@ -208,7 +212,7 @@ var Core = (function () {
   // ---- 細目次の行を解析 ----
   var LEADER = '[\\s.…‥・･·•―\\-－_\\u0008\\uFFFD]';
   // 末尾の「上」「下」（巻の表記）は読み飛ばす
-  var TOC_RE = new RegExp('^(.+?)' + LEADER + '+([0-9]{1,5})(?:\\s*[上下])?$');
+  var TOC_RE = new RegExp('^(.+?)' + LEADER + '+([0-9]{1,5})(?:\\s*([上下]))?$');
   function parseToc(lines) {
     var entries = [], pending = [];
     lines.forEach(function (raw) {
@@ -218,7 +222,7 @@ var Core = (function () {
       var m = line.match(TOC_RE);
       if (m && norm(m[1]).replace(/[.…‥・･·•―\-_]/g, '')) {
         var title = m[1].replace(new RegExp(LEADER + '+$'), '').trim();
-        entries.push({ text: (pending.join('') + title).trim(), short: title, page: parseInt(m[2], 10), raw: raw });
+        entries.push({ text: (pending.join('') + title).trim(), short: title, page: parseInt(m[2], 10), vol: m[3] || '', raw: raw });
         pending = [];
       } else {
         pending.push(line);
@@ -229,7 +233,7 @@ var Core = (function () {
   }
 
   // ---- 索引の行を解析 ----
-  var IDX_RE = new RegExp('^(.+?)' + LEADER + '+([0-9][0-9,、，~〜～\\-–・\\s]*?)(?:\\s*[上下])?$');
+  var IDX_RE = new RegExp('^(.+?)' + LEADER + '+([0-9][0-9,、，~〜～\\-–・\\s]*?)(?:\\s*([上下]))?$');
   function parseIndex(lines) {
     var entries = [], pending = '';
     lines.forEach(function (raw) {
@@ -244,7 +248,7 @@ var Core = (function () {
           var r = tok.match(/^(\d+)(?:[~〜～\-–](\d+))?$/);
           if (r) pages.push({ from: +r[1], to: r[2] ? +r[2] : +r[1] });
         });
-        if (pages.length) entries.push({ term: term, pages: pages, raw: raw });
+        if (pages.length) entries.push({ term: term, pages: pages, vol: m[3] || '', raw: raw });
         pending = '';
       } else if (norm(line).length <= 2) {
         pending = '';            // 「あ」「か」などの見出し
@@ -263,30 +267,49 @@ var Core = (function () {
   }
 
   // ---- 全体チェック ----
-  // docs: [{ name, pages:[{w,h,items}], tocPages:Set(1始まり), idxPages:Set }]
+  // docs: [{ name, vol:'上'|'下'|'', pages:[{w,h,items}], tocPages:Set(1始まり), idxPages:Set }]
+  // 巻ごとに独立してチェックする（上巻PDFでは「上」の行だけ、下巻PDFでは「下」の行だけ）
   function check(docs, opt) {
-    var pageList = [];       // 本文ページ
-    var tocLines = [], idxLines = [];
+    var out = { pageList: [], nombreRows: [], starts: [], tocRows: [], missingRows: [], idxRows: [],
+      tocLineCount: 0, idxLineCount: 0, dupNombre: [], skippedOtherVol: 0 };
     docs.forEach(function (d, di) {
-      d.pages.forEach(function (pg, pi) {
-        var no = pi + 1;
-        var a = analyzePage(pg, opt);
-        var kind = d.tocPages.has(no) ? '目次' : d.idxPages.has(no) ? '索引' : '本文';
-        if (kind !== '本文') {
-          var lines = toLines(a.contentItems, pg.w, kind === '目次' ? opt.tocCols : opt.idxCols);
-          lines.forEach(function (l) { (kind === '目次' ? tocLines : idxLines).push({ text: l, doc: d.name, pdfPage: no }); });
-        }
-        pageList.push({ doc: d.name, docIndex: di, pdfPage: no, kind: kind,
-          nombre: a.nombre, hashira: a.hashira, title: a.title, bodyText: a.bodyText });
+      var r = checkDoc(d, di, opt);
+      ['pageList', 'nombreRows', 'starts', 'tocRows', 'missingRows', 'idxRows', 'dupNombre'].forEach(function (k) {
+        out[k] = out[k].concat(r[k]);
       });
+      out.tocLineCount += r.tocLineCount; out.idxLineCount += r.idxLineCount; out.skippedOtherVol += r.skippedOtherVol;
+    });
+    return out;
+  }
+
+  function checkDoc(d, di, opt) {
+    var pageList = [];
+    var tocLines = [], idxLines = [];
+    var volLabel = d.vol ? '（' + d.vol + '巻）' : '';
+    d.pages.forEach(function (pg, pi) {
+      var no = pi + 1;
+      var a = analyzePage(pg, opt);
+      var kind = d.tocPages.has(no) ? '目次' : d.idxPages.has(no) ? '索引' : (a.front ? '前付' : '本文');
+      if (kind === '目次' || kind === '索引') {
+        var lines = toLines(a.contentItems, pg.w, kind === '目次' ? opt.tocCols : opt.idxCols);
+        lines.forEach(function (l) { (kind === '目次' ? tocLines : idxLines).push(l); });
+      }
+      pageList.push({ doc: d.name, docIndex: di, pdfPage: no, kind: kind,
+        nombre: a.nombre, hashira: a.hashira, title: a.title, bodyText: a.bodyText });
     });
 
-    // ノンブル → ページ
+    // ノンブル → ページ（本文ページだけ。前付けの「(3)」などは含めない）
     var byNombre = {};
     pageList.forEach(function (p) {
       if (p.kind === '本文' && p.nombre !== null) (byNombre[p.nombre] = byNombre[p.nombre] || []).push(p);
     });
     function where(p) { return p.doc + ' p.' + p.pdfPage; }
+    // この巻の行か（行に「上／下」がなければ対象にする）
+    var skipped = 0;
+    function mine(e) {
+      if (d.vol && e.vol && e.vol !== d.vol) { skipped++; return false; }
+      return true;
+    }
 
     // ノンブル連番
     var nombreRows = [];
@@ -300,7 +323,6 @@ var Core = (function () {
       }
       var gap = prev ? p.nombre - prev.nombre - 1 : 0;
       if (prev && gap > 0 && gap === blanks) {
-        // 白ページ（隠しノンブル）の分だけ飛んでいるのは正常
         nombreRows.push({ status: 'ok', label: 'OK', where: where(p), detail: p.nombre + '（直前の白ページ ' + blanks + ' ページ分を含む）' });
       } else if (prev && p.nombre !== prev.nombre + 1) {
         nombreRows.push({ status: 'ng', label: p.nombre <= prev.nombre ? '重複・逆戻り' : '飛び',
@@ -320,12 +342,12 @@ var Core = (function () {
     });
 
     // 細目次
-    var tocEntries = parseToc(tocLines.map(function (l) { return l.text; }));
+    var tocEntries = parseToc(tocLines).filter(mine);
     var matchedStarts = new Set();
     var tocRows = tocEntries.map(function (e) {
-      var row = { text: e.text, page: e.page, hashira: '', status: 'ng', label: '', where: '' };
+      var row = { text: e.text, page: e.page, vol: e.vol, hashira: '', status: 'ng', label: '', where: '' };
       var hits = byNombre[e.page];
-      if (!hits) { row.label = 'そのノンブルのページがない'; return row; }
+      if (!hits) { row.label = 'そのノンブルのページがない' + volLabel; return row; }
       var p = hits[0];
       row.where = where(p); row.hashira = p.hashira;
       var t = norm(e.text), s = norm(e.short);
@@ -338,12 +360,12 @@ var Core = (function () {
       starts.forEach(function (st) { if (st.title === p.title) matchedStarts.add(st); });
       return row;
     });
-    var missingRows = starts.filter(function (st) { return !matchedStarts.has(st); }).map(function (st) {
+    var missingRows = tocEntries.length ? starts.filter(function (st) { return !matchedStarts.has(st); }).map(function (st) {
       return { status: 'ng', label: '細目次に見当たらない', hashira: st.hashira, nombre: st.nombre, where: where(st) };
-    });
+    }) : [];
 
-    // 索引
-    var idxEntries = parseIndex(idxLines.map(function (l) { return l.text; }));
+    // 索引（本文の文字か、そのページの柱に題名があればOK）
+    var idxEntries = parseIndex(idxLines).filter(mine);
     var idxRows = [];
     idxEntries.forEach(function (e) {
       var vars = termVariants(e.term);
@@ -352,22 +374,38 @@ var Core = (function () {
         for (var n = r.from; n <= r.to && !found; n++) {
           (byNombre[n] || []).forEach(function (p) {
             noPage = false;
-            if (!found && vars.some(function (v) { return p.bodyText.indexOf(v) >= 0; })) found = p;
+            if (!found && vars.some(function (v) { return p.bodyText.indexOf(v) >= 0 || (p.title && p.title.indexOf(v) >= 0); })) found = p;
           });
         }
-        var pageLabel = r.from === r.to ? String(r.from) : r.from + '〜' + r.to;
-        if (found) idxRows.push({ status: 'ok', label: 'OK', term: e.term, page: pageLabel, where: where(found) });
-        else if (noPage) idxRows.push({ status: 'ng', label: 'そのノンブルのページがない', term: e.term, page: pageLabel, where: '' });
+        var pageLabel = (r.from === r.to ? String(r.from) : r.from + '〜' + r.to) + (e.vol ? ' ' + e.vol : '');
+        if (found) {
+          // 索引は規程の開始ページを載せるので、前のページも同じ柱なら開始ページではない
+          var prevPage = byNombre[found.nombre - 1];
+          if (r.from === r.to && prevPage && found.title && prevPage[0].title === found.title) {
+            idxRows.push({ status: 'warn', label: '開始ページではない（前ページも同じ柱）', term: e.term, page: pageLabel, where: where(found) });
+          } else {
+            idxRows.push({ status: 'ok', label: 'OK', term: e.term, page: pageLabel, where: where(found) });
+          }
+        }
+        else if (noPage) idxRows.push({ status: 'ng', label: 'そのノンブルのページがない' + volLabel, term: e.term, page: pageLabel, where: '' });
         else idxRows.push({ status: 'ng', label: '本文に語句が見つからない', term: e.term, page: pageLabel,
           where: where(byNombre[r.from] ? byNombre[r.from][0] : byNombre[r.to][0]) });
       });
     });
 
-    var dupRows = Object.keys(byNombre).filter(function (k) { return byNombre[k].length > 1; });
+    var dupRows = Object.keys(byNombre).filter(function (k) { return byNombre[k].length > 1; })
+      .map(function (k) { return d.name + ':' + k; });
 
     return { pageList: pageList, nombreRows: nombreRows, starts: starts, tocRows: tocRows,
       missingRows: missingRows, idxRows: idxRows, tocLineCount: tocLines.length,
-      idxLineCount: idxLines.length, dupNombre: dupRows };
+      idxLineCount: idxLines.length, dupNombre: dupRows, skippedOtherVol: skipped };
+  }
+
+  // ファイル名から巻を推定（「（上）」「上巻」など）
+  function guessVol(name) {
+    var n = String(name || '').normalize('NFKC');
+    var up = /上巻|\(上\)/.test(n), down = /下巻|\(下\)/.test(n);
+    return up && !down ? '上' : down && !up ? '下' : '';
   }
 
   function parseRange(s) {
@@ -381,7 +419,7 @@ var Core = (function () {
     return set;
   }
 
-  return { norm: norm, stripTag: stripTag, extractPage: extractPage, toLines: toLines,
+  return { guessVol: guessVol, norm: norm, stripTag: stripTag, extractPage: extractPage, toLines: toLines,
     analyzePage: analyzePage, parseToc: parseToc, parseIndex: parseIndex, check: check, parseRange: parseRange };
 })();
 if (typeof module !== 'undefined') module.exports = Core;
@@ -422,7 +460,7 @@ if (typeof module !== 'undefined') module.exports = Core;
       $('status').textContent = f.name + ' を開いています…';
       var doc = await pdfjsLib.getDocument({ data: await f.arrayBuffer(),
         cMapUrl: PDFJS + 'cmaps/', cMapPacked: true }).promise;
-      files.push({ name: f.name, doc: doc, toc: '', idx: '' });
+      files.push({ name: f.name, doc: doc, toc: '', idx: '', vol: Core.guessVol(f.name) });
     }
     files.sort(function (a, b) { return a.name.localeCompare(b.name, 'ja'); });
     $('status').textContent = '';
@@ -436,8 +474,12 @@ if (typeof module !== 'undefined') module.exports = Core;
     files.forEach(function (f, i) {
       var tr = document.createElement('tr');
       tr.innerHTML = '<td class="num">' + (i + 1) + '</td><td>' + esc(f.name) + '</td><td class="num">' + f.doc.numPages +
-        '</td><td><input type="text" placeholder="例: 3-12" value="' + esc(f.toc) + '"></td>' +
+        '</td><td><select>' + ['', '上', '下'].map(function (v) {
+          return '<option value="' + v + '"' + (f.vol === v ? ' selected' : '') + '>' + (v ? v + '巻' : '区別なし') + '</option>';
+        }).join('') + '</select></td>' +
+        '<td><input type="text" placeholder="例: 3-12" value="' + esc(f.toc) + '"></td>' +
         '<td><input type="text" placeholder="例: 1480-1520" value="' + esc(f.idx) + '"></td>';
+      tr.querySelector('select').addEventListener('change', function () { f.vol = this.value; });
       var ins = tr.querySelectorAll('input');
       ins[0].addEventListener('input', function () { f.toc = this.value; });
       ins[1].addEventListener('input', function () { f.idx = this.value; });
@@ -465,7 +507,7 @@ if (typeof module !== 'undefined') module.exports = Core;
             await new Promise(function (r) { setTimeout(r, 0); });
           }
         }
-        docs.push({ name: f.name, pages: pages, tocPages: Core.parseRange(f.toc), idxPages: Core.parseRange(f.idx) });
+        docs.push({ name: f.name, vol: f.vol, pages: pages, tocPages: Core.parseRange(f.toc), idxPages: Core.parseRange(f.idx) });
       }
       $('status').textContent = '照合中…';
       result = Core.check(docs, {
@@ -484,7 +526,7 @@ if (typeof module !== 'undefined') module.exports = Core;
   function count(rows, st) { return rows.filter(function (r) { return r.status === st; }).length; }
 
   var TABS = {
-    toc: { name: '細目次 ↔ 柱', cols: [['status', '判定'], ['text', '細目次の題名'], ['page', 'ページ'], ['hashira', 'そのページの柱'], ['where', 'PDF位置']],
+    toc: { name: '細目次 ↔ 柱', cols: [['status', '判定'], ['text', '細目次の題名'], ['page', 'ページ'], ['vol', '巻'], ['hashira', 'そのページの柱'], ['where', 'PDF位置']],
       rows: function () { return result.tocRows; } },
     missing: { name: '細目次にない規程', cols: [['status', '判定'], ['hashira', '柱'], ['nombre', '開始ノンブル'], ['where', 'PDF位置']],
       rows: function () { return result.missingRows; } },
@@ -503,7 +545,7 @@ if (typeof module !== 'undefined') module.exports = Core;
       ['細目次 NG', count(r.tocRows, 'ng'), r.tocRows.length + ' 項目中'],
       ['細目次 要確認', count(r.tocRows, 'warn'), '開始ページずれの疑い'],
       ['細目次にない規程', r.missingRows.length, '柱の変わり目 ' + r.starts.length + ' 箇所中'],
-      ['索引 NG', count(r.idxRows, 'ng'), r.idxRows.length + ' 参照中'],
+      ['索引 NG', count(r.idxRows, 'ng'), r.idxRows.length + ' 参照中（要確認 ' + count(r.idxRows, 'warn') + '）'],
       ['ノンブル NG', count(r.nombreRows, 'ng'), 'ノンブルなし ' + count(r.nombreRows, 'warn') + ' ページ']
     ];
     $('summary').innerHTML = stats.map(function (s) {
