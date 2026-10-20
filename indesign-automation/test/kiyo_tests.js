@@ -896,6 +896,40 @@ const gs = guessComboStyleNames(['small', 'zhHans', 'zhHant', 'border'], [
   { name: 'C_繁体', fontStyle: '', font: 'Adobe Ming Std' }, { name: '囲み文字', fontStyle: '', font: '' }, { name: 'イタリック', fontStyle: 'Italic', font: '' }]);
 check('文字スタイルの名前・フォントから選ぶ', gs.small === '小文字' && gs.zhHans === '中国語（簡体）' && gs.zhHant === 'C_繁体' && gs.border === '囲み文字', JSON.stringify(gs));
 
+// ---- 一太郎などから変換した原稿の EQ フィールド (ルビ・縦中横) ----
+console.log('EQ fields (ruby / tate-chu-yoko):');
+const eq1 = parseEqField(' eq \\o\\al(\\s\\up 9(せつしよう),殺生)');
+check('EQ のルビ (\\o\\al): 親文字とルビ', eq1.text === '殺生' && JSON.stringify(eq1.ruby) === JSON.stringify([{ start: 0, end: 2, text: 'せつしよう' }]), JSON.stringify(eq1));
+const eq2 = parseEqField('EQ \\* jc2 \\* "Font:ＭＳ 明朝" \\* hps10 \\o\\ad(\\s\\up 9(かん),漢)');
+check('Word のルビの形 (書式の指定付き・\\o\\ad) も読む', eq2.text === '漢' && eq2.ruby.length === 1 && eq2.ruby[0].text === 'かん', JSON.stringify(eq2));
+const eq3 = parseEqField(' eq \\o(\\s\\do5(４),\\s\\do-5(９))');
+check('上下に重ねた2桁の数字は、並べて縦中横', eq3.text === '４９' && JSON.stringify(eq3.tcy) === JSON.stringify([{ start: 0, end: 2 }]) && eq3.ruby.length === 0, JSON.stringify(eq3));
+const eq4 = parseEqField(' eq \\o\\ac(\\s\\up 9(かっこ),\\(括弧\\))');
+check('命令の中の \\( \\) は文字の括弧', eq4.text === '(括弧)' && eq4.ruby[0].text === 'かっこ', JSON.stringify(eq4));
+const eq5 = parseEqField(' eq \\f(1,2)');
+check('読み方の分からない命令でも文字は残す', eq5.text === '12' && eq5.other === 1, JSON.stringify(eq5));
+const IT = (t, rpr) => `<w:r>${rpr ? `<w:rPr>${rpr}</w:rPr>` : ''}<w:instrText xml:space="preserve">${t}</w:instrText></w:r>`;
+const FC = t => `<w:r><w:fldChar w:fldCharType="${t}"/></w:r>`;
+const eqDoc = `<?xml version="1.0"?><w:document ${W}><w:body>${P('題目')}${P('１．はじめに', 'Heading1')}
+<w:p><w:r><w:t>馬琴の『</w:t></w:r>${FC('begin')}${IT(' eq \\o\\al(\\s\\up 9(')}${IT('せつしよう')}${IT('),')}${IT('殺生', '<w:b/>')}${IT(')')}${FC('end')}<w:r><w:t>石』は昭和</w:t></w:r>${FC('begin')}${IT(' eq \\o(\\s\\do5(４),\\s\\do-5(９))')}${FC('end')}<w:r><w:t>年。</w:t></w:r></w:p>
+<w:p><w:r><w:t>結果のある</w:t></w:r>${FC('begin')}${IT(' EQ \\o\\ad(\\s\\up 9(かん),漢)')}${FC('separate')}<w:r><w:t>漢</w:t></w:r>${FC('end')}<w:r><w:t>字。</w:t></w:r></w:p>
+<w:p><w:r><w:t>リンクの</w:t></w:r>${FC('begin')}${IT(' HYPERLINK "https://example.com" ')}${FC('separate')}<w:r><w:t>表示文字</w:t></w:r>${FC('end')}<w:r><w:t>です。</w:t></w:r></w:p>
+<w:sectPr/></w:body></w:document>`;
+const eqMs = readDocxManuscript(makeZip([['word/document.xml', eqDoc]]).toString('latin1'));
+const eqItems = buildItems(eqMs, prof).items;
+const eqP = eqItems.find(x => /馬琴/.test(x.text));
+check('EQ のルビの親文字が消えない (命令が分かれていても)', eqP && /馬琴の『殺生石』は昭和４９年。$/.test(eqP.text), eqP && eqP.text);
+const rb = eqP.fmt.find(f => f.ruby);
+check('親文字にルビが付き、親文字の飾り (太字) も残る', rb && eqP.text.substring(rb.start, rb.end) === '殺生' && rb.ruby === 'せつしよう' &&
+      eqP.fmt.some(f => f.bold && eqP.text.substring(f.start, f.end) === '殺生'), JSON.stringify(eqP.fmt));
+check('2桁の数字に縦中横の飾り', eqP.fmt.some(f => f.tcy && eqP.text.substring(f.start, f.end) === '４９'), JSON.stringify(eqP.fmt));
+const eqR = eqItems.find(x => /結果のある/.test(x.text));
+check('表示される文字が入っている EQ フィールドは、二重にしない', eqR && /結果のある漢字。$/.test(eqR.text), eqR && eqR.text);
+const lnk = eqItems.find(x => /リンクの/.test(x.text));
+check('EQ 以外のフィールド (リンクなど) は、これまでどおり表示される文字だけ', lnk && /リンクの表示文字です。$/.test(lnk.text) && lnk.text.indexOf('HYPERLINK') < 0, lnk && lnk.text);
+check('EQ のルビ・縦中横の数を数える', eqMs.eqStat.ruby === 1 && eqMs.eqStat.tcy === 1, JSON.stringify(eqMs.eqStat));
+check('縦中横の文字スタイルを選ぶ', guessComboStyleNames(['tcy'], [{ name: '縦中横', fontStyle: '', font: '', tcy: true }, { name: '太字', fontStyle: 'Bold' }]).tcy === '縦中横');
+
 // ---- 本文の段落に置いた文字ボックス (テキストボックス) ----
 console.log('text boxes:');
 const BOXW = W + ' xmlns:wps="wps" xmlns:wp="wp" xmlns:v="v" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"';

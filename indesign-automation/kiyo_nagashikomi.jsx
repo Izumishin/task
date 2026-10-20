@@ -557,7 +557,8 @@ var FMT_KINDS = [
   ["uDotDash", "下一点鎖線"], ["uDotDotDash", "下二点鎖線"], ["uWave", "下波線"], ["uWavyDouble", "下二重波線"],
   ["sup", "上付き"], ["sub", "下付き"],
   ["kenten", "圏点"], ["strike", "取り消し線"], ["dstrike", "二重取り消し線"], ["highlight", "蛍光ペン"], ["ruby", "ルビ"],
-  ["small", "小さくした文字"], ["border", "囲み線 (文字)"], ["zhHans", "簡体字のフォント"], ["zhHant", "繁体字のフォント"]
+  ["small", "小さくした文字"], ["border", "囲み線 (文字)"], ["zhHans", "簡体字のフォント"], ["zhHant", "繁体字のフォント"],
+  ["tcy", "縦中横"]
 ];
 
 // 中国語のフォント (日本語の原稿に混ざっていると、InDesign で字形が変わったり欠けたりするので見つけて知らせる)
@@ -775,7 +776,7 @@ function _fmtKey(f) {
 
 // 1つの区間に当てる文字スタイル (飾りが重なっているときは、上付き・下付き → 斜体 → 太字 … の順で1つ)
 var FMT_PRIORITY = ["sup", "sub", "zhHans", "zhHant", "italic", "bold", "underline", "uDouble", "uThick", "uDotted", "uDash", "uDotDash",
-                    "uDotDotDash", "uWave", "uWavyDouble", "kenten", "strike", "dstrike", "highlight", "small", "border"];
+                    "uDotDotDash", "uWave", "uWavyDouble", "kenten", "strike", "dstrike", "highlight", "small", "border", "tcy"];
 
 // InDesign の線の種類の名前 (日本語版・英語版) と太さから、線種を決める
 function strokeKindOf(typeName, weight) {
@@ -936,6 +937,7 @@ function guessComboStyleNames(keys, descs) {
     // 小さくした文字・囲み線は名前で選ぶ。中国語のフォントは、文字スタイルのフォントと名前で選ぶ
     if (part === "small") return (/小文字|小さ|縮小|スモール|small/i.test(dd.name) && !/上付|下付/.test(dd.name)) ? 1 : 0;
     if (part === "border") return /囲み|かこみ|枠|ボックス|border|box/i.test(dd.name) ? 1 : 0;
+    if (part === "tcy") return (dd.tcy ? 2 : 0) + (/縦中横|たてちゅうよこ|tcy|tatechuyoko/i.test(dd.name) ? 1 : 0);
     if (part === "zhHans" || part === "zhHant") {
       var fk = dd.font ? zhFontKind(dd.font) : null;
       if (fk === null && dd.font) {
@@ -1436,6 +1438,120 @@ function _omNode(node, out, st) {
   for (i = 0; i < node.kids.length; i++) _omNode(node.kids[i], out, st);
 }
 
+// ---- Word の EQ フィールド (一太郎などから変換した原稿のルビ・縦中横) ----
+// 一太郎の原稿を docx にすると、ルビは「eq \o\al(\s\up 9(ルビ),親文字)」、
+// 縦組みの縦中横の2桁の数字は「eq \o(\s\do5(４),\s\do-5(９))」のような Word のフィールドの命令になる。
+// Word は命令から文字を組み立てて表示するので、ファイルには表示される文字が入っていない。
+// 命令を読んで、文字とルビ・縦中横を取り出す。
+// 戻り値: { text, ruby: [{ start, end, text }], tcy: [{ start, end }], other: 読み方の分からない命令の数 }
+function parseEqField(instr) {
+  var s = String(instr), i = 0, n;
+  s = s.replace(/^\s*eq\s*/i, "");
+  // 書式の指定 (\* jc2 \* "Font:…" \* hps10 など) は文字ではないので除く
+  s = s.replace(/\\\*\s*("[^"]*"|[^\s\\(]+)\s*/g, "");
+  n = s.length;
+  function readText(stops) {
+    var out = "", c, d;
+    while (i < n) {
+      c = s.charAt(i);
+      if (c === "\\") {
+        d = s.charAt(i + 1);
+        if (d === "(" || d === ")" || d === "," || d === "\\") { out += d; i += 2; continue; }
+        return out;
+      }
+      if (stops.indexOf(c) >= 0) return out;
+      out += c; i++;
+    }
+    return out;
+  }
+  function parseItems(stops) {
+    var items = [], t, c;
+    while (i < n) {
+      c = s.charAt(i);
+      if (stops.indexOf(c) >= 0) break;
+      if (c === "\\" && /[A-Za-z]/.test(s.charAt(i + 1))) { items.push(parseCmd()); continue; }
+      t = readText(stops);
+      if (t !== "") items.push({ text: t });
+      else i++;   // 読めない記号は飛ばす
+    }
+    return items;
+  }
+  function parseCmd() {
+    var name = s.charAt(i + 1).toLowerCase(), sw = [], args = [], j, nm, num;
+    i += 2;
+    while (i < n) {
+      while (i < n && s.charAt(i) === " ") i++;
+      if (s.charAt(i) === "\\" && /[A-Za-z]/.test(s.charAt(i + 1))) {
+        j = i + 1; nm = "";
+        while (j < n && /[A-Za-z]/.test(s.charAt(j))) { nm += s.charAt(j); j++; }
+        while (j < n && s.charAt(j) === " ") j++;
+        num = "";
+        while (j < n && /[\-0-9]/.test(s.charAt(j))) { num += s.charAt(j); j++; }
+        sw.push({ name: nm.toLowerCase(), num: num === "" ? null : parseInt(num, 10) });
+        i = j;
+        continue;
+      }
+      break;
+    }
+    if (s.charAt(i) === "(") {
+      i++;
+      while (i < n) {
+        args.push(parseItems(",)"));
+        if (s.charAt(i) === ",") { i++; continue; }
+        if (s.charAt(i) === ")") i++;
+        break;
+      }
+    }
+    return { cmd: name, sw: sw, args: args };
+  }
+  var items = parseItems(""), out = { text: "", ruby: [], tcy: [], other: 0 };
+  function textOf(list) {
+    var t = "", k;
+    for (k = 0; k < list.length; k++) {
+      if (list[k].text !== undefined) t += list[k].text;
+      else { var a; for (a = 0; a < list[k].args.length; a++) t += textOf(list[k].args[a]); }
+    }
+    return t;
+  }
+  function isShift(node, dir) {
+    var k;
+    if (!node || node.cmd !== "s") return false;
+    for (k = 0; k < node.sw.length; k++) if (node.sw[k].name === dir || (!dir && (node.sw[k].name === "up" || node.sw[k].name === "do"))) return true;
+    return false;
+  }
+  function walk(list) {
+    var k, nd, a, st;
+    for (k = 0; k < list.length; k++) {
+      nd = list[k];
+      if (nd.text !== undefined) { out.text += nd.text; continue; }
+      if (nd.cmd === "o" && nd.args.length === 2 && nd.args[0].length === 1 && isShift(nd.args[0][0], "up")) {
+        // ルビ: \o\al(\s\up 9(ルビ),親文字)
+        st = out.text.length;
+        walk(nd.args[1]);
+        var rt = textOf(nd.args[0][0].args.length > 0 ? nd.args[0][0].args[0] : []);
+        if (out.text.length > st && rt !== "") out.ruby.push({ start: st, end: out.text.length, text: rt });
+        continue;
+      }
+      if (nd.cmd === "o" && nd.args.length >= 2) {
+        var allShift = true;
+        for (a = 0; a < nd.args.length; a++) if (!(nd.args[a].length === 1 && isShift(nd.args[a][0], null))) allShift = false;
+        if (allShift) {
+          // 2つの文字を上下に重ねたもの (縦組みの縦中横の数字): 並べて縦中横にする
+          st = out.text.length;
+          for (a = 0; a < nd.args.length; a++) walk(nd.args[a]);
+          if (out.text.length > st) out.tcy.push({ start: st, end: out.text.length });
+          continue;
+        }
+      }
+      if (nd.cmd !== "s" && nd.cmd !== "o") out.other++;
+      // そのほか: 文字だけは残す
+      for (a = 0; a < nd.args.length; a++) walk(nd.args[a]);
+    }
+  }
+  walk(items);
+  return out;
+}
+
 // <m:oMath> の中身 → { text, spans, complex, special }
 function ommlToText(xml, display) {
   var out = _omNewOut();
@@ -1473,6 +1589,34 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
   var boxSave = null, boxBlocks = null, boxNo = 0, pendingBoxes = [];
   // 段落の囲み罫 (罫線で囲んだ段落)。続いている囲みの段落は1つのボックスにまとめる
   var inPBdr = 0, pBoxNo = 0, lastPBox = 0, rprChange = 0;
+  // フィールド (w:fldChar の begin〜end)。EQ フィールドは命令を読んで、ルビ・縦中横の文字を取り出す
+  var fieldStack = [], eqStat = { ruby: 0, tcy: 0, other: 0 };
+  function addEqField(pa, f) {
+    var r = parseEqField(f.instr), k, start = pa.text.length, j;
+    if (r.text === "") return;
+    // 文字の飾りは、その文字が書かれていた命令の部分 (w:instrText) の飾りを使う
+    function fmtFor(seg) {
+      for (j = 0; j < f.pieces.length; j++) if (f.pieces[j].text.indexOf(seg) >= 0) return f.pieces[j].fmt;
+      return f.pieces.length > 0 ? f.pieces[f.pieces.length - 1].fmt : {};
+    }
+    // 区切り: ルビ・縦中横の範囲とそれ以外
+    var cuts = [0, r.text.length];
+    for (k = 0; k < r.ruby.length; k++) cuts.push(r.ruby[k].start, r.ruby[k].end);
+    for (k = 0; k < r.tcy.length; k++) cuts.push(r.tcy[k].start, r.tcy[k].end);
+    cuts.sort(function (a, b) { return a - b; });
+    pa.text += r.text;
+    if (/[^\s\u3000]/.test(r.text)) pa.hasText = true;
+    for (k = 0; k + 1 < cuts.length; k++) {
+      if (cuts[k + 1] <= cuts[k]) continue;
+      var seg = r.text.substring(cuts[k], cuts[k + 1]), base = fmtFor(seg), fo = {}, kk, q, isT = false;
+      for (kk in base) if (base.hasOwnProperty(kk) && base[kk] === true) fo[kk] = true;
+      for (q = 0; q < r.tcy.length; q++) if (cuts[k] >= r.tcy[q].start && cuts[k + 1] <= r.tcy[q].end) isT = true;
+      if (isT) fo.tcy = true;
+      addFmtSpan(pa.fmt, start + cuts[k], start + cuts[k + 1], fo);
+    }
+    for (k = 0; k < r.ruby.length; k++) pa.fmt.push({ start: start + r.ruby[k].start, end: start + r.ruby[k].end, key: "ruby", ruby: r.ruby[k].text });
+    eqStat.ruby += r.ruby.length; eqStat.tcy += r.tcy.length; eqStat.other += r.other;
+  }
   var inPPr = 0, runFmt = null, inRPr = false, ruby = null, inRt = 0, pprChange = 0, mathPara = 0, mathCount = 0, orphanMarks = [];
   var numState = numbering ? createNumState(numbering) : null;
 
@@ -1568,7 +1712,7 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
     if (tag.charAt(0) === "?" || tag.charAt(0) === "!") continue;
     if (tag.charAt(0) === "/") {
       name = tag.substring(1);
-      if (name === "w:instrText" || name === "w:delText") { if (skip > 0) skip--; }
+      if (name === "w:delText") { if (skip > 0) skip--; }
       else if (name === "w:tabs") { if (inTabs > 0) inTabs--; }
       else if (name === "w:pPrChange") { if (pprChange > 0) pprChange--; }
       else if (name === "w:pPr") { if (inPPr > 0) inPPr--; }
@@ -1659,7 +1803,35 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
       continue;
     }
     if (fallback > 0 || txbx > 0) continue;
-    if (name === "w:instrText" || name === "w:delText") { if (!selfClose) skip++; continue; }
+    // フィールドの命令の文字 (EQ フィールドのルビなど)。開いているフィールドの命令につなげる
+    if (name === "w:instrText") {
+      if (selfClose) continue;
+      closeIdx = xml.indexOf("</w:instrText>", pos);
+      if (closeIdx < 0) break;
+      if (fieldStack.length > 0 && para !== null) {
+        var itx = decodeXmlEntities(xml.substring(pos, closeIdx)), top = fieldStack[fieldStack.length - 1];
+        if (para._baseSz === undefined) { para._baseSz = docxParaSize(styles, para.styleId); para._zh = docxParaZh(styles, para.styleId); }
+        top.instr += itx;
+        top.pieces.push({ text: itx, fmt: runFmt !== null ? _effRunFmt(runFmt, para) : {} });
+      }
+      pos = closeIdx + 14;
+      continue;
+    }
+    if (name === "w:fldChar") {
+      var ftype = xmlAttr(tag, "w:fldCharType");
+      if (ftype === "begin") fieldStack.push({ instr: "", pieces: [], sep: false, para: para, lenAtSep: -1 });
+      else if (ftype === "separate" && fieldStack.length > 0) {
+        fieldStack[fieldStack.length - 1].sep = true;
+        fieldStack[fieldStack.length - 1].lenAtSep = para !== null ? para.text.length : -1;
+      } else if (ftype === "end" && fieldStack.length > 0) {
+        var fd = fieldStack.pop();
+        // 表示される文字 (フィールドの結果) が入っていない EQ フィールドだけ、命令から文字を作る
+        if (para !== null && fd.para === para && /^\s*eq\b/i.test(fd.instr) && (!fd.sep || para.text.length === fd.lenAtSep)) addEqField(para, fd);
+      }
+      if (!selfClose) { /* 中身はない */ }
+      continue;
+    }
+    if (name === "w:delText") { if (!selfClose) skip++; continue; }
     if (name === "w:tabs") { if (!selfClose) inTabs++; continue; }
 
     if (name === "w:endnote" || name === "w:footnote") {
@@ -1784,6 +1956,7 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
   for (lp = 0; lp < pendingBoxes.length; lp++) blocks.push(pendingBoxes[lp]);
   blocks.mathCount = mathCount;
   blocks.boxCount = boxNo;
+  blocks.eqStat = eqStat;
   blocks.pBoxCount = pBoxNo;
   blocks.orphanMarks = orphanMarks;
   return blocks;
@@ -1852,6 +2025,7 @@ function readDocxParts(getText, onProgress) {
     orphanMarks: bodyBlocks.orphanMarks || [],
     boxCount: bodyBlocks.boxCount || 0,
     pBoxCount: bodyBlocks.pBoxCount || 0,
+    eqStat: bodyBlocks.eqStat || { ruby: 0, tcy: 0, other: 0 },
     endnotes: endXml ? parseDocxBody(endXml, styles, true, null, numbering) : {},
     footnotes: footXml ? parseDocxBody(footXml, styles, true, null, numbering) : {},
     rels: rels,
@@ -3065,6 +3239,7 @@ function describeCharStyles(doc) {
     try { v = cs.kentenKind; d.kenten = !!v && v !== KentenCharacter.NONE && v !== NothingEnum.NOTHING; } catch (e4) {}
     try { d.strike = cs.strikeThru === true; } catch (e5) {}
     try { d.ruby = cs.rubyFlag === true; } catch (e6) {}
+    try { d.tcy = cs.tatechuyoko === true; } catch (eTc) {}
     out.push(d);
   }
   return out;
@@ -3098,7 +3273,13 @@ function applyFmtSpans(target, spans, base, mapIdx, fmtStyles, stat) {
     if ((sp.sub || sp.sup) && (kind === null || !/(^|\+)(sub|sup)(\+|$)/.test(kind))) {
       try { rng.position = sp.sup ? Position.SUPERSCRIPT : Position.SUBSCRIPT; direct = true; stat.directPos = (stat.directPos || 0) + 1; } catch (eP) {}
     }
+    // 縦中横も、文字スタイルで当てられないときは文字に直接設定する (縦組みの紙面で効く)
+    var directT = false;
+    if (sp.tcy && (kind === null || !/(^|\+)tcy(\+|$)/.test(kind))) {
+      try { rng.tatechuyoko = true; directT = true; stat.directTcy = (stat.directTcy || 0) + 1; } catch (eT) {}
+    }
     if (kind === null) {
+      if (directT && comboKey(sp) === "tcy") continue;
       if (!direct || comboKey(sp) !== (sp.sup ? "sup" : "sub")) {
         var sk = "skip_" + comboKey(sp);
         stat[sk] = (stat[sk] || 0) + 1;
@@ -3109,6 +3290,7 @@ function applyFmtSpans(target, spans, base, mapIdx, fmtStyles, stat) {
     catch (e3) { stat.failed = (stat.failed || 0) + 1; }
     // 文字スタイルを当てると直接の設定が消えることがあるので、もう一度
     if (direct) { try { rng.position = sp.sup ? Position.SUPERSCRIPT : Position.SUBSCRIPT; } catch (eP2) {} }
+    if (directT) { try { rng.tatechuyoko = true; } catch (eT2) {} }
   }
 }
 
@@ -4612,6 +4794,10 @@ function main() {
   if (watch.zhHans) wparts.push("簡体字のフォント (SimSun など) " + watch.zhHans + " か所");
   if (watch.zhHant) wparts.push("繁体字のフォント (PMingLiU など) " + watch.zhHant + " か所");
   if (wparts.length > 0) notes.push("※ 見落としやすい文字の飾り: " + wparts.join("、") + "。「文字の飾りに使う文字スタイル」で文字スタイルを選んでください。");
+  if (ms.eqStat && (ms.eqStat.ruby > 0 || ms.eqStat.tcy > 0)) {
+    notes.push("※ 一太郎などから変換した原稿の書き方 (Word の EQ フィールド) で書かれたルビ " + ms.eqStat.ruby + " か所・縦中横 " +
+               ms.eqStat.tcy + " か所を読み取りました" + (ms.eqStat.other > 0 ? " (読み方の分からない命令 " + ms.eqStat.other + " か所は文字だけ入れます)" : "") + "。");
+  }
   if (ms.pBoxCount > 0) notes.push("※ 罫線で囲んだ段落 " + ms.pBoxCount + " か所を「文字ボックス」の種類で入れます。");
   var fmtInfo = { counts: fcounts, map: guessComboStyleNames(fkeys, cdescs), names: charNames };
   // 前回までに選んだ文字スタイルがファイルに記録されていれば、それを優先する
@@ -4724,13 +4910,14 @@ function main() {
   // 文字の飾りの結果
   var st = _ctx.fmtStat, fq2, fparts = [], fskip = [];
   for (fq2 in st) {
-    if (!st.hasOwnProperty(fq2) || fq2 === "failed" || fq2 === "directPos") continue;
+    if (!st.hasOwnProperty(fq2) || fq2 === "failed" || fq2 === "directPos" || fq2 === "directTcy") continue;
     if (fq2.indexOf("skip_") === 0) fskip.push(comboLabel(fq2.substring(5)) + " " + st[fq2] + "か所");
     else fparts.push(comboLabel(fq2) + " " + st[fq2] + "か所");
   }
   if (fparts.length > 0) report.push("文字の飾りを当てました: " + fparts.join(" / "));
   if (fskip.length > 0) report.push("[注意] 文字スタイルを選んでいないため当てなかった飾り: " + fskip.join(" / "));
   if (st.failed) report.push("[注意] 文字の飾り " + st.failed + " か所を当てられませんでした。");
+  if (st.directTcy) report.push("縦中横の文字スタイルがない所 " + st.directTcy + " か所は、文字に直接「縦中横」を設定しました。");
   if (st.directPos) report.push("上付き・下付きの文字スタイルがない所 " + st.directPos + " か所は、文字に直接「上付き・下付き」を設定しました。");
 
   // 空いたページの削除 (確認してから)
