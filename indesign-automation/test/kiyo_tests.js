@@ -831,6 +831,71 @@ check('1行だけの枠は題目の枠にしない', frontScore(memoBox) < 0, fr
 check('見出しのある枠は題目の枠にしない', frontScore(bodyLike) < FRONT_MIN_SCORE, frontScore(bodyLike));
 check('柱・キャプションのスタイルの枠は題目の枠にしない', frontScore(FP([{ text: '幼児期の遊び', style: '柱' }, '山田'])) < 0);
 
+// ---- 見落としやすい飾り: 小さくした文字・囲み線・中国語のフォント・罫線で囲んだ段落 ----
+console.log('small text / chinese fonts / borders:');
+const WS = W;
+const SR = (t, rpr) => `<w:r>${rpr ? `<w:rPr>${rpr}</w:rPr>` : ''}<w:t xml:space="preserve">${t}</w:t></w:r>`;
+const SPP = (runs, ppr) => `<w:p>${ppr ? `<w:pPr>${ppr}</w:pPr>` : ''}${runs}</w:p>`;
+const BOX4 = '<w:pBdr><w:top w:val="single"/><w:left w:val="single"/><w:bottom w:val="single"/><w:right w:val="single"/></w:pBdr>';
+const swStyles = `<?xml version="1.0"?><w:styles ${WS}>
+<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:eastAsia="SimSun"/><w:sz w:val="21"/></w:rPr></w:rPrDefault></w:docDefaults>
+<w:style w:type="paragraph" w:default="1" w:styleId="a"><w:name w:val="Normal"/></w:style>
+<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="a"/><w:rPr><w:sz w:val="28"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="ZhQuote"><w:name w:val="中国語引用"/><w:basedOn w:val="a"/><w:rPr><w:rFonts w:eastAsia="PMingLiU"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="BoxPara"><w:name w:val="囲み段落"/><w:basedOn w:val="a"/><w:pPr>${BOX4}</w:pPr></w:style>
+<w:style w:type="paragraph" w:styleId="FootnoteText"><w:name w:val="footnote text"/><w:basedOn w:val="a"/><w:rPr><w:sz w:val="18"/></w:rPr></w:style>
+<w:style w:type="character" w:styleId="Small"><w:name w:val="小さめ"/><w:rPr><w:sz w:val="16"/></w:rPr></w:style>
+<w:style w:type="character" w:styleId="HeiChar"><w:name w:val="黒体"/><w:rPr><w:rFonts w:eastAsia="SimHei"/></w:rPr></w:style>
+</w:styles>`;
+const swDoc = `<?xml version="1.0"?><w:document ${WS}><w:body>${P('題目')}${P('１．はじめに', 'Heading1')}
+${SPP(SR('本文の文字で、') + SR('ここだけ小さく', '<w:sz w:val="18"/>') + SR('した。') + SR('文字スタイルでも小さく', '<w:rStyle w:val="Small"/>') + SR('する。注', '') +
+  '<w:r><w:rPr><w:vertAlign w:val="superscript"/><w:sz w:val="16"/></w:rPr><w:t>1</w:t></w:r>')}
+${SPP(SR('全体を九ポイントにした段落です。', '<w:sz w:val="18"/>') + SR('そのなかの', '<w:sz w:val="18"/>'))}
+${SPP(SR('簡体字の') + SR('们这个', '<w:rFonts w:ascii="SimSun" w:eastAsia="SimSun"/>') + SR('と、繁体字の') + SR('臺灣', '<w:rFonts w:eastAsia="PMingLiU"/>') +
+  SR('と、文字スタイルの') + SR('黑体', '<w:rStyle w:val="HeiChar"/>') + SR('と、日本語の') + SR('明朝', '<w:rStyle w:val="HeiChar"/><w:rFonts w:eastAsia="ＭＳ 明朝"/>') + SR('です。'))}
+${SPP(SR('段落スタイルが中国語のフォントの引用。'), '<w:pStyle w:val="ZhQuote"/>')}
+${SPP(SR('囲み線の') + SR('文字', '<w:bdr w:val="single" w:sz="4"/>') + SR('です。'))}
+${SPP(SR('変更履歴で大きさを変えた') + SR('文字', '<w:sz w:val="21"/><w:rPrChange w:id="1"><w:rPr><w:sz w:val="16"/></w:rPr></w:rPrChange>') + SR('です。'))}
+${SPP(SR('罫線で囲んだ一段落目。'), BOX4)}${SPP(SR('罫線で囲んだ二段落目。'), '<w:pStyle w:val="BoxPara"/>')}
+${SPP(SR('囲みの後の本文。'))}${SPP(SR('二つ目の囲み。'), BOX4)}
+${SPP(SR('囲んだ見出し'), '<w:pStyle w:val="Heading1"/>' + BOX4)}
+${SPP(SR('下の罫線だけの段落。'), '<w:pBdr><w:bottom w:val="single"/></w:pBdr>')}
+<w:p><w:r><w:t>脚注付き</w:t></w:r><w:r><w:footnoteReference w:id="2"/></w:r></w:p>
+<w:sectPr/></w:body></w:document>`;
+const swFoot = `<?xml version="1.0"?><w:footnotes ${WS}><w:footnote w:id="2"><w:p><w:pPr><w:pStyle w:val="FootnoteText"/></w:pPr>${SR('注の本文で、')}${SR('注の中で更に小さく', '<w:sz w:val="14"/>')}${SR('した。')}</w:p></w:footnote></w:footnotes>`;
+const swMs = readDocxManuscript(makeZip([['word/document.xml', swDoc], ['word/styles.xml', swStyles], ['word/footnotes.xml', swFoot]]).toString('latin1'));
+const swB = buildItems(swMs, prof);
+const fx = (re) => swB.items.find(x => re.test(x.text));
+const spansOf = (it, flag) => (it ? it.fmt : []).filter(f => f[flag]).map(f => it.text.substring(f.start, f.end));
+const p1 = fx(/ここだけ小さく/);
+check('段落の中で小さくした部分に「小さくした文字」(直接の指定・文字スタイルの指定)', JSON.stringify(spansOf(p1, 'small')) === JSON.stringify(['ここだけ小さく', '文字スタイルでも小さく']),
+      JSON.stringify(p1 && p1.fmt));
+check('上付きの注番号は「小さくした文字」にしない', !p1.fmt.some(f => f.small && f.sup));
+check('段落全体を小さくした段落には印を付けない', spansOf(fx(/全体を九ポイント/), 'small').length === 0);
+const fnS = swB.footnotes[0];
+check('注は注の大きさが基準。注の中でさらに小さくした部分には印を付ける', fnS && JSON.stringify(fnS.fmt.filter(f => f.small).map(f => fnS.text.substring(f.start, f.end))) === JSON.stringify(['注の中で更に小さく']),
+      JSON.stringify(fnS));
+const zh = fx(/簡体字の/);
+check('SimSun は簡体字、PMingLiU は繁体字、文字スタイルの SimHei も簡体字', JSON.stringify(spansOf(zh, 'zhHans')) === JSON.stringify(['们这个', '黑体']) &&
+      JSON.stringify(spansOf(zh, 'zhHant')) === JSON.stringify(['臺灣']), JSON.stringify(zh && zh.fmt));
+check('文字スタイルが中国語でも、直接 日本語のフォントにした所は印を付けない', !zh.fmt.some(f => (f.zhHans || f.zhHant) && zh.text.substring(f.start, f.end) === '明朝'));
+check('文書の既定・標準のスタイルの SimSun (中国語版の Word のひな形) は数えない', spansOf(p1, 'zhHans').length === 0 && spansOf(zh, 'zhHans').indexOf('簡体字の') < 0);
+check('段落スタイルが中国語のフォントなら、その段落に印を付ける', spansOf(fx(/段落スタイルが中国語/), 'zhHant').length === 1);
+check('文字の囲み線', JSON.stringify(spansOf(fx(/囲み線の/), 'border')) === JSON.stringify(['文字']));
+check('変更履歴の「変更前の書式」は読まない', spansOf(fx(/変更履歴で/), 'small').length === 0, JSON.stringify(fx(/変更履歴で/).fmt));
+const bx = swB.items.map(x => x.role + (x.box ? '#' + x.box : '') + ':' + x.text);
+const bxi = s => bx.findIndex(x => x.indexOf(s) >= 0);
+check('罫線で囲んだ段落は「文字ボックス」。続いている囲みは1つ、離れた囲みは別', /^box#(\d+):/.test(bx[bxi('一段落目')]) &&
+      bx[bxi('一段落目')].split(':')[0] === bx[bxi('二段落目')].split(':')[0] && bx[bxi('二つ目の囲み')].indexOf('box#') === 0 &&
+      bx[bxi('二つ目の囲み')].split(':')[0] !== bx[bxi('一段落目')].split(':')[0] && swMs.pBoxCount === 2, bx.join(' / '));
+check('見出しスタイルの段落・下の罫線だけの段落は囲みにしない', bx[bxi('囲んだ見出し')].indexOf('h1') === 0 && bx[bxi('下の罫線だけ')].indexOf('box') !== 0, bx.join(' / '));
+const kc = kindCounts(countFmtCombos(swB));
+check('見落としやすい飾りの数を数える', kc.small === 3 && kc.zhHans === 2 && kc.zhHant === 2 && kc.border === 1, JSON.stringify(kc));
+const gs = guessComboStyleNames(['small', 'zhHans', 'zhHant', 'border'], [
+  { name: '小文字', fontStyle: '', font: '' }, { name: '中国語（簡体）', fontStyle: '', font: 'Adobe Song Std' },
+  { name: 'C_繁体', fontStyle: '', font: 'Adobe Ming Std' }, { name: '囲み文字', fontStyle: '', font: '' }, { name: 'イタリック', fontStyle: 'Italic', font: '' }]);
+check('文字スタイルの名前・フォントから選ぶ', gs.small === '小文字' && gs.zhHans === '中国語（簡体）' && gs.zhHant === 'C_繁体' && gs.border === '囲み文字', JSON.stringify(gs));
+
 // ---- 本文の段落に置いた文字ボックス (テキストボックス) ----
 console.log('text boxes:');
 const BOXW = W + ' xmlns:wps="wps" xmlns:wp="wp" xmlns:v="v" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"';

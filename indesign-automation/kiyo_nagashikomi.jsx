@@ -324,7 +324,10 @@ function _isTagEnd(ch) {
 
 // styles.xml → { styleId: { name, basedOn, outline } }
 function parseDocxStyles(xml) {
-  var styles = {}, pos = 0, lt, gt, tag, name, cur = null, inRPr = 0;
+  var styles = {}, pos = 0, lt, gt, tag, name, cur = null, inRPr = 0, inPBdr = 0, inDefaults = 0;
+  // 文書全体の既定 (w:docDefaults) と、既定の段落スタイル (ふつうは「標準」)
+  styles.__docDefaults = { id: "__docDefaults", type: "", name: "", basedOn: null, outline: null, fmt: {}, numId: null, ilvl: null, pBdr: {} };
+  styles.__defaultPara = null;
   if (!xml) return styles;
   while (true) {
     lt = xml.indexOf("<", pos); if (lt < 0) break;
@@ -333,13 +336,17 @@ function parseDocxStyles(xml) {
     if (tag.charAt(0) === "/") {
       if (tag === "/w:style") cur = null;
       else if (tag === "/w:rPr" && inRPr > 0) inRPr--;
+      else if (tag === "/w:pBdr") inPBdr = 0;
+      else if (tag === "/w:rPrDefault") { inDefaults = 0; cur = null; }
       continue;
     }
     name = _tagName(tag);
+    if (name === "w:rPrDefault" && tag.charAt(tag.length - 1) !== "/") { inDefaults = 1; cur = styles.__docDefaults; continue; }
     if (name === "w:style") {
       cur = { id: xmlAttr(tag, "w:styleId") || "", type: xmlAttr(tag, "w:type") || "", name: "", basedOn: null, outline: null, fmt: {},
-              numId: null, ilvl: null };
+              numId: null, ilvl: null, pBdr: {} };
       styles[cur.id] = cur;
+      if (cur.type === "paragraph" && (xmlAttr(tag, "w:default") === "1" || xmlAttr(tag, "w:default") === "true")) styles.__defaultPara = cur.id;
     } else if (cur !== null) {
       if (name === "w:name") cur.name = xmlAttr(tag, "w:val") || "";
       else if (name === "w:basedOn") cur.basedOn = xmlAttr(tag, "w:val");
@@ -347,7 +354,12 @@ function parseDocxStyles(xml) {
       else if (name === "w:numId") cur.numId = xmlAttr(tag, "w:val");
       else if (name === "w:ilvl") cur.ilvl = xmlAttr(tag, "w:val");
       else if (name === "w:rPr" && tag.charAt(tag.length - 1) !== "/") inRPr++;
-      else if (inRPr > 0) readRunProp(name, tag, cur.fmt);
+      else if (inRPr > 0 || inDefaults) readRunProp(name, tag, cur.fmt);
+      else if (name === "w:pBdr" && tag.charAt(tag.length - 1) !== "/") inPBdr = 1;
+      else if (inPBdr && (name === "w:top" || name === "w:left" || name === "w:bottom" || name === "w:right")) {
+        var bv = xmlAttr(tag, "w:val");
+        cur.pBdr[name] = !!bv && bv !== "none" && bv !== "nil";
+      }
     }
   }
   return styles;
@@ -544,8 +556,21 @@ var FMT_KINDS = [
   ["uDouble", "下二重線"], ["uThick", "太い下線"], ["uDotted", "下点線"], ["uDash", "下破線"],
   ["uDotDash", "下一点鎖線"], ["uDotDotDash", "下二点鎖線"], ["uWave", "下波線"], ["uWavyDouble", "下二重波線"],
   ["sup", "上付き"], ["sub", "下付き"],
-  ["kenten", "圏点"], ["strike", "取り消し線"], ["dstrike", "二重取り消し線"], ["highlight", "蛍光ペン"], ["ruby", "ルビ"]
+  ["kenten", "圏点"], ["strike", "取り消し線"], ["dstrike", "二重取り消し線"], ["highlight", "蛍光ペン"], ["ruby", "ルビ"],
+  ["small", "小さくした文字"], ["border", "囲み線 (文字)"], ["zhHans", "簡体字のフォント"], ["zhHant", "繁体字のフォント"]
 ];
+
+// 中国語のフォント (日本語の原稿に混ざっていると、InDesign で字形が変わったり欠けたりするので見つけて知らせる)
+var ZH_HANS_FONTS = /^(SimSun|NSimSun|SimSun-ExtB|SimHei|SimKai|SimFang|KaiTi|KaiTi_GB2312|FangSong|FangSong_GB2312|Microsoft YaHei|Microsoft YaHei UI|DengXian|STSong|STHeiti|STKaiti|STFangsong|STXihei|STZhongsong|STXinwei|STLiti|STCaiyun|STXingkai|STHupo|YouYuan|LiSu|Noto (Sans|Serif) (CJK )?SC|Source Han (Sans|Serif) (CN|SC)|Adobe (Song|Heiti|Kaiti|Fangsong) Std|\u5b8b\u4f53|\u65b0\u5b8b\u4f53|\u9ed1\u4f53|\u6977\u4f53|\u4eff\u5b8b|\u5fae\u8f6f\u96c5\u9ed1|\u7b49\u7ebf|\u534e\u6587.*)$/i;
+var ZH_HANT_FONTS = /^(PMingLiU|MingLiU|PMingLiU-ExtB|MingLiU-ExtB|MingLiU_HKSCS|MingLiU_HKSCS-ExtB|DFKai-SB|Microsoft JhengHei|Microsoft JhengHei UI|Noto (Sans|Serif) (CJK )?(TC|HK)|Source Han (Sans|Serif) (TW|HK|TC)|Adobe Ming Std|\u65b0\u7d30\u660e\u9ad4|\u7d30\u660e\u9ad4|\u6a19\u6977\u9ad4|\u5fae\u8edf\u6b63\u9ed1\u9ad4)$/i;
+function zhFontKind(name) {
+  var n = String(name || "").replace(/^\s+|\s+$/g, "");
+  if (n === "") return null;
+  if (ZH_HANT_FONTS.test(n)) return "zhHant";
+  if (ZH_HANS_FONTS.test(n)) return "zhHans";
+  return null;
+}
+function _clearPrefix(fmt, prefix) { var k; for (k in fmt) if (fmt.hasOwnProperty(k) && k.indexOf(prefix) === 0) delete fmt[k]; }
 
 // 下線の線種 (1つの文字に付く下線は1種類なので、付け替えるときは他の線種を消す)
 var UNDERLINE_KINDS = ["underline", "uDouble", "uThick", "uDotted", "uDash", "uDotDash", "uDotDotDash", "uWave", "uWavyDouble"];
@@ -599,6 +624,29 @@ function readRunProp(name, tag, fmt) {
   }
   else if (name === "w:em") { if (_isOn(tag)) fmt.kenten = true; else delete fmt.kenten; }
   else if (name === "w:highlight") { if (_isOn(tag)) fmt.highlight = true; else delete fmt.highlight; }
+  else if (name === "w:sz") {
+    // 文字の大きさ (半ポイント)。段落の中で小さくした部分を見つけるため、一時的な目印 "sz21" などで持つ
+    v = parseInt(xmlAttr(tag, "w:val"), 10);
+    _clearPrefix(fmt, "sz");
+    if (!isNaN(v) && v > 0) fmt["sz" + v] = true;
+    fmt._szSet = 1;
+  }
+  else if (name === "w:rFonts") {
+    // 和文 (漢字・かな) に使われるフォント。w:hint="eastAsia" のときは ascii のフォントも和文に使われる
+    var ea = xmlAttr(tag, "w:eastAsia");
+    if (ea === null && xmlAttr(tag, "w:hint") === "eastAsia") ea = xmlAttr(tag, "w:ascii") || xmlAttr(tag, "w:hAnsi");
+    if (ea !== null) {
+      delete fmt.zhHans; delete fmt.zhHant;
+      var zk = zhFontKind(ea);
+      if (zk) fmt[zk] = true;
+      fmt._fontSet = 1;
+    }
+  }
+  else if (name === "w:bdr") {
+    // 文字の囲み線
+    v = xmlAttr(tag, "w:val");
+    if (v && v !== "none" && v !== "nil") fmt.border = true; else delete fmt.border;
+  }
   else if (name === "w:vertAlign") {
     v = xmlAttr(tag, "w:val");
     delete fmt.sup; delete fmt.sub;
@@ -626,6 +674,9 @@ function docxStyleFmt(styles, id) {
   if (/hyperlink|ハイパーリンク|footnote|endnote|脚注|文末/i.test(chain[chain.length - 1].name)) return out;
   for (i = 0; i < chain.length; i++) {
     var f = chain[i].fmt, hasU = !!f._uOff, hasS = !!f._sOff, q;
+    // 基にしたスタイルの大きさ・フォントは、後のスタイルで指定があれば置き換わる
+    if (f._szSet) _clearPrefix(out, "sz");
+    if (f._fontSet) { delete out.zhHans; delete out.zhHant; out._fontSet = 1; }   // 1 (true ではない) は飾りの名前に入らない
     for (q = 0; q < UNDERLINE_KINDS.length; q++) if (f[UNDERLINE_KINDS[q]]) hasU = true;
     for (q = 0; q < STRIKE_KINDS.length; q++) if (f[STRIKE_KINDS[q]]) hasS = true;
     // 基にしたスタイルの線種は、後のスタイルの線種で置き換わる
@@ -636,6 +687,85 @@ function docxStyleFmt(styles, id) {
   return out;
 }
 
+// 段落スタイル (基にしたスタイルも) を順に並べる。スタイルの指定がなければ既定の段落スタイル
+function _paraStyleChain(styles, id) {
+  var out = [], s = (id && styles[id]) ? styles[id] : (styles.__defaultPara ? styles[styles.__defaultPara] : null), guard = 0;
+  while (s && guard++ < 12) { out.push(s); s = s.basedOn ? styles[s.basedOn] : null; }
+  return out;
+}
+function _szOf(f) {
+  var k;
+  for (k in f) if (f.hasOwnProperty(k) && k.indexOf("sz") === 0 && f[k] === true) return parseInt(k.substring(2), 10);
+  return 0;
+}
+// 段落の基本の文字の大きさ (半ポイント)
+function docxParaSize(styles, id) {
+  var ch = _paraStyleChain(styles, id), i, v;
+  for (i = 0; i < ch.length; i++) { v = _szOf(ch[i].fmt); if (v) return v; }
+  v = styles.__docDefaults ? _szOf(styles.__docDefaults.fmt) : 0;
+  return v || 21;
+}
+// 段落スタイルで指定された中国語のフォント (既定の段落スタイル「標準」と文書の既定から来るものは数えない。
+// 中国語版の Word のひな形では、文書全体の既定が SimSun になっていることがあるため)
+function docxParaZh(styles, id) {
+  var ch = _paraStyleChain(styles, id), i, f;
+  for (i = 0; i < ch.length; i++) {
+    if (ch[i].id === styles.__defaultPara) return null;
+    f = ch[i].fmt;
+    if (f._fontSet) return f.zhHant ? "zhHant" : (f.zhHans ? "zhHans" : null);
+  }
+  return null;
+}
+// 段落の囲み罫の辺の数 (段落スタイルから)
+function docxParaBorderSides(styles, id) {
+  var ch = _paraStyleChain(styles, id), i, k, n;
+  for (i = 0; i < ch.length; i++) {
+    n = 0; var any = false;
+    for (k in ch[i].pBdr) if (ch[i].pBdr.hasOwnProperty(k)) { any = true; if (ch[i].pBdr[k]) n++; }
+    if (any) return n;
+  }
+  return 0;
+}
+// 文字に当てる飾り: 大きさの指定がなければ段落の基本の大きさ、フォントの指定がなければ段落スタイルの中国語のフォント
+function _effRunFmt(rf, pa) {
+  var o = {}, k, has = false;
+  for (k in rf) if (rf.hasOwnProperty(k) && rf[k] === true) { o[k] = true; if (k.indexOf("sz") === 0) has = true; }
+  if (!has && pa._baseSz) o["sz" + pa._baseSz] = true;
+  if (!rf._fontSet && pa._zh) o[pa._zh] = true;
+  return o;
+}
+// 段落の中でいちばん多い大きさより小さくした部分に「小さくした文字」の印を付け、大きさの目印は外す。
+// (段落全体を小さくした注などは、注の大きさが基準になるので印は付かない。注の中でさらに小さくした部分には付く)
+function _normSizeFlags(pa) {
+  var list = pa.fmt, t = pa.text, cnt = {}, i, sp, k, sz, best = 0, bestN = 0, out = [];
+  function spSz(x) { return _szOf(x); }
+  for (i = 0; i < list.length; i++) {
+    sp = list[i];
+    if (sp.ruby) continue;
+    sz = spSz(sp);
+    if (sz) cnt[sz] = (cnt[sz] || 0) + t.substring(sp.start, sp.end).replace(/[\s　]/g, "").length;
+  }
+  // いちばん多い大きさ。同じ数なら段落スタイルの大きさ、それもなければ大きいほう
+  var base = pa._baseSz || 0;
+  for (k in cnt) if (cnt.hasOwnProperty(k)) {
+    var kv = parseInt(k, 10);
+    if (cnt[k] > bestN || (cnt[k] === bestN && best !== base && (kv === base || kv > best))) { bestN = cnt[k]; best = kv; }
+  }
+  for (i = 0; i < list.length; i++) {
+    sp = list[i];
+    if (sp.ruby) { out.push(sp); continue; }
+    sz = spSz(sp);
+    _clearPrefix(sp, "sz");
+    if (sz && best && best - sz >= 1 && !sp.sup && !sp.sub && /[^\s　]/.test(t.substring(sp.start, sp.end))) sp.small = true;
+    sp.key = _fmtKey(sp);
+    if (sp.key === "") continue;
+    var last = out.length > 0 ? out[out.length - 1] : null;
+    if (last && !last.ruby && last.key === sp.key && last.end === sp.start) { last.end = sp.end; continue; }
+    out.push(sp);
+  }
+  pa.fmt = out;
+}
+
 function _fmtKey(f) {
   var k, keys = [];
   for (k in f) if (f.hasOwnProperty(k) && f[k] === true) keys.push(k);
@@ -644,8 +774,8 @@ function _fmtKey(f) {
 }
 
 // 1つの区間に当てる文字スタイル (飾りが重なっているときは、上付き・下付き → 斜体 → 太字 … の順で1つ)
-var FMT_PRIORITY = ["sup", "sub", "italic", "bold", "underline", "uDouble", "uThick", "uDotted", "uDash", "uDotDash",
-                    "uDotDotDash", "uWave", "uWavyDouble", "kenten", "strike", "dstrike", "highlight"];
+var FMT_PRIORITY = ["sup", "sub", "zhHans", "zhHant", "italic", "bold", "underline", "uDouble", "uThick", "uDotted", "uDash", "uDotDash",
+                    "uDotDotDash", "uWave", "uWavyDouble", "kenten", "strike", "dstrike", "highlight", "small", "border"];
 
 // InDesign の線の種類の名前 (日本語版・英語版) と太さから、線種を決める
 function strokeKindOf(typeName, weight) {
@@ -751,6 +881,16 @@ function tableCellFmt(tb) {
   return out;
 }
 
+// 組み合わせごとの数 → 飾りの種類ごとの数 (「small+bold」は small にも bold にも数える)
+function kindCounts(counts) {
+  var out = {}, k, parts, i;
+  for (k in counts) if (counts.hasOwnProperty(k)) {
+    parts = k.split("+");
+    for (i = 0; i < parts.length; i++) out[parts[i]] = (out[parts[i]] || 0) + counts[k];
+  }
+  return out;
+}
+
 // 原稿に出てくる組み合わせごとの数 (本文・注・脚注・表の中)
 function countFmtCombos(built) {
   var cnt = {}, i, j, list = [], k, r, c;
@@ -793,6 +933,18 @@ function guessComboStyleNames(keys, descs) {
              (/取り?消し|打ち?消し|strike/i.test(dd.name) && !/二重/.test(dd.name) ? 1 : 0);
     }
     if (part === "ruby") return (dd.ruby ? 2 : 0) + (/ルビ|ruby/i.test(dd.name) ? 1 : 0);
+    // 小さくした文字・囲み線は名前で選ぶ。中国語のフォントは、文字スタイルのフォントと名前で選ぶ
+    if (part === "small") return (/小文字|小さ|縮小|スモール|small/i.test(dd.name) && !/上付|下付/.test(dd.name)) ? 1 : 0;
+    if (part === "border") return /囲み|かこみ|枠|ボックス|border|box/i.test(dd.name) ? 1 : 0;
+    if (part === "zhHans" || part === "zhHant") {
+      var fk = dd.font ? zhFontKind(dd.font) : null;
+      if (fk === null && dd.font) {
+        if (/(Adobe Song|Adobe Heiti|Adobe Kaiti|Adobe Fangsong|Source Han (Sans|Serif) (SC|CN)|Noto (Sans|Serif) (CJK )?SC|SimSun|SimHei)/i.test(dd.font)) fk = "zhHans";
+        else if (/(Adobe Ming|Source Han (Sans|Serif) (TC|TW|HK)|Noto (Sans|Serif) (CJK )?(TC|HK)|MingLiU)/i.test(dd.font)) fk = "zhHant";
+      }
+      var nm = part === "zhHans" ? /簡体|简体|中国語|中文|SimSun|SimHei|宋体|黑体/i : /繁体|繁體|台湾|香港|PMingLiU|MingLiU|明體/i;
+      return (fk === part ? 2 : 0) + (nm.test(dd.name) ? 1 : 0);
+    }
     return 0;
   }
   var ALL = FMT_PRIORITY;
@@ -1319,6 +1471,8 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
   // 本文の段落に置いた文字ボックス (テキストボックス) の中身: 読んでいる間は、付いている段落を
   // boxSave にしまっておき、中身の段落は boxBlocks にためる。付いている段落の直後に入れる
   var boxSave = null, boxBlocks = null, boxNo = 0, pendingBoxes = [];
+  // 段落の囲み罫 (罫線で囲んだ段落)。続いている囲みの段落は1つのボックスにまとめる
+  var inPBdr = 0, pBoxNo = 0, lastPBox = 0, rprChange = 0;
   var inPPr = 0, runFmt = null, inRPr = false, ruby = null, inRt = 0, pprChange = 0, mathPara = 0, mathCount = 0, orphanMarks = [];
   var numState = numbering ? createNumState(numbering) : null;
 
@@ -1360,6 +1514,7 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
 
   function flushPara() {
     if (para === null) return;
+    _normSizeFlags(para);
     if (numState !== null) addListLabel(para);
     if (cell !== null) {
       // セルの中の段落は "\r" でつなぐので、飾りの位置もそのぶんずらして覚える
@@ -1379,6 +1534,16 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
       if (noteParas !== null) { noteParas.push(para.text); noteParas.fmt.push(para.fmt); }
     } else {
       para.level = docxHeadingLevel(styles, para.styleId);
+      // 罫線で囲んだ段落 (3辺以上) は文字ボックスと同じに扱う。見出しスタイルの段落は除く
+      var sides = 0, sk2;
+      if (para.pBdr) { for (sk2 in para.pBdr) if (para.pBdr.hasOwnProperty(sk2) && para.pBdr[sk2]) sides++; }
+      else sides = docxParaBorderSides(styles, para.styleId);
+      var prevB = blocks.length > 0 ? blocks[blocks.length - 1] : null;
+      if (boxBlocks === null && sides >= 3 && para.level === 0) {
+        if (!(prevB && prevB.pBox && prevB.box === lastPBox)) { pBoxNo++; lastPBox = 1000 + pBoxNo; }
+        para.box = lastPBox;
+        para.pBox = true;
+      }
       if (boxBlocks !== null) {
         para.box = boxNo;
         boxBlocks.push(para);
@@ -1407,6 +1572,8 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
       else if (name === "w:tabs") { if (inTabs > 0) inTabs--; }
       else if (name === "w:pPrChange") { if (pprChange > 0) pprChange--; }
       else if (name === "w:pPr") { if (inPPr > 0) inPPr--; }
+      else if (name === "w:pBdr") { inPBdr = 0; }
+      else if (name === "w:rPrChange") { if (rprChange > 0) rprChange--; }
       else if (name === "w:rPr") { inRPr = false; }
       else if (name === "w:r") { runFmt = null; }
       else if (name === "w:rt") { if (inRt > 0) inRt--; }
@@ -1536,16 +1703,24 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
       if (name === "w:pPrChange") { if (!selfClose) pprChange++; continue; }
       if (pprChange > 0) continue;
       if (name === "w:pStyle") para.styleId = xmlAttr(tag, "w:val") || "";
+      else if (name === "w:pBdr") { para.pBdr = {}; if (!selfClose) inPBdr = 1; }
+      else if (inPBdr && (name === "w:top" || name === "w:left" || name === "w:bottom" || name === "w:right")) {
+        var pbv = xmlAttr(tag, "w:val");
+        para.pBdr[name] = !!pbv && pbv !== "none" && pbv !== "nil";
+      }
       else if (name === "w:numId") para.numId = xmlAttr(tag, "w:val");
       else if (name === "w:ilvl") para.ilvl = xmlAttr(tag, "w:val");
       continue;
     }
     if (name === "w:r") { runFmt = {}; continue; }
     if (name === "w:rPr") { inRPr = !selfClose; continue; }
+    // 変更履歴の「変更前の書式」(w:rPrChange) は読まない
+    if (name === "w:rPrChange") { if (!selfClose) rprChange++; continue; }
+    if (rprChange > 0) continue;
     if (inRPr && runFmt !== null) {
       if (name === "w:rStyle") {
         var sf = docxStyleFmt(styles, xmlAttr(tag, "w:val")), sk;
-        for (sk in sf) if (sf.hasOwnProperty(sk)) runFmt[sk] = true;
+        for (sk in sf) if (sf.hasOwnProperty(sk)) runFmt[sk] = sf[sk];
       } else {
         readRunProp(name, tag, runFmt);
       }
@@ -1564,7 +1739,8 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
           var t0 = para.text.length;
           para.text += tt;
           if (/[^\s\u3000]/.test(tt)) para.hasText = true;
-          if (runFmt !== null) addFmtSpan(para.fmt, t0, para.text.length, runFmt);
+          if (para._baseSz === undefined) { para._baseSz = docxParaSize(styles, para.styleId); para._zh = docxParaZh(styles, para.styleId); }
+          if (runFmt !== null) addFmtSpan(para.fmt, t0, para.text.length, _effRunFmt(runFmt, para));
         }
       }
       pos = closeIdx + 6;
@@ -1608,6 +1784,7 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
   for (lp = 0; lp < pendingBoxes.length; lp++) blocks.push(pendingBoxes[lp]);
   blocks.mathCount = mathCount;
   blocks.boxCount = boxNo;
+  blocks.pBoxCount = pBoxNo;
   blocks.orphanMarks = orphanMarks;
   return blocks;
 }
@@ -1674,6 +1851,7 @@ function readDocxParts(getText, onProgress) {
     mathCount: bodyBlocks.mathCount || 0,
     orphanMarks: bodyBlocks.orphanMarks || [],
     boxCount: bodyBlocks.boxCount || 0,
+    pBoxCount: bodyBlocks.pBoxCount || 0,
     endnotes: endXml ? parseDocxBody(endXml, styles, true, null, numbering) : {},
     footnotes: footXml ? parseDocxBody(footXml, styles, true, null, numbering) : {},
     rels: rels,
@@ -2864,7 +3042,14 @@ function describeCharStyles(doc) {
   for (i = 0; i < all.length; i++) {
     cs = all[i];
     d = { name: cs.name, fontStyle: "", underline: false, position: "", kenten: false, strike: false, ruby: false, skew: 0,
-          uTypeName: "", uWeight: -1, sTypeName: "" };
+          uTypeName: "", uWeight: -1, sTypeName: "", font: "" };
+    // 文字スタイルに設定されたフォント (中国語のフォントの文字スタイルを見つけるため)
+    try {
+      v = cs.appliedFont;
+      if (typeof v === "string") d.font = v;
+      else if (v && v.fontFamily !== undefined) d.font = String(v.fontFamily);
+      else if (v && v.name !== undefined) d.font = String(v.name).replace(/\t.*$/, "");
+    } catch (eF) {}
     // 下線・取り消し線の線の種類 (点線・波線・二重線など) と太さ
     try { v = cs.underlineType; if (v && v.name !== undefined) d.uTypeName = String(v.name); } catch (e7) {}
     try { v = cs.underlineWeight; if (typeof v === "number") d.uWeight = v; } catch (e8) {}
@@ -4420,6 +4605,14 @@ function main() {
   for (cd = 0; cd < cdescs.length; cd++) if (cdescs[cd].name && cdescs[cd].name.charAt(0) !== "[") charNames.push(cdescs[cd].name);
   var fcounts = countFmtCombos(built), fkeys = [], fkk;
   for (fkk in fcounts) if (fcounts.hasOwnProperty(fkk)) fkeys.push(fkk);
+  // 見落としやすい飾り (小さくした文字・囲み線・中国語のフォント) は、確認画面で数を知らせる
+  var watch = kindCounts(fcounts), wparts = [];
+  if (watch.small) wparts.push("小さくした文字 " + watch.small + " か所");
+  if (watch.border) wparts.push("囲み線 " + watch.border + " か所");
+  if (watch.zhHans) wparts.push("簡体字のフォント (SimSun など) " + watch.zhHans + " か所");
+  if (watch.zhHant) wparts.push("繁体字のフォント (PMingLiU など) " + watch.zhHant + " か所");
+  if (wparts.length > 0) notes.push("※ 見落としやすい文字の飾り: " + wparts.join("、") + "。「文字の飾りに使う文字スタイル」で文字スタイルを選んでください。");
+  if (ms.pBoxCount > 0) notes.push("※ 罫線で囲んだ段落 " + ms.pBoxCount + " か所を「文字ボックス」の種類で入れます。");
   var fmtInfo = { counts: fcounts, map: guessComboStyleNames(fkeys, cdescs), names: charNames };
   // 前回までに選んだ文字スタイルがファイルに記録されていれば、それを優先する
   var saved = parseSavedMap(doc.extractLabel(FMT_LABEL)), sk2, known = {};
