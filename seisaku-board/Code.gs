@@ -201,9 +201,15 @@ const CHECK_AFTER_DAYS_DEFAULT = 4;
 
 /** `論文明細` シートの列。 */
 const PCOL = { ORDER_NO: 1, TITLE: 2, AUTHOR: 3, STATUS: 4, DATE: 5, IMPORTED_AT: 6,
-  ARRIVED: 7, TYPESET: 8, SUBMITTED: 9, KIND: 10 };
-const PAPER_LAST_COL = PCOL.KIND;
-const PAPER_HEADERS = ['受注番号', '論文名', '著者名', '状態', '直近の日付', '取込日時', '入稿済', '組上がり', '提出済', '区分'];
+  ARRIVED: 7, TYPESET: 8, SUBMITTED: 9, KIND: 10, FIXED: 11 };
+const PAPER_LAST_COL = PCOL.FIXED;
+const PAPER_HEADERS = ['受注番号', '論文名', '著者名', '状態', '直近の日付', '取込日時', '入稿済', '組上がり', '提出済', '区分', '修正済（発送待ち）'];
+/**
+ * ●校戻りのセルにアミ（塗り）が入っている論文は「DTPの修正は済、まとめて発送するのを待っている」。
+ * 状態は ●校戻り のまま、修正済の印を付ける（DTP の直し待ち・要確認には数えない。編集に「発送待ち」と出す）。
+ * 内訳の件数は「初校戻り（修正済）」のように分けて数える。
+ */
+const FIXED_SUFFIX = '（修正済）';
 
 /** `担当者メモ` シートの列。 */
 const NCOL = { NAME: 1, NOTE: 2 };
@@ -941,7 +947,12 @@ function isColoredCell_(bg) {
 
 /** 論文の状態の並び順（内訳の表示順）。 */
 function paperStatusOrder_(cfg) {
-  return [KIYO_EMPTY_LABEL].concat(cfg.stages.map(function (s) { return s.name; })).concat(cfg.doneWords);
+  const order = [KIYO_EMPTY_LABEL];
+  cfg.stages.forEach(function (s) {
+    order.push(s.name);
+    if (/戻り$/.test(s.name)) order.push(s.name + FIXED_SUFFIX);
+  });
+  return order.concat(cfg.doneWords);
 }
 
 /**
@@ -950,6 +961,25 @@ function paperStatusOrder_(cfg) {
  * - 各校の列で一番右に日付が入っている工程が状態。校了／責了 が入っていれば完了
  */
 function parseKiyoRows_(values, cfg, todayStr, bgs) {
+  // bgs[i] は行ごとの背景色の配列（A列から）。古い呼び出しのため、A列だけの文字列でも受け付ける
+  const bgAt = function (i, col) {
+    const b = (bgs || [])[i];
+    if (Array.isArray(b)) return b[col - 1];
+    return col === cfg.title ? b : '';
+  };
+  // 列ごとのいちばん多い色（列全体を塗っているシートでも、それをアミと取り違えないため）
+  const colMode = {};
+  (cfg.stages || []).forEach(function (st) {
+    const tally = {};
+    let best = '', n = 0;
+    (bgs || []).forEach(function (b, i) {
+      if (!Array.isArray(b)) return;
+      const c = String(bgAt(i, st.col) || '').toLowerCase();
+      tally[c] = (tally[c] || 0) + 1;
+      if (tally[c] > n) { n = tally[c]; best = c; }
+    });
+    colMode[st.col] = best;
+  });
   const groups = [];
   const papers = [];
   const sections = [];
@@ -973,7 +1003,7 @@ function parseKiyoRows_(values, cfg, todayStr, bgs) {
     let isHeading = !!m;
     const headingLike = function () { return !!cfg.headingRe && cfg.headingRe.test(toHalfWidth_(title.split(/\r?\n/)[0].trim())); };
     if (!isHeading && title && !anyStage) {
-      if (isColoredCell_((bgs || [])[i])) {
+      if (isColoredCell_(bgAt(i, cfg.title))) {
         if (!hasRest && current && !headingLike()) {
           sections.push({ row: i + 1, title: title.replace(/\s+/g, ' ').trim(), orderNo: current.orderNo });
           return;
@@ -1014,7 +1044,7 @@ function parseKiyoRows_(values, cfg, todayStr, bgs) {
       { key: 'typeset', idx: idxOf(cfg.typesetStage) },
       { key: 'submitted', idx: idxOf(cfg.submitStage) }
     ];
-    const check = function (v, stageName, idx) {
+    const check = function (v, stageName, idx, col) {
       const t = toText_(v);
       if (!t) return;
       for (let k = 0; k < cfg.doneWords.length; k++) {
@@ -1027,11 +1057,17 @@ function parseKiyoRows_(values, cfg, todayStr, bgs) {
       }
       const d = parseKiyoDate_(v, todayStr);
       if (!d) return;
-      if (stageName) last = { name: stageName, date: d };
+      if (stageName) last = { name: stageName, date: d, col: col };
       marks.forEach(function (m) { if (m.idx >= 0 && idx >= m.idx) reached[m.key] = true; });
     };
-    cfg.stages.forEach(function (s, k) { check(pick_(row, s.col), s.name, k); });
-    if (cfg.status) check(pick_(row, cfg.status), '', -1);
+    cfg.stages.forEach(function (s, k) { check(pick_(row, s.col), s.name, k, s.col); });
+    if (cfg.status) check(pick_(row, cfg.status), '', -1, cfg.status);
+    // ●校戻りのセルにアミ（塗り）＝DTPの修正は済で、発送待ち。
+    // 行全体が塗られている（A列と同じ色）・列全体が塗られている（その列でいちばん多い色）場合は印とみなさない
+    const lastBg = !doneLabel && last && /戻り$/.test(last.name) ? String(bgAt(i, last.col) || '').toLowerCase() : '';
+    const fixed = isColoredCell_(lastBg) &&
+      lastBg !== String(bgAt(i, cfg.title) || '').toLowerCase() &&
+      lastBg !== colMode[last.col];
 
     if (!current.orderNo) return;
     // 表回り（表紙・扉・目次・奥付など）：著者名が空で、論文名に表回りの語を含む行。著者名があれば常に本文。
@@ -1044,7 +1080,8 @@ function parseKiyoRows_(values, cfg, todayStr, bgs) {
       date: last ? last.date : '',
       arrived: reached.arrived, typeset: reached.typeset, submitted: reached.submitted,
       done: !!doneLabel,
-      kind: isFront ? PAPER_KIND.FRONT : PAPER_KIND.BODY
+      kind: isFront ? PAPER_KIND.FRONT : PAPER_KIND.BODY,
+      fixed: fixed
     });
   });
   return { groups: groups, papers: papers, skipped: skipped, sections: sections };
@@ -1085,16 +1122,23 @@ function kiyoRuntimeCfg_(sh, cfg, values) {
   return out;
 }
 
-/** 論文名の列（A列）の背景色。見出し行の判定に使う。読めない場合は空配列。 */
-function kiyoTitleBackgrounds_(sh, cfg, values) {
+/**
+ * A列から工程列の右端までの背景色（行ごとの配列）。読めない場合は空配列。
+ * A列の色は見出し行の判定に、●校戻りのセルの色（アミ）は「修正済・発送待ち」の判定に使う。
+ */
+function kiyoBackgrounds_(sh, cfg, values) {
   if (!cfg.title || values.length === 0) return [];
+  let width = cfg.title;
+  (cfg.stages || []).forEach(function (s) { if (s.col > width) width = s.col; });
+  if (cfg.status > width) width = cfg.status;
   try {
-    return sh.getRange(1, cfg.title, values.length, 1).getBackgrounds().map(function (r) { return r[0]; });
+    return sh.getRange(1, 1, values.length, width).getBackgrounds();
   } catch (e) {
     console.log('背景色が読めませんでした：%s', e.message);
     return [];
   }
 }
+function titleBg_(bgs, cfg, i) { const b = (bgs || [])[i]; return Array.isArray(b) ? b[cfg.title - 1] : b; }
 
 function importFromKiyoSheet() {
   return withLock_(function () {
@@ -1105,14 +1149,15 @@ function importFromKiyoSheet() {
     const src = kss.getSheetByName(cfg.sheetName);
     if (!src) throw new Error('紀要のシート「' + cfg.sheetName + '」が見つかりません。');
     const values = src.getDataRange().getValues();
-    const parsed = parseKiyoRows_(values, kiyoRuntimeCfg_(src, cfg, values), todayStr, kiyoTitleBackgrounds_(src, cfg, values));
+    const runtime = kiyoRuntimeCfg_(src, cfg, values);
+    const parsed = parseKiyoRows_(values, runtime, todayStr, kiyoBackgrounds_(src, runtime, values));
 
     const sh = getPaperSheet_();
     const last = lastDataRow_(sh, PCOL.ORDER_NO);
     const cur = last > 1 ? sh.getRange(2, 1, last - 1, PAPER_LAST_COL).getValues() : [];
     const next = parsed.papers.map(function (p) {
       return [p.orderNo, p.title, p.author, p.status, p.date, stamp,
-        p.arrived ? '○' : '', p.typeset ? '○' : '', p.submitted ? '○' : '', p.kind];
+        p.arrived ? '○' : '', p.typeset ? '○' : '', p.submitted ? '○' : '', p.kind, p.fixed ? '○' : ''];
     });
 
     let same = cur.length === next.length;
@@ -1258,9 +1303,9 @@ function diagnoseKiyo() {
   if (!sh) { lines.push('→ シート「' + cfg.sheetName + '」がありません。シート一覧：' + kss.getSheets().map(function (s) { return s.getName(); }).join(' / ')); const m = lines.join('\n'); console.log(m); return m; }
   const values = sh.getDataRange().getValues();
   const runtime = kiyoRuntimeCfg_(sh, cfg, values);
-  const bgs = kiyoTitleBackgrounds_(sh, cfg, values);
+  const bgs = kiyoBackgrounds_(sh, runtime, values);
   lines.push('実際に見る工程列：' + runtime.stages.map(function (s) { return indexToCol_(s.col) + '=' + s.name; }).join(' '));
-  lines.push('見出しの色が読めた行数：' + bgs.filter(isColoredCell_).length + ' 行（色が0行なら、色での区切り判定は効きません）');
+  lines.push('見出しの色が読めた行数：' + bgs.filter(function (b, i) { return isColoredCell_(titleBg_(bgs, runtime, i)); }).length + ' 行（色が0行なら、色での区切り判定は効きません）');
   lines.push('行数：' + values.length);
   lines.push('先頭20行（列名=値）：');
   values.slice(0, 20).forEach(function (row, i) {
@@ -1271,7 +1316,7 @@ function diagnoseKiyo() {
   const parsed = parseKiyoRows_(values, runtime, today_(), bgs);
   lines.push('見出しとして検出した行：');
   parsed.groups.forEach(function (g) {
-    lines.push('  ' + g.row + '行目：' + (isColoredCell_(bgs[g.row - 1]) ? '[色あり] ' : '') + g.heading +
+    lines.push('  ' + g.row + '行目：' + (isColoredCell_(titleBg_(bgs, runtime, g.row - 1)) ? '[色あり] ' : '') + g.heading +
       ' → ' + (g.orderNo ? '受注番号 ' + g.orderNo : '番号なし（紐づけない）') + '　論文 ' + g.papers + ' 本' +
       (g.note ? '　B列「' + g.note + '」' : '') + (g.fixed ? '（本数 ' + g.planned + '）' : ''));
   });
@@ -1286,6 +1331,9 @@ function diagnoseKiyo() {
     lines.push('  ' + p.orderNo + '　' + p.title + '／' + p.author + '　' + p.status + ' ' + p.date +
       '　[' + p.kind + ']' + (p.arrived ? '　入稿済' : '') + (p.typeset ? '　組上がり済' : '') + (p.submitted ? '　提出済' : ''));
   });
+  const fixedPapers = parsed.papers.filter(function (p) { return p.fixed; });
+  lines.push('●校戻りのセルにアミがあり「修正済・発送待ち」と読んだ論文：' + fixedPapers.length + ' 本');
+  fixedPapers.forEach(function (p) { lines.push('  ' + p.orderNo + '　' + p.title + '／' + p.author + '　' + p.status + ' ' + p.date); });
   const msg = lines.join('\n');
   console.log(msg);
   return msg;
@@ -1320,7 +1368,7 @@ function autoStatus_(row) {
 
 /**
  * 紀要（論文明細がある案件）は、論文ごとに校正の進みがバラつくので、論文明細で「誰の番か」を決め直す。
- *  - 直し待ち（●校戻り）の本文が1本でもある → 赤字修正中（こちらの番がある）
+ *  - 直し待ち（●校戻り。アミ＝修正済は除く）の本文が1本でもある → 赤字修正中（こちらの番がある）
  *  - 校了・責了を除く本文が全部 ●校提出 → 先方校正中（全部先方待ち）
  *  - それ以外（組上がり・入稿のものが混ざる等）は生産表の判定のまま
  * 未入稿・下版済は変えない。
@@ -1332,7 +1380,8 @@ function kiyoTurnStatus_(status, papers, doneWords) {
   const active = papers.filter(function (p) {
     return p.kind !== PAPER_KIND.FRONT && words.indexOf(p.status) < 0;
   });
-  if (active.some(function (p) { return /校戻り$/.test(p.status); })) return STATUS.FIXING;
+  // 修正済（アミ）の ●校戻り は DTP の手を離れて発送待ち。直す番には数えない
+  if (active.some(function (p) { return /校戻り$/.test(p.status) && !p.fixed; })) return STATUS.FIXING;
   if (active.length && active.every(function (p) { return /校提出$/.test(p.status); })) return STATUS.CLIENT;
   return status;
 }
@@ -1365,7 +1414,8 @@ function checkAlert_(values, papers, isDone, todayStr) {
   const cand = [];
   if (papers && papers.length) {
     papers.forEach(function (p) {
-      if (/校戻り$/.test(p.status) && p.date && p.date <= todayStr) {
+      // 修正済（アミ＝発送待ち）は修正依頼を見落としていないので出さない
+      if (/校戻り$/.test(p.status) && !p.fixed && p.date && p.date <= todayStr) {
         cand.push({ title: p.title, author: p.author, kind: p.kind, stage: p.status, date: p.date });
       }
     });
@@ -1401,7 +1451,10 @@ function buildRecord_(values, rowNumber, papers, doneWords, todayStr) {
     if (p.arrived) t.arrived++;
     if (p.typeset) t.typeset++;
     if (p.submitted) t.submitted++;
-    if (t === body) counts[p.status] = (counts[p.status] || 0) + 1;
+    if (t === body) {
+      const k = p.fixed ? p.status + FIXED_SUFFIX : p.status;
+      counts[k] = (counts[k] || 0) + 1;
+    }
   });
   const issueAuto = issueAuto_(values);
   const statusAuto = kiyoTurnStatus_(autoStatus_(values), list, doneWords);
@@ -1466,7 +1519,8 @@ function readPapers_(ss) {
       arrived: toText_(r[PCOL.ARRIVED - 1]) !== '',
       typeset: toText_(r[PCOL.TYPESET - 1]) !== '',
       submitted: toText_(r[PCOL.SUBMITTED - 1]) !== '',
-      kind: toText_(r[PCOL.KIND - 1]) || PAPER_KIND.BODY
+      kind: toText_(r[PCOL.KIND - 1]) || PAPER_KIND.BODY,
+      fixed: toText_(r[PCOL.FIXED - 1]) !== ''
     });
   });
   return byNo;

@@ -287,5 +287,28 @@ check('要確認が無ければ帯は出ない', !!el('checkNotice').classes.hid
 ui.state.data.rows = saveRows2;
 ui.render();
 
+console.log('--- アミ＝DTP修正済・発送待ち ---');
+const amiRow = Object.assign({}, kiyoRow, {
+  key: 'AMI1', bodyTotal: 3, paperTypeset: 3, paperSubmitted: 3, paperArrived: 3,
+  papers: [
+    { title: '論文A', author: '平澤', status: '初校戻り', date: D(-5), kind: '本文', typeset: true, submitted: true, arrived: true, fixed: true },
+    { title: '論文B', author: '岩﨑', status: '初校戻り', date: D(-2), kind: '本文', typeset: true, submitted: true, arrived: true, fixed: true },
+    { title: '論文C', author: '松原', status: '初校戻り', date: D(-1), kind: '本文', typeset: true, submitted: true, arrived: true, fixed: false }],
+  paperCounts: { '初校戻り（修正済）': 2, '初校戻り': 1 }, checkItems: [] });
+const amiDtp = ui.cardHtml(amiRow, 'DTP');
+check('DTPの直し待ちは修正済を数えない（1本）', /直し待ち <span class="num">1本<\/span>/.test(amiDtp), amiDtp.match(/直し待ち[^<]*<span class="num">[^<]*/));
+check('DTPのカードに発送待ちの行は出さない', amiDtp.indexOf('発送待ち <span') < 0);
+const amiEdit = ui.cardHtml(amiRow, '編集');
+check('編集のカードに「発送待ち 2本（DTP修正済）」', /<span class="kind">編集<\/span>発送待ち <span class="num">2本<\/span><span>（DTP修正済）<\/span>/.test(amiEdit));
+check('内訳は「初校修正済・発送待ち」と言い換える', amiEdit.indexOf('初校修正済・発送待ち <b>2</b>') >= 0 && amiEdit.indexOf('初校直し待ち <b>1</b>') >= 0);
+ui.state.data.rows = saveRows2.concat([amiRow]);
+ui.openPanel('AMI1');
+const amiPanel = el('panel').innerHTML;
+check('詳細の論文一覧も「初校修正済・発送待ち」', amiPanel.indexOf('<td>初校修正済・発送待ち</td>') >= 0 && amiPanel.indexOf('<td>初校直し待ち</td>') >= 0);
+ui.closePanel();
+ui.state.data.rows = saveRows2;
+const noAmi = ui.cardHtml(Object.assign({}, amiRow, { papers: amiRow.papers.map(p => Object.assign({}, p, { fixed: false })) }), '編集');
+check('修正済が無ければ発送待ちの行は出ない', noAmi.indexOf('発送待ち <span') < 0);
+
 console.log(fails === 0 ? '\nすべて成功' : `\n失敗 ${fails} 件`);
 process.exit(fails === 0 ? 0 : 1);

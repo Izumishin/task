@@ -493,5 +493,50 @@ api.importFromKiyoSheet();
 check('確認済より新しい戻りの論文だけ、また出る', rowOf('23210-000').checkItems.length === 1 && rowOf('23210-000').checkItems[0].title === '戻りから2日の論文', rowOf('23210-000').checkItems);
 [80, 81, 82, 83, 84].forEach(r => { kiyo.data[r - 1] = []; kiyo.setBg(r, 1, '#ffffff'); });
 
+console.log('--- ●校戻りのセルにアミ＝DTP修正済・発送待ち ---');
+// 実物（川口短期大学紀要 第40号）：初校戻り（M列）に日付が入り、まとめて発送するのを待っている論文はM列にアミ
+setRow(27, { D: '中澤', E: '★', K: '★', M: '23220-000', N: '川口学園', O: 'アミ紀要 第1号', S: 'CTP', T: '篠原', Z: BD(20), AA: BD(10), AB: BD(6), AI: '冊子' });
+kHead(90, { A: 'アミ紀要 第1号\n【23220-000】', B: '掲載本数確定：4本', G: '和泉' });
+kRow(91, { A: '表紙', F: BD(20), K: BD(18), L: BD(10), M: BD(6) }); kiyo.setBg(91, C('M'), '#d9d9d9');   // 表回りも修正済
+kRow(92, { A: '修正済の論文A', B: '平澤', F: BD(20), K: BD(18), L: BD(10), M: BD(6) }); kiyo.setBg(92, C('M'), '#d9d9d9');
+kRow(93, { A: '修正済の論文B', B: '岩﨑', F: BD(20), K: BD(18), L: BD(10), M: BD(3) }); kiyo.setBg(93, C('M'), '#fff2cc');
+kRow(94, { A: 'まだ直していない論文', B: '松原', F: BD(20), K: BD(18), L: BD(10), M: BD(6) });   // アミなし
+kRow(95, { A: '先方待ちの論文', B: '西', F: BD(20), K: BD(18), L: BD(10) });
+kRow(96, { A: '行ごと塗られた論文', B: '一色', F: BD(20), K: BD(18), L: BD(10), M: BD(6) });
+'ABCDEFGHIJKLMNOPQRS'.split('').forEach(col => kiyo.setBg(96, C(col), '#cfe2f3'));   // 行全体の色はアミとみなさない
+api.importFromProductionSheet();
+api.importFromKiyoSheet();
+const ami = rowOf('23220-000');
+const amiBy = {}; ami.papers.forEach(p => { amiBy[p.title] = p; });
+check('●校戻りのセルにアミ → 修正済', amiBy['修正済の論文A'].fixed === true && amiBy['修正済の論文B'].fixed === true && amiBy['表紙'].fixed === true);
+check('アミの無い ●校戻り は修正済ではない', amiBy['まだ直していない論文'].fixed === false && amiBy['先方待ちの論文'].fixed === false);
+check('行全体が塗られているのはアミとみなさない', amiBy['行ごと塗られた論文'].fixed === false);
+check('状態は ●校戻り のまま（日付も残る）', amiBy['修正済の論文A'].status === '初校戻り' && amiBy['修正済の論文A'].date === BD(6));
+check('内訳は修正済を分けて数える', ami.paperCounts['初校戻り（修正済）'] === 2 && ami.paperCounts['初校戻り'] === 2 && ami.paperCounts['初校提出'] === 1, ami.paperCounts);
+check('論文明細シートのK列に○', ss.getSheetByName('論文明細').data.slice(1).filter(r => r[0] === '23220-000' && r[10] === '○').length === 3);
+check('修正済は要確認に出さない（直していない2本だけ）', ami.checkItems.map(c => c.title).sort().join('|') === 'まだ直していない論文|行ごと塗られた論文', ami.checkItems.map(c => c.title));
+check('内訳の並び順に修正済が入る', api.getBoardData(PIN).paperStatusOrder.indexOf('初校戻り（修正済）') === api.getBoardData(PIN).paperStatusOrder.indexOf('初校戻り') + 1);
+check('診断に修正済の論文が出る', /修正済・発送待ち」と読んだ論文：3 本/.test(api.diagnoseKiyo()));
+check('直していない本文があれば赤字修正中', api.kiyoTurnStatus_('作業中', [{ status: '初校戻り', kind: '本文', fixed: true }, { status: '初校戻り', kind: '本文' }], ['校了']) === '赤字修正中');
+check('修正済（発送待ち）だけなら赤字修正中にしない', api.kiyoTurnStatus_('先方校正中', [{ status: '初校戻り', kind: '本文', fixed: true }, { status: '初校提出', kind: '本文' }], ['校了']) === '先方校正中');
+kRow(92, { N: BD(1) });   // まとめて発送した（再校提出の日付が入った）
+api.importFromKiyoSheet();
+const sent = rowOf('23220-000').papers.find(p => p.title === '修正済の論文A');
+check('発送して再校提出が入れば、修正済の印は外れて再校提出', sent.status === '再校提出' && sent.fixed === false, sent);
+[90, 91, 92, 93, 94, 95, 96].forEach(r => { kiyo.data[r - 1] = []; 'ABCDEFGHIJKLMNOPQRS'.split('').forEach(col => kiyo.setBg(r, C(col), '#ffffff')); });
+// 列全体が塗られているシート（M列が最初から薄い色）では、その色をアミとみなさない
+for (let r = 1; r <= 100; r++) kiyo.setBg(r, C('O'), '#eeeeee');
+setRow(28, { D: '中澤', E: '★', K: '★', M: '23221-000', N: '川口学園', O: '列塗り紀要 第1号', S: 'CTP', T: '篠原', Z: BD(20), AA: BD(10), AB: BD(6), AI: '冊子' });
+kHead(90, { A: '列塗り紀要 第1号\n【23221-000】', B: '2本' });
+kRow(91, { A: '再校戻りの論文', B: '著者', F: BD(20), K: BD(18), L: BD(10), M: BD(8), N: BD(7), O: BD(6) });
+kRow(92, { A: '再校戻りでアミの論文', B: '著者', F: BD(20), K: BD(18), L: BD(10), M: BD(8), N: BD(7), O: BD(6) }); kiyo.setBg(92, C('O'), '#d9d9d9');
+api.importFromProductionSheet();
+api.importFromKiyoSheet();
+const colPainted = rowOf('23221-000').papers;
+check('列全体の色はアミとみなさない', colPainted.find(p => p.title === '再校戻りの論文').fixed === false);
+check('列の色と違う色ならアミ', colPainted.find(p => p.title === '再校戻りでアミの論文').fixed === true);
+for (let r = 1; r <= 100; r++) kiyo.setBg(r, C('O'), '#ffffff');
+[90, 91, 92].forEach(r => { kiyo.data[r - 1] = []; kiyo.setBg(r, 1, '#ffffff'); });
+
 console.log(fails === 0 ? '\nすべて成功' : `\n失敗 ${fails} 件`);
 process.exit(fails === 0 ? 0 : 1);

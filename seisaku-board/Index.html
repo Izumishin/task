@@ -371,16 +371,25 @@ function isProofStage(r, name) {
  */
 function paperStatusLabel(status) {
   const s = String(status || '');
+  // ●校戻りのセルにアミ＝DTPの修正は済で、まとめて発送するのを待っている
+  if (/校戻り（修正済）$/.test(s)) return s.replace(/戻り（修正済）$/, '修正済・発送待ち');
   if (/校提出$/.test(s)) return s.replace(/提出$/, '戻り待ち');
   if (/校戻り$/.test(s)) return s.replace(/戻り$/, '直し待ち');
   return s;
 }
 
-/** 赤字が戻ってきて DTP が直す番の本文の本数（状態が「●校戻り」）。 */
+/** 論文1本の状態の言い方（修正済＝アミ付きの ●校戻り は「●校修正済・発送待ち」）。 */
+function paperLabel(p) { return paperStatusLabel(p.fixed ? p.status + '（修正済）' : p.status); }
+
+/** 赤字が戻ってきて DTP が直す番の本文の本数（状態が「●校戻り」で、アミ＝修正済でないもの）。 */
 function fixWaitingCount(r) {
   return (r.papers || []).filter(function (p) {
-    return p.kind !== '表回り' && /校戻り$/.test(String(p.status || ''));
+    return p.kind !== '表回り' && /校戻り$/.test(String(p.status || '')) && !p.fixed;
   }).length;
+}
+/** DTP の修正は済んで、編集がまとめて発送するのを待っている本数（●校戻りのセルにアミ。表回りも含む）。 */
+function sendWaitingCount(r) {
+  return (r.papers || []).filter(function (p) { return p.fixed && /校戻り$/.test(String(p.status || '')); }).length;
 }
 /** 今日から見た次の営業日（金曜なら月曜）。土日をはさむときは、その間の日付も「前日」扱いにする。 */
 function nextBusinessDay(ymd) {
@@ -497,6 +506,11 @@ function progressHtml(r, group) {
       (fixed && waiting ? ' ／ 組待ち <span class="rest">' + waiting + '</span>' : '') +
       bar(submitted, checking) +
       (full ? '<span>全本提出済</span>' : '') +
+    '</div>');
+    // 編集の次の作業：DTP が直し終えて（●校戻りにアミ）、発送を待っている本数
+    const sendN = sendWaitingCount(r);
+    if (sendN) out.push('<div class="prog todo" title="●校戻りのセルにアミ＝DTPの修正は済。まとめて発送するのを待っている本数">' +
+      '<span class="kind">編集</span>発送待ち <span class="num">' + sendN + '本</span><span>（DTP修正済）</span>' +
     '</div>');
   }
 
@@ -755,7 +769,7 @@ function openPanel(key) {
       r.papers.map(function (p) {
         return '<tr><td>' + esc(p.kind || '') + '</td><td>' + esc(p.title) + '</td><td>' + esc(p.author) + '</td>' +
           '<td>' + (p.typeset ? '○' : '') + '</td><td>' + (p.submitted ? '○' : '') + '</td>' +
-          '<td>' + esc(paperStatusLabel(p.status)) + '</td><td>' + (p.date ? shortDate(p.date) : '') + '</td></tr>';
+          '<td>' + esc(paperLabel(p)) + '</td><td>' + (p.date ? shortDate(p.date) : '') + '</td></tr>';
       }).join('') + '</table>'
     : '';
 
