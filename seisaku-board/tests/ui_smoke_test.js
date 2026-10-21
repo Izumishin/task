@@ -310,5 +310,9 @@ ui.state.data.rows = saveRows2;
 const noAmi = ui.cardHtml(Object.assign({}, amiRow, { papers: amiRow.papers.map(p => Object.assign({}, p, { fixed: false })) }), '編集');
 check('修正済が無ければ発送待ちの行は出ない', noAmi.indexOf('発送待ち <span') < 0);
 
+console.log('--- 版の表示 ---');
+ui.render();
+check('画面上部に版が出る', /版 \d{4}-\d{2}-\d{2}/.test(el('meta').textContent), el('meta').textContent);
+
 console.log(fails === 0 ? '\nすべて成功' : `\n失敗 ${fails} 件`);
 process.exit(fails === 0 ? 0 : 1);

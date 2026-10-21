@@ -11,6 +11,9 @@
  */
 
 /** 固定値。運用で変わりうるものはスクリプトプロパティで上書きできる。 */
+/** コードの版。画面上部に「版 …」と出る。デプロイが新しい版になっているかの確認用（直したら日付を上げる）。 */
+const CODE_VERSION = '2026-10-22b';
+
 const CONFIG = {
   DEFAULT_PRODUCTION_SS_ID: '1yW4WyORgmAAzy-Clh6kafRK598pyY-Ee3OScoDXL1-A',
   DEFAULT_KIYO_SS_ID: '1XX7terJgMR8euzSTUT07u9wY-Bht5-ih3j_ae6S_LmY',
@@ -1594,7 +1597,8 @@ function getBoardData(options) {
     lastKiyoImportAt: getProp_('LAST_KIYO_IMPORT_AT', ''),
     kiyoError: getProp_('LAST_KIYO_ERROR', ''),
     kiyoUnlinked: getProp_('LAST_KIYO_UNLINKED', ''),
-    fetchedAt: nowStamp_()
+    fetchedAt: nowStamp_(),
+    codeVersion: CODE_VERSION
   };
 }
 

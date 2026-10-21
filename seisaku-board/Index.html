@@ -616,7 +616,8 @@ function render() {
   setMeta((d.canEdit ? '更新可' : '閲覧のみ') +
     '　生産表の取込 ' + (d.lastImportAt ? shortStamp(d.lastImportAt) : '—') +
     '　紀要 ' + (d.lastKiyoImportAt ? shortStamp(d.lastKiyoImportAt) : '—') +
-    '　表示 ' + d.fetchedAt.split(' ')[1]);
+    '　表示 ' + d.fetchedAt.split(' ')[1] +
+    '　版 ' + (d.codeVersion || '（古い版）'));
 
   document.getElementById('tabStaff').classList.toggle('on', state.view === 'staff');
   document.getElementById('tabStatus').classList.toggle('on', state.view === 'status');
