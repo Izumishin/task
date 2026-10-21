@@ -1057,17 +1057,22 @@ function parseKiyoRows_(values, cfg, todayStr, bgs) {
       }
       const d = parseKiyoDate_(v, todayStr);
       if (!d) return;
-      if (stageName) last = { name: stageName, date: d, col: col };
+      if (stageName) last = { name: stageName, date: d, col: col, idx: idx };
       marks.forEach(function (m) { if (m.idx >= 0 && idx >= m.idx) reached[m.key] = true; });
     };
     cfg.stages.forEach(function (s, k) { check(pick_(row, s.col), s.name, k, s.col); });
     if (cfg.status) check(pick_(row, cfg.status), '', -1, cfg.status);
-    // ●校戻りのセルにアミ（塗り）＝DTPの修正は済で、発送待ち。
+    // DTPの修正は済で、発送待ち（アミ）：●校戻りの次の提出欄（空欄）にアミ。●校戻りのセル自体のアミも同じ扱い。
     // 行全体が塗られている（A列と同じ色）・列全体が塗られている（その列でいちばん多い色）場合は印とみなさない
-    const lastBg = !doneLabel && last && /戻り$/.test(last.name) ? String(bgAt(i, last.col) || '').toLowerCase() : '';
-    const fixed = isColoredCell_(lastBg) &&
-      lastBg !== String(bgAt(i, cfg.title) || '').toLowerCase() &&
-      lastBg !== colMode[last.col];
+    const amiAt = function (col) {
+      const bg = String(bgAt(i, col) || '').toLowerCase();
+      return isColoredCell_(bg) && bg !== String(bgAt(i, cfg.title) || '').toLowerCase() && bg !== colMode[col];
+    };
+    let fixed = false;
+    if (!doneLabel && last && /戻り$/.test(last.name)) {
+      const nextStage = cfg.stages[last.idx + 1];
+      fixed = amiAt(last.col) || (!!nextStage && toText_(pick_(row, nextStage.col)) === '' && amiAt(nextStage.col));
+    }
 
     if (!current.orderNo) return;
     // 表回り（表紙・扉・目次・奥付など）：著者名が空で、論文名に表回りの語を含む行。著者名があれば常に本文。
@@ -1332,7 +1337,7 @@ function diagnoseKiyo() {
       '　[' + p.kind + ']' + (p.arrived ? '　入稿済' : '') + (p.typeset ? '　組上がり済' : '') + (p.submitted ? '　提出済' : ''));
   });
   const fixedPapers = parsed.papers.filter(function (p) { return p.fixed; });
-  lines.push('●校戻りのセルにアミがあり「修正済・発送待ち」と読んだ論文：' + fixedPapers.length + ' 本');
+  lines.push('●校戻り（またはその次の提出欄）にアミがあり「修正済・発送待ち」と読んだ論文：' + fixedPapers.length + ' 本');
   fixedPapers.forEach(function (p) { lines.push('  ' + p.orderNo + '　' + p.title + '／' + p.author + '　' + p.status + ' ' + p.date); });
   const msg = lines.join('\n');
   console.log(msg);

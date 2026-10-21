@@ -503,27 +503,32 @@ kRow(93, { A: '修正済の論文B', B: '岩﨑', F: BD(20), K: BD(18), L: BD(10
 kRow(94, { A: 'まだ直していない論文', B: '松原', F: BD(20), K: BD(18), L: BD(10), M: BD(6) });   // アミなし
 kRow(95, { A: '先方待ちの論文', B: '西', F: BD(20), K: BD(18), L: BD(10) });
 kRow(96, { A: '行ごと塗られた論文', B: '一色', F: BD(20), K: BD(18), L: BD(10), M: BD(6) });
+// 実物の塗り方：初校戻り（M列）は塗らず、次の再校提出の欄（N列・空欄）にピンクのアミ。先方待ちの論文は空のM列が黄色
+kRow(97, { A: '再校欄にアミの論文', B: '平澤', F: BD(20), K: BD(18), L: BD(10), M: BD(6) }); kiyo.setBg(97, C('N'), '#f4cccc');
+kiyo.setBg(95, C('M'), '#ffff00');
 'ABCDEFGHIJKLMNOPQRS'.split('').forEach(col => kiyo.setBg(96, C(col), '#cfe2f3'));   // 行全体の色はアミとみなさない
 api.importFromProductionSheet();
 api.importFromKiyoSheet();
 const ami = rowOf('23220-000');
 const amiBy = {}; ami.papers.forEach(p => { amiBy[p.title] = p; });
 check('●校戻りのセルにアミ → 修正済', amiBy['修正済の論文A'].fixed === true && amiBy['修正済の論文B'].fixed === true && amiBy['表紙'].fixed === true);
+check('●校戻りの次の提出欄（空欄）にアミ → 修正済（実物の塗り方）', amiBy['再校欄にアミの論文'].fixed === true && amiBy['再校欄にアミの論文'].status === '初校戻り');
+check('●校提出の次の空欄が塗られていても修正済にしない（先方待ちの黄色）', amiBy['先方待ちの論文'].fixed === false && amiBy['先方待ちの論文'].status === '初校提出');
 check('アミの無い ●校戻り は修正済ではない', amiBy['まだ直していない論文'].fixed === false && amiBy['先方待ちの論文'].fixed === false);
 check('行全体が塗られているのはアミとみなさない', amiBy['行ごと塗られた論文'].fixed === false);
 check('状態は ●校戻り のまま（日付も残る）', amiBy['修正済の論文A'].status === '初校戻り' && amiBy['修正済の論文A'].date === BD(6));
-check('内訳は修正済を分けて数える', ami.paperCounts['初校戻り（修正済）'] === 2 && ami.paperCounts['初校戻り'] === 2 && ami.paperCounts['初校提出'] === 1, ami.paperCounts);
-check('論文明細シートのK列に○', ss.getSheetByName('論文明細').data.slice(1).filter(r => r[0] === '23220-000' && r[10] === '○').length === 3);
+check('内訳は修正済を分けて数える', ami.paperCounts['初校戻り（修正済）'] === 3 && ami.paperCounts['初校戻り'] === 2 && ami.paperCounts['初校提出'] === 1, ami.paperCounts);
+check('論文明細シートのK列に○', ss.getSheetByName('論文明細').data.slice(1).filter(r => r[0] === '23220-000' && r[10] === '○').length === 4);
 check('修正済は要確認に出さない（直していない2本だけ）', ami.checkItems.map(c => c.title).sort().join('|') === 'まだ直していない論文|行ごと塗られた論文', ami.checkItems.map(c => c.title));
 check('内訳の並び順に修正済が入る', api.getBoardData(PIN).paperStatusOrder.indexOf('初校戻り（修正済）') === api.getBoardData(PIN).paperStatusOrder.indexOf('初校戻り') + 1);
-check('診断に修正済の論文が出る', /修正済・発送待ち」と読んだ論文：3 本/.test(api.diagnoseKiyo()));
+check('診断に修正済の論文が出る', /修正済・発送待ち」と読んだ論文：4 本/.test(api.diagnoseKiyo()));
 check('直していない本文があれば赤字修正中', api.kiyoTurnStatus_('作業中', [{ status: '初校戻り', kind: '本文', fixed: true }, { status: '初校戻り', kind: '本文' }], ['校了']) === '赤字修正中');
 check('修正済（発送待ち）だけなら赤字修正中にしない', api.kiyoTurnStatus_('先方校正中', [{ status: '初校戻り', kind: '本文', fixed: true }, { status: '初校提出', kind: '本文' }], ['校了']) === '先方校正中');
 kRow(92, { N: BD(1) });   // まとめて発送した（再校提出の日付が入った）
 api.importFromKiyoSheet();
 const sent = rowOf('23220-000').papers.find(p => p.title === '修正済の論文A');
 check('発送して再校提出が入れば、修正済の印は外れて再校提出', sent.status === '再校提出' && sent.fixed === false, sent);
-[90, 91, 92, 93, 94, 95, 96].forEach(r => { kiyo.data[r - 1] = []; 'ABCDEFGHIJKLMNOPQRS'.split('').forEach(col => kiyo.setBg(r, C(col), '#ffffff')); });
+[90, 91, 92, 93, 94, 95, 96, 97].forEach(r => { kiyo.data[r - 1] = []; 'ABCDEFGHIJKLMNOPQRS'.split('').forEach(col => kiyo.setBg(r, C(col), '#ffffff')); });
 // 列全体が塗られているシート（M列が最初から薄い色）では、その色をアミとみなさない
 for (let r = 1; r <= 100; r++) kiyo.setBg(r, C('O'), '#eeeeee');
 setRow(28, { D: '中澤', E: '★', K: '★', M: '23221-000', N: '川口学園', O: '列塗り紀要 第1号', S: 'CTP', T: '篠原', Z: BD(20), AA: BD(10), AB: BD(6), AI: '冊子' });
