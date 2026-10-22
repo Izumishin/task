@@ -558,19 +558,25 @@ var FMT_KINDS = [
   ["sup", "上付き"], ["sub", "下付き"],
   ["kenten", "圏点"], ["strike", "取り消し線"], ["dstrike", "二重取り消し線"], ["highlight", "蛍光ペン"], ["ruby", "ルビ"],
   ["small", "小さくした文字"], ["border", "囲み線 (文字)"], ["zhHans", "簡体字のフォント"], ["zhHant", "繁体字のフォント"],
-  ["tcy", "縦中横"]
+  ["tcy", "縦中横"], ["ko", "ハングル (韓国語)"]
 ];
 
 // 中国語のフォント (日本語の原稿に混ざっていると、InDesign で字形が変わったり欠けたりするので見つけて知らせる)
 var ZH_HANS_FONTS = /^(SimSun|NSimSun|SimSun-ExtB|SimHei|SimKai|SimFang|KaiTi|KaiTi_GB2312|FangSong|FangSong_GB2312|Microsoft YaHei|Microsoft YaHei UI|DengXian|STSong|STHeiti|STKaiti|STFangsong|STXihei|STZhongsong|STXinwei|STLiti|STCaiyun|STXingkai|STHupo|YouYuan|LiSu|Noto (Sans|Serif) (CJK )?SC|Source Han (Sans|Serif) (CN|SC)|Adobe (Song|Heiti|Kaiti|Fangsong) Std|\u5b8b\u4f53|\u65b0\u5b8b\u4f53|\u9ed1\u4f53|\u6977\u4f53|\u4eff\u5b8b|\u5fae\u8f6f\u96c5\u9ed1|\u7b49\u7ebf|\u534e\u6587.*)$/i;
 var ZH_HANT_FONTS = /^(PMingLiU|MingLiU|PMingLiU-ExtB|MingLiU-ExtB|MingLiU_HKSCS|MingLiU_HKSCS-ExtB|DFKai-SB|Microsoft JhengHei|Microsoft JhengHei UI|Noto (Sans|Serif) (CJK )?(TC|HK)|Source Han (Sans|Serif) (TW|HK|TC)|Adobe Ming Std|\u65b0\u7d30\u660e\u9ad4|\u7d30\u660e\u9ad4|\u6a19\u6977\u9ad4|\u5fae\u8edf\u6b63\u9ed1\u9ad4)$/i;
+// 韓国語のフォント
+var KO_FONTS = /^(Batang|BatangChe|Gungsuh|GungsuhChe|Gulim|GulimChe|Dotum|DotumChe|Malgun Gothic|Malgun Gothic Semilight|New Gulim|Nanum.*|NanumGothic.*|NanumMyeongjo.*|Noto (Sans|Serif) (CJK )?KR|Source Han (Sans|Serif) (K|KR)|Adobe (Myungjo|Gothic) Std|Apple ?SD ?Gothic ?Neo|AppleMyungjo|AppleGothic|Un(Batang|Dotum).*|HY.*|Hancom.*|\ubc14\ud0d5.*|\uad74\ub9bc.*|\ub3cb\uc6c0.*|\uad81\uc11c.*|\ub9d1\uc740 \uace0\ub515|\ub098\ub214.*|\ud568\ucd08\ub86c.*|\ud55c\ucef4.*)$/i;
+// フォント名 → "zhHans" (簡体字) / "zhHant" (繁体字) / "ko" (韓国語) / null
 function zhFontKind(name) {
   var n = String(name || "").replace(/^\s+|\s+$/g, "");
   if (n === "") return null;
   if (ZH_HANT_FONTS.test(n)) return "zhHant";
   if (ZH_HANS_FONTS.test(n)) return "zhHans";
+  if (KO_FONTS.test(n)) return "ko";
   return null;
 }
+// ハングルの文字 (音節・字母)
+var RE_HANGUL = /[\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F\uA960-\uA97F\uD7B0-\uD7FF]/;
 function _clearPrefix(fmt, prefix) { var k; for (k in fmt) if (fmt.hasOwnProperty(k) && k.indexOf(prefix) === 0) delete fmt[k]; }
 
 // 下線の線種 (1つの文字に付く下線は1種類なので、付け替えるときは他の線種を消す)
@@ -637,7 +643,7 @@ function readRunProp(name, tag, fmt) {
     var ea = xmlAttr(tag, "w:eastAsia");
     if (ea === null && xmlAttr(tag, "w:hint") === "eastAsia") ea = xmlAttr(tag, "w:ascii") || xmlAttr(tag, "w:hAnsi");
     if (ea !== null) {
-      delete fmt.zhHans; delete fmt.zhHant;
+      delete fmt.zhHans; delete fmt.zhHant; delete fmt.ko;
       var zk = zhFontKind(ea);
       if (zk) fmt[zk] = true;
       fmt._fontSet = 1;
@@ -677,7 +683,7 @@ function docxStyleFmt(styles, id) {
     var f = chain[i].fmt, hasU = !!f._uOff, hasS = !!f._sOff, q;
     // 基にしたスタイルの大きさ・フォントは、後のスタイルで指定があれば置き換わる
     if (f._szSet) _clearPrefix(out, "sz");
-    if (f._fontSet) { delete out.zhHans; delete out.zhHant; out._fontSet = 1; }   // 1 (true ではない) は飾りの名前に入らない
+    if (f._fontSet) { delete out.zhHans; delete out.zhHant; delete out.ko; out._fontSet = 1; }   // 1 (true ではない) は飾りの名前に入らない
     for (q = 0; q < UNDERLINE_KINDS.length; q++) if (f[UNDERLINE_KINDS[q]]) hasU = true;
     for (q = 0; q < STRIKE_KINDS.length; q++) if (f[STRIKE_KINDS[q]]) hasS = true;
     // 基にしたスタイルの線種は、後のスタイルの線種で置き換わる
@@ -713,7 +719,7 @@ function docxParaZh(styles, id) {
   for (i = 0; i < ch.length; i++) {
     if (ch[i].id === styles.__defaultPara) return null;
     f = ch[i].fmt;
-    if (f._fontSet) return f.zhHant ? "zhHant" : (f.zhHans ? "zhHans" : null);
+    if (f._fontSet) return f.zhHant ? "zhHant" : (f.zhHans ? "zhHans" : (f.ko ? "ko" : null));
   }
   return null;
 }
@@ -765,6 +771,47 @@ function _normSizeFlags(pa) {
     out.push(sp);
   }
   pa.fmt = out;
+  // ハングルの文字は、フォントにかかわらず「ハングル」の印を付ける (日本語のフォントにはハングルがないことが多い)
+  if (RE_HANGUL.test(t)) pa.fmt = _flagRanges(pa.fmt, hangulRanges(t), "ko");
+}
+
+// ハングルが続いている範囲 (ハングルの間の空白・記号も含める) → [{ start, end }]
+function hangulRanges(t) {
+  var out = [], i, st = -1, lastH = -1, c;
+  for (i = 0; i <= t.length; i++) {
+    c = i < t.length ? t.charAt(i) : "";
+    if (c !== "" && RE_HANGUL.test(c)) { if (st < 0) st = i; lastH = i; continue; }
+    // ハングルの後ろの空白・中黒・コンマなどは、次もハングルならつなげる
+    if (st >= 0 && c !== "" && /[\s\u3000\u30FB\u00B7,.\-]/.test(c)) continue;
+    if (st >= 0) { out.push({ start: st, end: lastH + 1 }); st = -1; }
+  }
+  return out;
+}
+
+// 飾りの区間の並び (重ならない) の、ranges の部分に flag を足す (区間を分けて足し、ない所は新しく作る)
+function _flagRanges(list, ranges, flag) {
+  var cuts = [], i, j, segs = [], rubies = [], plain = [];
+  for (i = 0; i < list.length; i++) { if (list[i].ruby) rubies.push(list[i]); else plain.push(list[i]); }
+  for (i = 0; i < plain.length; i++) cuts.push(plain[i].start, plain[i].end);
+  for (i = 0; i < ranges.length; i++) cuts.push(ranges[i].start, ranges[i].end);
+  cuts.sort(function (a, b) { return a - b; });
+  var out = [];
+  for (i = 0; i + 1 < cuts.length; i++) {
+    var a = cuts[i], b = cuts[i + 1];
+    if (b <= a) continue;
+    var base = null, inR = false, sp = {}, k;
+    for (j = 0; j < plain.length; j++) if (plain[j].start <= a && plain[j].end >= b) { base = plain[j]; break; }
+    for (j = 0; j < ranges.length; j++) if (ranges[j].start <= a && ranges[j].end >= b) { inR = true; break; }
+    if (base) for (k in base) if (base.hasOwnProperty(k) && base[k] === true) sp[k] = true;
+    if (inR) sp[flag] = true;
+    var key = _fmtKey(sp);
+    if (key === "") continue;
+    var last = out.length > 0 ? out[out.length - 1] : null;
+    if (last && last.key === key && last.end === a) { last.end = b; continue; }
+    sp.start = a; sp.end = b; sp.key = key;
+    out.push(sp);
+  }
+  return out.concat(rubies);
 }
 
 function _fmtKey(f) {
@@ -775,7 +822,7 @@ function _fmtKey(f) {
 }
 
 // 1つの区間に当てる文字スタイル (飾りが重なっているときは、上付き・下付き → 斜体 → 太字 … の順で1つ)
-var FMT_PRIORITY = ["sup", "sub", "zhHans", "zhHant", "italic", "bold", "underline", "uDouble", "uThick", "uDotted", "uDash", "uDotDash",
+var FMT_PRIORITY = ["sup", "sub", "zhHans", "zhHant", "ko", "italic", "bold", "underline", "uDouble", "uThick", "uDotted", "uDash", "uDotDash",
                     "uDotDotDash", "uWave", "uWavyDouble", "kenten", "strike", "dstrike", "highlight", "small", "border", "tcy"];
 
 // InDesign の線の種類の名前 (日本語版・英語版) と太さから、線種を決める
@@ -946,6 +993,11 @@ function guessComboStyleNames(keys, descs) {
       }
       var nm = part === "zhHans" ? /簡体|简体|中国語|中文|SimSun|SimHei|宋体|黑体/i : /繁体|繁體|台湾|香港|PMingLiU|MingLiU|明體/i;
       return (fk === part ? 2 : 0) + (nm.test(dd.name) ? 1 : 0);
+    }
+    if (part === "ko") {
+      var kk = dd.font ? zhFontKind(dd.font) : null;
+      if (kk !== "ko" && dd.font && /(Adobe Myungjo|Adobe Gothic Std|Source Han (Sans|Serif) (K|KR)|Noto (Sans|Serif) (CJK )?KR|Batang|Gulim|Dotum|Malgun|Nanum)/i.test(dd.font)) kk = "ko";
+      return (kk === "ko" ? 2 : 0) + (/韓国|ハングル|朝鮮|\uD55C\uAD6D|\uD55C\uAE00|korean|Batang|Malgun|Gulim|Dotum/i.test(dd.name) ? 1 : 0);
     }
     return 0;
   }
@@ -4793,6 +4845,7 @@ function main() {
   if (watch.border) wparts.push("囲み線 " + watch.border + " か所");
   if (watch.zhHans) wparts.push("簡体字のフォント (SimSun など) " + watch.zhHans + " か所");
   if (watch.zhHant) wparts.push("繁体字のフォント (PMingLiU など) " + watch.zhHant + " か所");
+  if (watch.ko) wparts.push("ハングル (韓国語) " + watch.ko + " か所");
   if (wparts.length > 0) notes.push("※ 見落としやすい文字の飾り: " + wparts.join("、") + "。「文字の飾りに使う文字スタイル」で文字スタイルを選んでください。");
   if (ms.eqStat && (ms.eqStat.ruby > 0 || ms.eqStat.tcy > 0)) {
     notes.push("※ 一太郎などから変換した原稿の書き方 (Word の EQ フィールド) で書かれたルビ " + ms.eqStat.ruby + " か所・縦中横 " +

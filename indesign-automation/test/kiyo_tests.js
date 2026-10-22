@@ -896,6 +896,30 @@ const gs = guessComboStyleNames(['small', 'zhHans', 'zhHant', 'border'], [
   { name: 'C_繁体', fontStyle: '', font: 'Adobe Ming Std' }, { name: '囲み文字', fontStyle: '', font: '' }, { name: 'イタリック', fontStyle: 'Italic', font: '' }]);
 check('文字スタイルの名前・フォントから選ぶ', gs.small === '小文字' && gs.zhHans === '中国語（簡体）' && gs.zhHant === 'C_繁体' && gs.border === '囲み文字', JSON.stringify(gs));
 
+// ---- ハングル (韓国語) ----
+console.log('hangul:');
+const koDoc = `<?xml version="1.0"?><w:document ${W}><w:body>${P('題目')}${P('１．はじめに', 'Heading1')}
+<w:p><w:r><w:t>対聯（</w:t></w:r><w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:eastAsia="Batang"/></w:rPr><w:t>대련</w:t></w:r><w:r><w:t>・テ）と、日本語のフォントのままの韓国 전통 가옥（</w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>한옥</w:t></w:r><w:r><w:t>）。</w:t></w:r></w:p>
+<w:p><w:r><w:rPr><w:rFonts w:eastAsia="Malgun Gothic"/></w:rPr><w:t>韓国語のフォントの漢字</w:t></w:r><w:r><w:t>です。</w:t></w:r></w:p>
+<w:tbl><w:tr><w:tc><w:p><w:r><w:t>表の中の 서원 です</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+<w:p><w:r><w:t>脚注</w:t></w:r><w:r><w:footnoteReference w:id="2"/></w:r></w:p><w:sectPr/></w:body></w:document>`;
+const koFoot = `<?xml version="1.0"?><w:footnotes ${W}><w:footnote w:id="2"><w:p><w:r><w:t>注の中の 종묘 も。</w:t></w:r></w:p></w:footnote></w:footnotes>`;
+const koB = buildItems(readDocxManuscript(makeZip([['word/document.xml', koDoc], ['word/footnotes.xml', koFoot]]).toString('latin1')), prof);
+const koP = koB.items.find(x => /対聯/.test(x.text));
+const koSp = (text, fmt) => fmt.filter(f => f.ko).map(f => text.substring(f.start, f.end));
+check('ハングルの文字には、フォントにかかわらず「ハングル」の印 (空白でつながった語はまとめて)', koP && JSON.stringify(koSp(koP.text, koP.fmt)) === JSON.stringify(['대련', '전통 가옥', '한옥']),
+      JSON.stringify(koP && koP.fmt));
+check('ハングルの太字は「ハングル＋太字」', koP.fmt.some(f => f.ko && f.bold && koP.text.substring(f.start, f.end) === '한옥'));
+check('ハングルの前後の日本語・括弧には印を付けない', !koP.fmt.some(f => f.ko && /[（）・テ韓国]/.test(koP.text.substring(f.start, f.end))));
+const koF = koB.items.find(x => /韓国語のフォント/.test(x.text));
+check('韓国語のフォント (Malgun Gothic など) の部分にも印', koF && JSON.stringify(koSp(koF.text, koF.fmt)) === JSON.stringify(['韓国語のフォントの漢字']), JSON.stringify(koF && koF.fmt));
+const koT = koB.items.find(x => x.role === 'table');
+check('表の中・注の中のハングルにも印', koT && JSON.stringify(koSp(koT.table.rows[0][0], koT.cellFmt[0][0])) === JSON.stringify(['서원']) &&
+      JSON.stringify(koSp(koB.footnotes[0].text, koB.footnotes[0].fmt)) === JSON.stringify(['종묘']), JSON.stringify([koT && koT.cellFmt, koB.footnotes]));
+check('韓国語のフォントの名前', zhFontKind('Batang') === 'ko' && zhFontKind('맑은 고딕') === 'ko' && zhFontKind('ＭＳ 明朝') === null && zhFontKind('SimSun') === 'zhHans');
+const koG = guessComboStyleNames(['ko'], [{ name: '欧文', fontStyle: '', font: 'Times New Roman' }, { name: 'C_韓国語', fontStyle: '', font: 'Adobe Myungjo Std' }]);
+check('ハングル用の文字スタイルを、フォント・名前から選ぶ', koG.ko === 'C_韓国語', JSON.stringify(koG));
+
 // ---- 一太郎などから変換した原稿の EQ フィールド (ルビ・縦中横) ----
 console.log('EQ fields (ruby / tate-chu-yoko):');
 const eq1 = parseEqField(' eq \\o\\al(\\s\\up 9(せつしよう),殺生)');
