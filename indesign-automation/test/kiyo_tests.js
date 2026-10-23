@@ -920,6 +920,31 @@ check('韓国語のフォントの名前', zhFontKind('Batang') === 'ko' && zhFo
 const koG = guessComboStyleNames(['ko'], [{ name: '欧文', fontStyle: '', font: 'Times New Roman' }, { name: 'C_韓国語', fontStyle: '', font: 'Adobe Myungjo Std' }]);
 check('ハングル用の文字スタイルを、フォント・名前から選ぶ', koG.ko === 'C_韓国語', JSON.stringify(koG));
 
+// ---- 明朝の本文の中のゴシック体 ----
+console.log('gothic:');
+const GR = (t, font) => `<w:r>${font ? `<w:rPr><w:rFonts w:eastAsia="${font}"/></w:rPr>` : ''}<w:t xml:space="preserve">${t}</w:t></w:r>`;
+const gStyles = `<?xml version="1.0"?><w:styles ${W}><w:style w:type="paragraph" w:default="1" w:styleId="a"><w:name w:val="Normal"/></w:style>
+<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/></w:style>
+<w:style w:type="character" w:styleId="Goth"><w:name w:val="ゴシック強調"/><w:rPr><w:rFonts w:eastAsia="ＭＳ ゴシック"/></w:rPr></w:style></w:styles>`;
+const gDoc = `<?xml version="1.0"?><w:document ${W}><w:body>${P('題目')}
+<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr>${GR('１．はじめに', 'BIZ UDPゴシック')}</w:p>
+<w:p>${GR('第１条', 'BIZ UDPゴシック')}${GR('　この規程は、紀要に関して定める。本文の明朝の部分です。', 'BIZ UDP明朝 Medium')}</w:p>
+<w:p>${GR('本文の中の', 'ＭＳ 明朝')}<w:r><w:rPr><w:rStyle w:val="Goth"/></w:rPr><w:t>文字スタイルのゴシック</w:t></w:r>${GR('と、', 'ＭＳ 明朝')}${GR('韓国語の文字', 'Malgun Gothic')}${GR('と、', 'ＭＳ 明朝')}${GR('メイリオ', 'メイリオ')}${GR('の部分。長い明朝の文章をここに続けます。', 'ＭＳ 明朝')}</w:p>
+<w:sectPr/></w:body></w:document>`;
+const gB = buildItems(readDocxManuscript(makeZip([['word/document.xml', gDoc], ['word/styles.xml', gStyles]]).toString('latin1')), prof);
+const gSp = it => (it ? it.fmt : []).filter(f => f.gothic).map(f => it.text.substring(f.start, f.end));
+const g1 = gB.items.find(x => /第１条/.test(x.text));
+check('明朝の本文の中のゴシック体の部分に「ゴシック体」の印', JSON.stringify(gSp(g1)) === JSON.stringify(['第１条']), JSON.stringify(g1 && g1.fmt));
+const g2 = gB.items.find(x => /本文の中の/.test(x.text));
+check('文字スタイルのゴシック・メイリオにも印。韓国語のフォント (Malgun Gothic) はハングル扱い', JSON.stringify(gSp(g2)) === JSON.stringify(['文字スタイルのゴシック', 'メイリオ']) &&
+      g2.fmt.some(f => f.ko && g2.text.substring(f.start, f.end) === '韓国語の文字'), JSON.stringify(g2 && g2.fmt));
+check('見出し全体のゴシックは段落スタイルの役目なので印を付けない', gSp(gB.items.find(x => /はじめに/.test(x.text))).length === 0);
+const allGothDoc = `<?xml version="1.0"?><w:document ${W}><w:body>${P('題目')}<w:p>${GR('原稿全体がゴシック体の本文です。', 'ＭＳ Ｐゴシック')}</w:p><w:p>${GR('第１条', 'ＭＳ ゴシック')}${GR('　これもゴシック体の本文。', 'ＭＳ Ｐゴシック')}</w:p><w:sectPr/></w:body></w:document>`;
+const agB = buildItems(readDocxManuscript(makeZip([['word/document.xml', allGothDoc]]).toString('latin1')), prof);
+check('原稿全体がゴシック体なら、ゴシックはふつうの本文なので印を付けない', !agB.items.some(x => (x.fmt || []).some(f => f.gothic)), JSON.stringify(agB.items.map(x => x.fmt)));
+const gG = guessComboStyleNames(['gothic', 'bold', 'gothic+bold'], [{ name: '太字', fontStyle: 'Regular', font: 'A-OTF 中ゴシックBBB Pr6N' }, { name: 'ゴチ', fontStyle: '', font: '小塚ゴシック Pr6N' }]);
+check('ゴシック体の文字スタイルを、フォント・名前から選ぶ (ゴシックで作った「太字」も太字に選ばれる)', gG.gothic === 'ゴチ' && gG.bold === '太字', JSON.stringify(gG));
+
 // ---- 一太郎などから変換した原稿の EQ フィールド (ルビ・縦中横) ----
 console.log('EQ fields (ruby / tate-chu-yoko):');
 const eq1 = parseEqField(' eq \\o\\al(\\s\\up 9(せつしよう),殺生)');

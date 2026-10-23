@@ -558,7 +558,7 @@ var FMT_KINDS = [
   ["sup", "上付き"], ["sub", "下付き"],
   ["kenten", "圏点"], ["strike", "取り消し線"], ["dstrike", "二重取り消し線"], ["highlight", "蛍光ペン"], ["ruby", "ルビ"],
   ["small", "小さくした文字"], ["border", "囲み線 (文字)"], ["zhHans", "簡体字のフォント"], ["zhHant", "繁体字のフォント"],
-  ["tcy", "縦中横"], ["ko", "ハングル (韓国語)"]
+  ["tcy", "縦中横"], ["ko", "ハングル (韓国語)"], ["gothic", "ゴシック体"]
 ];
 
 // 中国語のフォント (日本語の原稿に混ざっていると、InDesign で字形が変わったり欠けたりするので見つけて知らせる)
@@ -575,6 +575,13 @@ function zhFontKind(name) {
   if (KO_FONTS.test(n)) return "ko";
   return null;
 }
+// 日本語のゴシック体のフォント (明朝の本文の中で、ゴシックにした部分を見つける)
+var GOTHIC_FONTS = /(ゴシック|ｺﾞｼｯｸ|角ゴ|丸ゴ|Gothic|メイリオ|Meiryo|Sans (CJK )?JP|Source Han Sans|源ノ角|Hiragino Kaku|Hiragino Maru|UD ?デジタル 教科書体 N-B)/i;
+function isGothicFont(name) {
+  var n = String(name || "");
+  return n !== "" && zhFontKind(n) === null && GOTHIC_FONTS.test(n);
+}
+
 // ハングルの文字 (音節・字母)
 var RE_HANGUL = /[\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F\uA960-\uA97F\uD7B0-\uD7FF]/;
 function _clearPrefix(fmt, prefix) { var k; for (k in fmt) if (fmt.hasOwnProperty(k) && k.indexOf(prefix) === 0) delete fmt[k]; }
@@ -643,9 +650,10 @@ function readRunProp(name, tag, fmt) {
     var ea = xmlAttr(tag, "w:eastAsia");
     if (ea === null && xmlAttr(tag, "w:hint") === "eastAsia") ea = xmlAttr(tag, "w:ascii") || xmlAttr(tag, "w:hAnsi");
     if (ea !== null) {
-      delete fmt.zhHans; delete fmt.zhHant; delete fmt.ko;
+      delete fmt.zhHans; delete fmt.zhHant; delete fmt.ko; delete fmt.gothic;
       var zk = zhFontKind(ea);
       if (zk) fmt[zk] = true;
+      else if (isGothicFont(ea)) fmt.gothic = true;
       fmt._fontSet = 1;
     }
   }
@@ -683,7 +691,7 @@ function docxStyleFmt(styles, id) {
     var f = chain[i].fmt, hasU = !!f._uOff, hasS = !!f._sOff, q;
     // 基にしたスタイルの大きさ・フォントは、後のスタイルで指定があれば置き換わる
     if (f._szSet) _clearPrefix(out, "sz");
-    if (f._fontSet) { delete out.zhHans; delete out.zhHant; delete out.ko; out._fontSet = 1; }   // 1 (true ではない) は飾りの名前に入らない
+    if (f._fontSet) { delete out.zhHans; delete out.zhHant; delete out.ko; delete out.gothic; out._fontSet = 1; }   // 1 (true ではない) は飾りの名前に入らない
     for (q = 0; q < UNDERLINE_KINDS.length; q++) if (f[UNDERLINE_KINDS[q]]) hasU = true;
     for (q = 0; q < STRIKE_KINDS.length; q++) if (f[STRIKE_KINDS[q]]) hasS = true;
     // 基にしたスタイルの線種は、後のスタイルの線種で置き換わる
@@ -822,7 +830,7 @@ function _fmtKey(f) {
 }
 
 // 1つの区間に当てる文字スタイル (飾りが重なっているときは、上付き・下付き → 斜体 → 太字 … の順で1つ)
-var FMT_PRIORITY = ["sup", "sub", "zhHans", "zhHant", "ko", "italic", "bold", "underline", "uDouble", "uThick", "uDotted", "uDash", "uDotDash",
+var FMT_PRIORITY = ["sup", "sub", "zhHans", "zhHant", "ko", "gothic", "italic", "bold", "underline", "uDouble", "uThick", "uDotted", "uDash", "uDotDash",
                     "uDotDotDash", "uWave", "uWavyDouble", "kenten", "strike", "dstrike", "highlight", "small", "border", "tcy"];
 
 // InDesign の線の種類の名前 (日本語版・英語版) と太さから、線種を決める
@@ -994,6 +1002,10 @@ function guessComboStyleNames(keys, descs) {
       var nm = part === "zhHans" ? /簡体|简体|中国語|中文|SimSun|SimHei|宋体|黑体/i : /繁体|繁體|台湾|香港|PMingLiU|MingLiU|明體/i;
       return (fk === part ? 2 : 0) + (nm.test(dd.name) ? 1 : 0);
     }
+    if (part === "gothic") {
+      var gf = dd.font && zhFontKind(dd.font) === null && /(ゴシック|ｺﾞｼｯｸ|角ゴ|丸ゴ|Gothic|ゴシ|メイリオ|Meiryo|Sans|源ノ角|Hiragino Kaku|Shin Go|新ゴ|見出ゴ|中ゴ|太ゴ|ゴチ)/i.test(dd.font);
+      return (gf ? 2 : 0) + (/ゴシック|ゴチ|ｺﾞｼｯｸ|角ゴ|gothic/i.test(dd.name) ? 1 : 0);
+    }
     if (part === "ko") {
       var kk = dd.font ? zhFontKind(dd.font) : null;
       if (kk !== "ko" && dd.font && /(Adobe Myungjo|Adobe Gothic Std|Source Han (Sans|Serif) (K|KR)|Noto (Sans|Serif) (CJK )?KR|Batang|Gulim|Dotum|Malgun|Nanum)/i.test(dd.font)) kk = "ko";
@@ -1019,6 +1031,8 @@ function guessComboStyleNames(keys, descs) {
       // 組み合わせにない飾りを持つスタイルは減点 (イタリックに「太字のイタリック」を選ばないように)
       for (j = 0; j < ALL.length; j++) {
         if (("+" + key + "+").indexOf("+" + ALL[j] + "+") >= 0) continue;
+        // 太字の文字スタイルがゴシック体のフォントで作られていることはよくあるので、ゴシックでは減点しない
+        if (ALL[j] === "gothic") continue;
         if (has(d, ALL[j], false) >= 2 || (ALL[j] === "italic" && d.skew)) sc -= 2;
       }
       if (sc > bestSc) { bestSc = sc; best = d.name; }
@@ -1103,17 +1117,23 @@ function fitSpans(list, len) {
 
 // 見出しなどの段落全体にかかった太字・斜体・下線は、段落スタイルの役目なので外す
 function dropWholeParaEmphasis(list, text) {
-  var out = [], i, sp, core = text.replace(/[\s　\t]/g, "").length;
+  var out = [], i, sp, core = text.replace(/[\s　\t]/g, "").length, gcov = 0;
+  // 段落のほとんど (9割以上) がゴシック体なら、見出しなどの段落スタイルの役目なので外す
+  for (i = 0; i < list.length; i++) if (list[i].gothic) gcov += text.substring(list[i].start, list[i].end).replace(/[\s　\t]/g, "").length;
+  if (core > 0 && gcov / core >= 0.9) {
+    for (i = 0; i < list.length; i++) if (list[i].gothic) { delete list[i].gothic; list[i].key = _fmtKey(list[i]); }
+  }
   for (i = 0; i < list.length; i++) {
     sp = list[i];
     if (!sp.ruby && core > 0) {
       var covered = text.substring(sp.start, sp.end).replace(/[\s　\t]/g, "").length;
       if (covered / core >= 0.9) {
-        delete sp.bold; delete sp.italic; _clearKinds(sp, UNDERLINE_KINDS);
+        delete sp.bold; delete sp.italic; delete sp.gothic; _clearKinds(sp, UNDERLINE_KINDS);
         sp.key = _fmtKey(sp);
         if (sp.key === "") continue;
       }
     }
+    if (!sp.ruby && sp.key === "") continue;
     out.push(sp);
   }
   return out;
@@ -2071,6 +2091,9 @@ function readDocxParts(getText, onProgress) {
   var footXml = getText(partOf("/footnotes", "footnotes.xml"));
   var numbering = parseNumbering(getText(partOf("/numbering", "numbering.xml")));
   var bodyBlocks = parseDocxBody(docXml, styles, false, onProgress, numbering);
+  var noteParts = { end: endXml ? parseDocxBody(endXml, styles, true, null, numbering) : {}, foot: footXml ? parseDocxBody(footXml, styles, true, null, numbering) : {} };
+  // 原稿全体がゴシック体なら、ゴシックはふつうの本文なので印を外す
+  if (gothicShare(bodyBlocks) > 0.5) stripFlag(bodyBlocks, noteParts, "gothic");
   return {
     blocks: bodyBlocks,
     mathCount: bodyBlocks.mathCount || 0,
@@ -2078,12 +2101,57 @@ function readDocxParts(getText, onProgress) {
     boxCount: bodyBlocks.boxCount || 0,
     pBoxCount: bodyBlocks.pBoxCount || 0,
     eqStat: bodyBlocks.eqStat || { ruby: 0, tcy: 0, other: 0 },
-    endnotes: endXml ? parseDocxBody(endXml, styles, true, null, numbering) : {},
-    footnotes: footXml ? parseDocxBody(footXml, styles, true, null, numbering) : {},
+    endnotes: noteParts.end,
+    footnotes: noteParts.foot,
     rels: rels,
     docDir: dir,
     styles: styles
   };
+}
+
+// 本文の文字のうち、ゴシック体の印が付いた文字の割合
+function gothicShare(blocks) {
+  var total = 0, g = 0, i, k, b, n;
+  for (i = 0; i < blocks.length; i++) {
+    b = blocks[i];
+    if (b.type !== "p" || !b.text) continue;
+    total += b.text.replace(/[\s\u3000]/g, "").length;
+    for (k = 0; k < b.fmt.length; k++) {
+      if (!b.fmt[k].gothic) continue;
+      n = b.text.substring(b.fmt[k].start, b.fmt[k].end).replace(/[\s\u3000]/g, "").length;
+      g += n;
+    }
+  }
+  return total > 0 ? g / total : 0;
+}
+
+// 飾りの区間の並びから、ある飾りを外す (外して飾りがなくなった区間は除く)
+function _stripFlagList(list, flag) {
+  var out = [], i, sp;
+  if (!list) return list;
+  for (i = 0; i < list.length; i++) {
+    sp = list[i];
+    if (sp[flag]) { delete sp[flag]; if (!sp.ruby) sp.key = _fmtKey(sp); }
+    if (!sp.ruby && sp.key === "") continue;
+    out.push(sp);
+  }
+  return out;
+}
+// 本文 (段落・表)・注のすべての飾りから外す
+function stripFlag(blocks, noteParts, flag) {
+  var i, r, c, id, q, b, src;
+  for (i = 0; i < blocks.length; i++) {
+    b = blocks[i];
+    if (b.type === "table") {
+      if (b.fmts) for (r = 0; r < b.fmts.length; r++) for (c = 0; c < b.fmts[r].length; c++) b.fmts[r][c] = _stripFlagList(b.fmts[r][c], flag);
+    } else if (b.fmt) b.fmt = _stripFlagList(b.fmt, flag);
+  }
+  for (q = 0; q < 2; q++) {
+    src = q === 0 ? noteParts.end : noteParts.foot;
+    for (id in src) if (src.hasOwnProperty(id) && src[id] && src[id].fmt) {
+      for (r = 0; r < src[id].fmt.length; r++) src[id].fmt[r] = _stripFlagList(src[id].fmt[r], flag);
+    }
+  }
 }
 
 // docx をスクリプト内蔵の展開で読む
@@ -4846,6 +4914,7 @@ function main() {
   if (watch.zhHans) wparts.push("簡体字のフォント (SimSun など) " + watch.zhHans + " か所");
   if (watch.zhHant) wparts.push("繁体字のフォント (PMingLiU など) " + watch.zhHant + " か所");
   if (watch.ko) wparts.push("ハングル (韓国語) " + watch.ko + " か所");
+  if (watch.gothic) wparts.push("ゴシック体 " + watch.gothic + " か所");
   if (wparts.length > 0) notes.push("※ 見落としやすい文字の飾り: " + wparts.join("、") + "。「文字の飾りに使う文字スタイル」で文字スタイルを選んでください。");
   if (ms.eqStat && (ms.eqStat.ruby > 0 || ms.eqStat.tcy > 0)) {
     notes.push("※ 一太郎などから変換した原稿の書き方 (Word の EQ フィールド) で書かれたルビ " + ms.eqStat.ruby + " か所・縦中横 " +
