@@ -3,13 +3,17 @@
  * 横本の中の縦組部分に「ダブルノンブル」の横用ノンブル（減っていく数字）を配置する。
  *
  *   左ページ: 150(1)   右ページ: (2)149   ……
+ *   縦用・横用のノンブルを 1 つのテキストフレームにまとめて配置するので、桁数が変わってもアキが出ない。
  *   ( ) の縦用ノンブル … マスターの「現在のページ番号」で自動表示（スクリプトは触らない）
- *   横用ノンブル       … このスクリプトが各ページにテキストフレームを置く
+ *   横用ノンブル       … 見本の仮の数字 PLACEHOLDER をスクリプトが数字に置き換える
  *
  * 【準備】
- *   1. マスターの左右ページに、横用ノンブルの見本テキストフレームを置く
- *      （中身は「000」など仮の数字。位置・段落スタイル・文字設定はここで決める）
+ *   1. マスターの左右ページに、ダブルノンブルの見本テキストフレームを置く
+ *        左ページ: 000(#)    右ページ: (#)000
+ *      # は「書式＞特殊文字を挿入＞マーカー＞現在のページ番号」。000 は横用ノンブルの仮の数字。
+ *      位置・段落スタイル・文字設定はこのフレームで決める。
  *   2. 見本フレームを選択し、スクリプトラベルパネルで LABEL（初期値「横ノンブル」）と入力
+ *   3. マスターにある ( ) だけの縦用ノンブルフレームは削除する（二重に表示されるため）
  *   ※ 見本フレームはスクリプトが自動で「プリントしない」に設定するので、出力には出ない
  *
  * 【実行】
@@ -22,6 +26,7 @@
 
 var LABEL = "横ノンブル";          // 見本フレームのスクリプトラベル
 var OUT_LABEL = "横ノンブル_生成";  // 生成したフレームに付けるラベル（再実行時の削除用）
+var PLACEHOLDER = "000";            // 見本フレーム内の、横用ノンブルに置き換える仮の数字
 var DOC_KEY = "doubleNombreStart";  // 前回入力した開始番号の保存キー
 
 (function () {
@@ -77,7 +82,9 @@ function run(doc, start) {
                 skipped++;
                 continue;
             }
-            placeNumber(sample, page, String(number));
+            if (!placeNumber(sample, page, String(number))) {
+                warnings.push(page.name + "ページ: 見本フレームに「" + PLACEHOLDER + "」が見つからないため数字を入れられません");
+            }
             placed++;
         }
 
@@ -132,7 +139,7 @@ function placeNumber(sample, page, text) {
         frame.label = OUT_LABEL;
         frame.nonprinting = false;
         frame.locked = false;
-        frame.parentStory.texts[0].contents = text;
+        var replaced = replacePlaceholder(frame.parentStory, text);
 
         // 見本のマスターページ上の位置と同じ位置へ合わせる
         var mp = sample.parentPage.bounds;
@@ -142,7 +149,23 @@ function placeNumber(sample, page, text) {
         var dy = (pb[0] + (sb[0] - mp[0])) - fb[0];
         var dx = (pb[1] + (sb[1] - mp[1])) - fb[1];
         frame.move(undefined, [dx, dy]);
+        return replaced;
     } finally {
         layer.locked = layerLocked;
+    }
+}
+
+// 仮の数字だけを置き換える（自動ページ番号マーカーや ( ) はそのまま残る）
+function replacePlaceholder(story, text) {
+    app.findTextPreferences = NothingEnum.NOTHING;
+    app.changeTextPreferences = NothingEnum.NOTHING;
+    try {
+        app.findTextPreferences.findWhat = PLACEHOLDER;
+        var found = story.findText();
+        if (found.length === 0) return false;
+        found[0].contents = text;
+        return true;
+    } finally {
+        app.findTextPreferences = NothingEnum.NOTHING;
     }
 }
