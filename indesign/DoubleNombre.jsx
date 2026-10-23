@@ -46,7 +46,10 @@ function askStart(defaultValue) {
     var field;
     with (dlg.dialogColumns.add()) {
         staticTexts.add({ staticLabel: "1ページ目の横用ノンブル:" });
-        field = integerEditboxes.add({ editValue: defaultValue, minimumValue: 1, minWidth: 80 });
+        field = integerEditboxes.add({ minWidth: 80 });
+        field.maximumValue = 9999;
+        field.minimumValue = 1;
+        field.editValue = defaultValue;
         staticTexts.add({ staticLabel: "※ 以降のページは 1 ずつ減ります" });
     }
     var ok = dlg.show();
