@@ -529,3 +529,60 @@ def write_month(ws, month, rows, b_map):
 
     _renumber_split_formulas(ws)
     return new_count, yellow_cells
+
+
+# ---------------------------------------------------------------------------
+# 増刊号ブロック（「増刊号Ⅰ目次」〜「増刊号Ⅱ目次」の間など）
+# ---------------------------------------------------------------------------
+def zoukan_block_bounds(ws, label):
+    """増刊号ブロックのデータ行 [start, end] を返す。label は 'Ⅰ' / 'Ⅱ'。"""
+    sep = None
+    for r in range(1, ws.max_row + 1):
+        g = ws.cell(row=r, column=7).value
+        if isinstance(g, str) and g.replace(" ", "") == f"増刊号{label}目次":
+            sep = r
+            break
+    if sep is None:
+        raise ValueError(f"増刊号{label}の区切り行が見つかりません")
+    end = ws.max_row
+    for r in range(sep + 1, ws.max_row + 1):
+        g = ws.cell(row=r, column=7).value
+        if isinstance(g, str) and "目次" in g:
+            end = r - 1
+            break
+    return sep + 1, end
+
+
+def write_zoukan(ws, label, rows, header_b):
+    """増刊号ブロックを rows で置換する。
+
+    rows: [dict] title / author / page / reading / uncertain
+          （先頭行は号全体の見出し。B列に header_b を入れる）
+    書式は置換前ブロックの先頭行からコピー。G列は『増Ⅰ』等。
+    """
+    start, end = zoukan_block_bounds(ws, label)
+    tmpl = {c: copy.copy(ws.cell(row=start, column=c)._style) for c in range(1, 12)}
+    height = ws.row_dimensions[start].height
+    old, new = end - start + 1, len(rows)
+    if new > old:
+        ws.insert_rows(end + 1, new - old)
+    elif new < old:
+        ws.delete_rows(start + new, old - new)
+    b_rest = f"●{IDEO_SP}増刊号-{label}"
+    yellow = []
+    for i, row in enumerate(rows):
+        r = start + i
+        for c in range(1, 12):
+            ws.cell(row=r, column=c)._style = copy.copy(tmpl[c])
+        ws.row_dimensions[r].height = height
+        vals = {1: None, 2: header_b if i == 0 else b_rest,
+                3: row.get("title") or None, 4: row.get("author") or None,
+                5: row.get("page") or None, 6: "（", 7: f"増{label}", 8: "）",
+                9: row.get("reading") or None}
+        for c, v in vals.items():
+            ws.cell(row=r, column=c).value = v
+        if row.get("uncertain"):
+            ws.cell(row=r, column=9).fill = YELLOW
+            yellow.append(r)
+    _renumber_split_formulas(ws)
+    return start, start + new - 1, yellow
