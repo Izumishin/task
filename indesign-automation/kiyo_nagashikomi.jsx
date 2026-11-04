@@ -664,7 +664,7 @@ function readRunProp(name, tag, fmt) {
   }
   else if (name === "w:vertAlign") {
     v = xmlAttr(tag, "w:val");
-    delete fmt.sup; delete fmt.sub;
+    delete fmt.sup; delete fmt.sub; delete fmt._refSup;
     if (v === "superscript") fmt.sup = true;
     else if (v === "subscript") fmt.sub = true;
   }
@@ -820,6 +820,17 @@ function _flagRanges(list, ranges, flag) {
     out.push(sp);
   }
   return out.concat(rubies);
+}
+
+// 文字スタイル (基にしたスタイルも) が上付きか
+function _styleChainSup(styles, id) {
+  var s = styles[id], guard = 0;
+  while (s && guard++ < 10) {
+    if (s.fmt.sup) return true;
+    if (s.fmt.sub) return false;
+    s = s.basedOn ? styles[s.basedOn] : null;
+  }
+  return false;
 }
 
 function _fmtKey(f) {
@@ -1743,7 +1754,7 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
       }
       // 注番号の位置も、セルの文字の中の位置にして覚える
       for (cq = 0; cq < para.refs.length; cq++) {
-        cell.refs.push({ pos: para.refs[cq].pos + cellOff, kind: para.refs[cq].kind, id: para.refs[cq].id });
+        cell.refs.push({ pos: para.refs[cq].pos + cellOff, kind: para.refs[cq].kind, id: para.refs[cq].id, sup: para.refs[cq].sup });
       }
       cell.paras.push(para.text);
     } else if (collectNotes) {
@@ -1963,8 +1974,10 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
     if (rprChange > 0) continue;
     if (inRPr && runFmt !== null) {
       if (name === "w:rStyle") {
-        var sf = docxStyleFmt(styles, xmlAttr(tag, "w:val")), sk;
+        var rsid = xmlAttr(tag, "w:val"), sf = docxStyleFmt(styles, rsid), sk;
         for (sk in sf) if (sf.hasOwnProperty(sk)) runFmt[sk] = sf[sk];
+        // 注番号の文字スタイルは飾りとしては使わないが、上付きかどうかは覚えておく
+        if (_styleChainSup(styles, rsid)) runFmt._refSup = 1;
       } else {
         readRunProp(name, tag, runFmt);
       }
@@ -2015,7 +2028,9 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
       continue;
     }
     if (name === "w:endnoteReference" || name === "w:footnoteReference") {
-      para.refs.push({ pos: para.text.length, kind: name === "w:endnoteReference" ? "endnote" : "footnote", id: xmlAttr(tag, "w:id") });
+      // Word で注番号が上付きか (ふつうは「脚注参照」「文末脚注参照」の文字スタイルで上付き)
+      var rsup = !!(runFmt !== null && (runFmt.sup || runFmt._refSup));
+      para.refs.push({ pos: para.text.length, kind: name === "w:endnoteReference" ? "endnote" : "footnote", id: xmlAttr(tag, "w:id"), sup: rsup });
       continue;
     }
     if (name === "a:blip") { para.image = xmlAttr(tag, "r:embed"); continue; }
@@ -2718,7 +2733,7 @@ function buildItems(ms, p) {
     var r;
     for (r = 0; r < tb.refs.length; r++) {
       if (tb.refs[r].pos <= cut) head.refs.push(tb.refs[r]);
-      else tail.refs.push({ pos: tb.refs[r].pos - cut - 1, kind: tb.refs[r].kind, id: tb.refs[r].id });
+      else tail.refs.push({ pos: tb.refs[r].pos - cut - 1, kind: tb.refs[r].kind, id: tb.refs[r].id, sup: tb.refs[r].sup });
     }
     seq.splice(firstIdx, 1,
       { text: head.text, level: 0, isTable: false, isImage: false, block: head },
@@ -2777,7 +2792,7 @@ function buildItems(ms, p) {
     sorted.sort(function (x, y) { return x.pos - y.pos; });
     // 注番号を差し込む
     var out = "";
-    var last = 0, marks = [], fm = [], fi;
+    var last = 0, marks = [], fm = [], fi, supMarks = [];
     if (b.fmt) for (fi = 0; fi < b.fmt.length; fi++) fm.push(_copySpan(b.fmt[fi]));
     for (k = 0; k < sorted.length; k++) {
       out += text.substring(last, sorted[k].pos);
@@ -2791,10 +2806,14 @@ function buildItems(ms, p) {
       var mark = _noteRef(n, p);
       refs.push({ start: out.length, len: mark.length });
       marks.push({ pos: sorted[k].pos, len: mark.length });
+      if (sorted[k].sup) supMarks.push({ start: out.length, end: out.length + mark.length });
       out += mark;
     }
     out += text.substring(last);
     shiftSpansForMarks(fm, marks);
+    // Word で上付きだった注番号は、入れた注番号の文字も上付きにする
+    // (前回号に注番号の文字スタイルがあれば、流し込むときにそちらを当てる)
+    if (supMarks.length > 0) fm = _flagRanges(fm, supMarks, "sup");
     // 体裁の調整
     var lead = /^[ \t]*/.exec(out)[0].length;
     if (lead > 0) { out = out.substring(lead); for (k = 0; k < refs.length; k++) refs[k].start = Math.max(0, refs[k].start - lead); moveSpans(fm, -lead); }
@@ -2916,7 +2935,7 @@ function _tableWithRefs(b, fnNo, noteNo, p) {
       var refs = b.refs && b.refs[r] && b.refs[r][c] ? b.refs[r][c].slice(0) : [];
       if (refs.length === 0) { rows[r].push(text); fmts[r].push(fm); cellRefs[r].push([]); continue; }
       refs.sort(function (x, y) { return x.pos - y.pos; });
-      var out = "", last = 0, marks = [], cr = [];
+      var out = "", last = 0, marks = [], cr = [], supM = [];
       for (k = 0; k < refs.length; k++) {
         out += text.substring(last, refs[k].pos);
         last = refs[k].pos;
@@ -2925,15 +2944,37 @@ function _tableWithRefs(b, fnNo, noteNo, p) {
         var mark = _noteRef(noteNo[key], p);
         cr.push({ start: out.length, len: mark.length });
         marks.push({ pos: refs[k].pos, len: mark.length });
+        if (refs[k].sup) supM.push({ start: out.length, end: out.length + mark.length });
         out += mark;
       }
       out += text.substring(last);
       shiftSpansForMarks(fm, marks);
+      if (supM.length > 0) fm = _flagRanges(fm, supM, "sup");
       rows[r].push(out); fmts[r].push(fm); cellRefs[r].push(cr);
       has = true;
     }
   }
   return { table: { type: "table", rows: rows, fmts: fmts, widths: b.widths, lostRefs: b.lostRefs || 0 }, cellRefs: has ? cellRefs : null };
+}
+
+// 注番号の範囲にある「上付き」の飾りを外す (注番号の文字スタイルを当てるとき用)
+function dropNoteRefSup(spans, chars) {
+  var refs = [], i, j, sp, out = [];
+  for (i = 0; i < chars.length; i++) if (chars[i].kind === "noteRef" && chars[i].len > 0) refs.push({ start: chars[i].start, end: chars[i].start + chars[i].len });
+  for (i = 0; i < spans.length; i++) {
+    sp = spans[i];
+    if (sp.sup && !sp.ruby) {
+      for (j = 0; j < refs.length; j++) {
+        if (sp.start >= refs[j].start && sp.end <= refs[j].end) {
+          sp = _copySpan(sp); delete sp.sup; sp.key = _fmtKey(sp);
+          break;
+        }
+      }
+      if (!sp.ruby && sp.key === "") continue;
+    }
+    out.push(sp);
+  }
+  return out;
 }
 
 // 段落列 → 1つの文字列と、段落・文字スタイルの位置
@@ -4432,6 +4473,8 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
     sp0.start = sb.chars[i].start; sp0.end = sb.chars[i].start + sb.chars[i].len;
     fmtSpans.push(sp0);
   }
+  // 前回号に注番号の文字スタイルがあるときは、注番号の上付きはその文字スタイルに任せる (号の体裁を優先)
+  if (ctx.charStyles.noteRef) fmtSpans = dropNoteRefSup(fmtSpans, sb.chars);
   applyFmtSpans(story, fmtSpans, 0, mapIdx, ctx.fmtStyles, ctx.fmtStat);
 
   // 3') 文字スタイル (注番号・ダーシ・「キーワード：」「出典：」)

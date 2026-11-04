@@ -466,8 +466,9 @@ check('リンクの下線・段落記号の書式は飾りにしない', !got.so
 const fmtBuilt = buildItems(fmtMs, prof);
 const fbody = fmtBuilt.items.find(x => x.role === 'body' && x.text.indexOf('雑誌') >= 0);
 const segB = f => fbody.text.substring(f.start, f.end);
-check('字下げ・注番号を入れても飾りの位置が合う', segB(fbody.fmt[0]) === 'Nature Medicine' && segB(fbody.fmt[1]) === '強調' &&
-      fbody.text.indexOf('Nature Medicine（1）と') > 0 && segB(fbody.fmt[5]) === '経済', fbody.fmt.map(segB).join(','));
+check('字下げ・注番号を入れても飾りの位置が合う (Word で上付きの注番号は上付き)', segB(fbody.fmt[0]) === 'Nature Medicine' && segB(fbody.fmt[1]) === '（1）' &&
+      fbody.fmt[1].sup && !fbody.fmt[1].italic && segB(fbody.fmt[2]) === '強調' &&
+      fbody.text.indexOf('Nature Medicine（1）と') > 0 && segB(fbody.fmt[6]) === '経済', fbody.fmt.map(segB).join(','));
 check('題目全体の太字は段落スタイルに任せて外す', (fmtBuilt.items.find(x => x.role === 'title').fmt || []).length === 0);
 const fnote = fmtBuilt.items.find(x => x.role === 'note');
 check('文末脚注の中のイタリックも位置が合う', fnote.text.substring(fnote.fmt[0].start, fnote.fmt[0].end) === 'Cell', JSON.stringify(fnote));
@@ -476,7 +477,24 @@ check('脚注の中のイタリック (2段落目) も位置が合う', ff.text 
       JSON.stringify(ff));
 const fsb = buildStoryText(fmtBuilt.items);
 check('流し込み用テキストでも飾りの位置が合う', fsb.chars.filter(c => c.kind === 'fmt').map(c => fsb.text.substr(c.start, c.len)).join(',') ===
-      'Nature Medicine,強調,2,大事,下線,経済,Cell', fsb.chars.filter(c => c.kind === 'fmt').map(c => fsb.text.substr(c.start, c.len)).join(','));
+      'Nature Medicine,（1）,強調,2,大事,下線,経済,Cell', fsb.chars.filter(c => c.kind === 'fmt').map(c => fsb.text.substr(c.start, c.len)).join(','));
+// 注番号の上付き: 表の中も上付き、Word で並字に戻した注番号は並字、前回号の注番号の文字スタイルがあればそちらを優先
+const supStyles = `<?xml version="1.0"?><w:styles ${W}><w:style w:type="character" w:styleId="EnRef"><w:name w:val="endnote reference"/><w:rPr><w:vertAlign w:val="superscript"/></w:rPr></w:style></w:styles>`;
+const ENS = (id, extra) => `<w:r><w:rPr><w:rStyle w:val="EnRef"/><w:highlight w:val="yellow"/>${extra || ''}</w:rPr><w:endnoteReference w:id="${id}"/></w:r>`;
+const supDoc = `<?xml version="1.0"?><w:document ${W}><w:body>${P('題目')}${P('１．はじめに', 'Heading1')}
+<w:p><w:r><w:t>負担している</w:t></w:r>${ENS(1)}<w:r><w:t>。並字の注</w:t></w:r>${ENS(2, '<w:vertAlign w:val="baseline"/>')}<w:r><w:t>。</w:t></w:r></w:p>
+<w:tbl><w:tr><w:tc><w:p><w:r><w:t>表の中</w:t></w:r>${ENS(3)}</w:p></w:tc></w:tr></w:tbl>${P('参考文献', 'Heading1')}${P('文献A')}<w:sectPr/></w:body></w:document>`;
+const supEnd = `<?xml version="1.0"?><w:endnotes ${W}>${[1, 2, 3].map(i => `<w:endnote w:id="${i}"><w:p><w:r><w:t>注${i}</w:t></w:r></w:p></w:endnote>`).join('')}</w:endnotes>`;
+const supB = buildItems(readDocxManuscript(makeZip([['word/document.xml', supDoc], ['word/styles.xml', supStyles], ['word/endnotes.xml', supEnd]]).toString('latin1')), prof);
+const supP = supB.items.find(x => /負担している/.test(x.text));
+const m1 = _noteRef(1, prof), m2 = _noteRef(2, prof);
+check('Word で上付きの注番号 (蛍光ペン付きでも) は、入れた注番号も上付き', supP.fmt.some(f => f.sup && supP.text.substring(f.start, f.end) === m1), JSON.stringify(supP.fmt));
+check('Word で並字に戻した注番号は並字のまま', !supP.fmt.some(f => f.sup && supP.text.substring(f.start, f.end) === m2), JSON.stringify(supP.fmt));
+const supT = supB.items.find(x => x.role === 'table');
+check('表の中の注番号も上付き', supT && supT.cellFmt[0][0].some(f => f.sup && supT.table.rows[0][0].substring(f.start, f.end) === _noteRef(3, prof)), JSON.stringify(supT && supT.cellFmt));
+const supSb = buildStoryText(supB.items);
+const supSpans = supSb.chars.filter(c => c.kind === 'fmt').map(c => Object.assign(_copySpan(c.span), { start: c.start, end: c.start + c.len }));
+check('前回号に注番号の文字スタイルがあるときは、注番号の上付きはその文字スタイルに任せる', supSpans.some(f => f.sup) && !dropNoteRefSup(supSpans, supSb.chars).some(f => f.sup));
 const fcnt = countFmtCombos(fmtBuilt);
 check('飾りの数 (本文・注・脚注)', fcnt.italic === 3 && fcnt['italic+ja'] === 1 && fcnt.ruby === 1 && fcnt.sub === 1 && fcnt.kenten === 1 && fcnt.underline === 1,
       JSON.stringify(fcnt));
