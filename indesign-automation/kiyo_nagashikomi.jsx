@@ -1660,6 +1660,62 @@ function docxHeadingLevel(styles, styleId) {
   return 0;
 }
 
+// セルの最初と最後の空の段落を除く (一太郎などから変換した原稿では、セルの頭に空の段落が入っていることがある)
+function _trimCellParas(cell) {
+  var lead = 0, off = 0, k;
+  while (lead < cell.paras.length - 1 && trimWS(cell.paras[lead]) === "") { off += cell.paras[lead].length + 1; lead++; }
+  if (lead > 0) {
+    cell.paras = cell.paras.slice(lead);
+    moveSpans(cell.fmt, -off);
+    cell.fmt = fitSpans(cell.fmt, 1000000);
+    var keep = [];
+    for (k = 0; k < cell.refs.length; k++) { cell.refs[k].pos -= off; if (cell.refs[k].pos >= 0) keep.push(cell.refs[k]); }
+    cell.refs = keep;
+  }
+  while (cell.paras.length > 1 && trimWS(cell.paras[cell.paras.length - 1]) === "") cell.paras.pop();
+}
+
+// Word の表 (行ごとにセルの数が違う。結合したセルは1つ) → 列のそろった格子と、結合の一覧
+// 戻り値: { rows, fmts, refs (行×列), merges: [{ r, c, rs (縦の数), cs (横の数) }] }
+function _gridTable(t) {
+  var C = t.widths.length, r, i, k, col, rows = [], fmts = [], refs = [], merges = [], openV = {}, R, F, X;
+  var pad = function (n) { var q; for (q = 0; q < n; q++) { R.push(""); F.push([]); X.push([]); } };
+  for (r = 0; r < t.rows.length; r++) {
+    var sum = t.gridBefore[r] || 0, meta = t.metas[r] || [];
+    for (i = 0; i < t.rows[r].length; i++) sum += (meta[i] && meta[i].span) || 1;
+    if (sum > C) C = sum;
+  }
+  for (r = 0; r < t.rows.length; r++) {
+    R = []; F = []; X = [];
+    var gb = t.gridBefore[r] || 0, mt = t.metas[r] || [];
+    pad(gb);
+    col = gb;
+    for (i = 0; i < t.rows[r].length; i++) {
+      var m = mt[i] || { span: 1, vm: null }, sp = m.span || 1, text = t.rows[r][i];
+      // 縦に結合した続きのセル (中身はふつう空): 上のセルの結合を1行のばす
+      if (m.vm === "continue" && openV[col] && trimWS(text) === "") {
+        openV[col].rs++;
+        pad(sp);
+        col += sp;
+        continue;
+      }
+      R.push(text); F.push((t.fmts[r] && t.fmts[r][i]) || []); X.push((t.refs[r] && t.refs[r][i]) || []);
+      pad(sp - 1);
+      var mg = { r: r, c: col, rs: 1, cs: sp };
+      for (k = col; k < col + sp; k++) openV[k] = null;
+      if (m.vm === "restart" || m.vm === "continue") openV[col] = mg;
+      if (sp > 1 || m.vm === "restart" || m.vm === "continue") merges.push(mg);
+      col += sp;
+    }
+    pad(C - R.length);
+    for (k = col; k < C; k++) openV[k] = null;
+    rows.push(R); fmts.push(F); refs.push(X);
+  }
+  var out = [];
+  for (k = 0; k < merges.length; k++) if (merges[k].rs > 1 || merges[k].cs > 1) out.push(merges[k]);
+  return { rows: rows, fmts: fmts, refs: refs, merges: out };
+}
+
 // 本文 XML をブロック列に変換する。
 // 段落: { type:"p", text, styleId, level, refs:[{pos, kind, id}], image:rId|null }
 // 表  : { type:"table", rows:[[cellText, ...]], widths:[twips...] }
@@ -1736,7 +1792,7 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
     if (r.complex) { if (!pa.mathComplex) pa.mathComplex = []; pa.mathComplex.push(unprotectMath(r.text)); }
     if (r.special) pa.mathSpecial = true;
   }
-  var tblStack = [], tbl = null, row = null, rowFmt = null, rowRefs = null, cell = null, grid = null;
+  var tblStack = [], tbl = null, row = null, rowFmt = null, rowRefs = null, rowMeta = null, cell = null, grid = null;
   var notes = {}, noteId = null, noteParas = null;
 
   function flushPara() {
@@ -1827,27 +1883,34 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
       else if (name === "w:p") flushPara();
       else if (name === "w:tc") {
         if (row !== null && cell !== null) {
+          _trimCellParas(cell);
           row.push(cell.paras.join("\r"));
           if (rowFmt !== null) rowFmt.push(cell.fmt);
           if (rowRefs !== null) rowRefs.push(cell.refs);
+          if (rowMeta !== null) rowMeta.push({ span: cell.span || 1, vm: cell.vm || null });
         }
         cell = null;
       }
       else if (name === "w:tr") {
-        if (tbl !== null && row !== null) { tbl.rows.push(row); tbl.fmts.push(rowFmt || []); tbl.refs.push(rowRefs || []); }
-        row = null; rowFmt = null; rowRefs = null;
+        if (tbl !== null && row !== null) {
+          tbl.rows.push(row); tbl.fmts.push(rowFmt || []); tbl.refs.push(rowRefs || []);
+          tbl.metas.push(rowMeta || []); tbl.gridBefore.push(row.gridBefore || 0);
+        }
+        row = null; rowFmt = null; rowRefs = null; rowMeta = null;
       }
       else if (name === "w:tbl") {
         var done = tbl;
         // 表の中の表が終わったら、外の表の読みかけの行・セルに戻る
         if (tblStack.length > 0) {
           var outer = tblStack.pop();
-          tbl = outer.tbl; row = outer.row; rowFmt = outer.rowFmt; rowRefs = outer.rowRefs; cell = outer.cell; grid = outer.grid;
+          tbl = outer.tbl; row = outer.row; rowFmt = outer.rowFmt; rowRefs = outer.rowRefs; rowMeta = outer.rowMeta; cell = outer.cell; grid = outer.grid;
         } else {
           tbl = null;
         }
         if (tbl === null) {
-          (boxBlocks !== null ? boxBlocks : blocks).push({ type: "table", rows: done.rows, fmts: done.fmts, widths: done.widths, refs: done.refs,
+          // 結合したセル (横・縦) を、列のそろった格子に並べ直す
+          var gt = _gridTable(done);
+          (boxBlocks !== null ? boxBlocks : blocks).push({ type: "table", rows: gt.rows, fmts: gt.fmts, widths: done.widths, refs: gt.refs, merges: gt.merges,
                                                           lostRefs: done.lostRefs || 0, box: boxBlocks !== null ? boxNo : 0 });
         } else {
           // 表の中の表の注は取り込めない (文字だけ親のセルに入れる)
@@ -1925,13 +1988,17 @@ function parseDocxBody(xml, styles, collectNotes, onProgress, numbering) {
       continue;
     }
     if (name === "w:tbl") {
-      if (tbl !== null) tblStack.push({ tbl: tbl, row: row, rowFmt: rowFmt, rowRefs: rowRefs, cell: cell, grid: grid });
-      tbl = { rows: [], fmts: [], widths: [], refs: [] }; grid = tbl.widths;
+      if (tbl !== null) tblStack.push({ tbl: tbl, row: row, rowFmt: rowFmt, rowRefs: rowRefs, rowMeta: rowMeta, cell: cell, grid: grid });
+      tbl = { rows: [], fmts: [], widths: [], refs: [], metas: [], gridBefore: [] }; grid = tbl.widths;
       continue;
     }
     if (name === "w:gridCol") { if (grid !== null) grid.push(parseInt(xmlAttr(tag, "w:w"), 10) || 0); continue; }
-    if (name === "w:tr") { row = []; rowFmt = []; rowRefs = []; continue; }
-    if (name === "w:tc") { cell = { paras: [], fmt: [], refs: [] }; continue; }
+    if (name === "w:tr") { row = []; rowFmt = []; rowRefs = []; rowMeta = []; continue; }
+    if (name === "w:tc") { cell = { paras: [], fmt: [], refs: [], span: 1, vm: null }; continue; }
+    // セルの結合 (横: w:gridSpan、縦: w:vMerge) と、行の前の空き (w:gridBefore)
+    if (para === null && cell !== null && name === "w:gridSpan") { cell.span = parseInt(xmlAttr(tag, "w:val"), 10) || 1; continue; }
+    if (para === null && cell !== null && name === "w:vMerge") { cell.vm = xmlAttr(tag, "w:val") === "restart" ? "restart" : "continue"; continue; }
+    if (para === null && cell === null && row !== null && name === "w:gridBefore") { row.gridBefore = parseInt(xmlAttr(tag, "w:val"), 10) || 0; continue; }
     if (name === "w:p") {
       para = { type: "p", text: "", styleId: "", level: 0, refs: [], image: null, fmt: [], numId: null, ilvl: null };
       if (selfClose) flushPara();
@@ -2742,6 +2809,11 @@ function buildItems(ms, p) {
   var roles = classifySequence(seq);
   for (i = 0; i < seq.length; i++) if (seq[i].forceRole && roles[i] !== "empty") roles[i] = seq[i].forceRole;
 
+  // 手で打った注 (「註」の見出しの後ろに「1)…」と並べ、本文に上付きの「1)」を打ったもの) があるか
+  var manualNotes = false, mi;
+  for (mi = 0; mi < roles.length; mi++) {
+    if (roles[mi] === "note" && RE_MANUAL_NOTE_NUM.test(trimWS(seq[mi].text))) { manualNotes = true; break; }
+  }
   // 注番号は本文中に出てきた順。Word の脚注は InDesign の脚注にするので別に数える
   var noteOrder = [], noteNo = {}, items = [], warnings = [], footnotes = [], fnNo = {};
   for (i = 0; i < seq.length; i++) {
@@ -2789,11 +2861,17 @@ function buildItems(ms, p) {
     }
     if (role === "figure") { items.push({ role: "figure", text: "■図■", image: b.image }); continue; }
     var text = b.text.replace(/\n/g, "\n"), refs = [], k, off = 0, sorted = b.refs.slice(0);
+    var srcFmt = b.fmt;
+    // 手で打った上付きの注番号 (「1)」「(1)」など) は、前回号の注番号の書き方に置き換える
+    if (manualNotes && role !== "note" && b.fmt && b.fmt.length > 0) {
+      var mc = _cutManualNoteRefs(text, b.fmt, sorted);
+      if (mc !== null) { text = mc.text; srcFmt = mc.fmt; sorted = mc.refs; }
+    }
     sorted.sort(function (x, y) { return x.pos - y.pos; });
     // 注番号を差し込む
     var out = "";
     var last = 0, marks = [], fm = [], fi, supMarks = [];
-    if (b.fmt) for (fi = 0; fi < b.fmt.length; fi++) fm.push(_copySpan(b.fmt[fi]));
+    if (srcFmt) for (fi = 0; fi < srcFmt.length; fi++) fm.push(_copySpan(srcFmt[fi]));
     for (k = 0; k < sorted.length; k++) {
       out += text.substring(last, sorted[k].pos);
       last = sorted[k].pos;
@@ -2802,7 +2880,7 @@ function buildItems(ms, p) {
         refs.push({ start: out.length, len: 0, footnote: fnNo[sorted[k].kind + ":" + sorted[k].id] });
         continue;
       }
-      var n = noteNo[sorted[k].kind + ":" + sorted[k].id];
+      var n = sorted[k].kind === "manual" ? sorted[k].n : noteNo[sorted[k].kind + ":" + sorted[k].id];
       var mark = _noteRef(n, p);
       refs.push({ start: out.length, len: mark.length });
       marks.push({ pos: sorted[k].pos, len: mark.length });
@@ -2844,6 +2922,17 @@ function buildItems(ms, p) {
       var kb = out.length;
       out = out.replace(RE_KEYWORDS, p.labels.keywords);
       moveSpans(fm, out.length - kb);
+    } else if (role === "note" && RE_MANUAL_NOTE_NUM.test(out)) {
+      // 手で打った注の番号 (「1)」「（1）」など) は、前回号の注の番号の書き方 (「（ 1 ）＋タブ」など) にする
+      var nm0 = RE_MANUAL_NOTE_NUM.exec(out), nn0 = parseInt(toHanDigits(nm0[0]).replace(/[^0-9]/g, ""), 10);
+      var npre = _noteNum(nn0, p) + p.noteNumSep, olen = nm0[0].length;
+      out = npre + out.substring(olen);
+      moveSpans(fm, npre.length - olen);
+      for (k = 0; k < refs.length; k++) refs[k].start += npre.length - olen;
+      fm = fitSpans(fm, out.length);
+      var keepF = [];
+      for (k = 0; k < fm.length; k++) if (fm[k].start >= npre.length) keepF.push(fm[k]);
+      fm = keepF;
     } else if (role === "ref" && p.refUrlTab && /^https?:/.test(out)) {
       out = "\t" + out; shift = 1;
     } else {
@@ -2954,7 +3043,7 @@ function _tableWithRefs(b, fnNo, noteNo, p) {
       has = true;
     }
   }
-  return { table: { type: "table", rows: rows, fmts: fmts, widths: b.widths, lostRefs: b.lostRefs || 0 }, cellRefs: has ? cellRefs : null };
+  return { table: { type: "table", rows: rows, fmts: fmts, widths: b.widths, merges: b.merges || [], lostRefs: b.lostRefs || 0 }, cellRefs: has ? cellRefs : null };
 }
 
 // 注番号の範囲にある「上付き」の飾りを外す (注番号の文字スタイルを当てるとき用)
@@ -2975,6 +3064,42 @@ function dropNoteRefSup(spans, chars) {
     out.push(sp);
   }
   return out;
+}
+
+// 手で打った注の番号 (段落の頭): 「1)」「1）」「(1)」「（１）」など
+var RE_MANUAL_NOTE_NUM = /^[\s　]*[（(]?[\s　]*[0-9０-９]{1,3}[\s　]*[）)][\s　\t]*/;
+// 本文の中の、手で打った上付きの注番号 (括弧が付いているもの。指数などの上付きの数字は除く)
+var RE_MANUAL_NOTE_REF = /^([（(][0-9０-９]{1,3}[）)]?|[0-9０-９]{1,3}[）)])$/;
+
+// 上付きの「1)」などを本文から抜き出し、その位置に注番号を入れる目印 (kind "manual") にする
+// 戻り値: { text, fmt, refs } / 抜き出すものがなければ null
+function _cutManualNoteRefs(text, fmt, refs) {
+  var cuts = [], i, sp, t;
+  for (i = 0; i < fmt.length; i++) {
+    sp = fmt[i];
+    if (!sp.sup || sp.ruby) continue;
+    t = text.substring(sp.start, sp.end);
+    if (RE_MANUAL_NOTE_REF.test(t)) cuts.push({ start: sp.start, end: sp.end, n: parseInt(toHanDigits(t).replace(/[^0-9]/g, ""), 10) });
+  }
+  if (cuts.length === 0) return null;
+  cuts.sort(function (a, b) { return a.start - b.start; });
+  function mapPos(pos) { var d = 0, q; for (q = 0; q < cuts.length; q++) if (cuts[q].end <= pos) d += cuts[q].end - cuts[q].start; return pos - d; }
+  var out = "", last = 0;
+  for (i = 0; i < cuts.length; i++) { out += text.substring(last, cuts[i].start); last = cuts[i].end; }
+  out += text.substring(last);
+  var nf = [], nr = [];
+  for (i = 0; i < fmt.length; i++) {
+    sp = fmt[i];
+    var inCut = false, q;
+    for (q = 0; q < cuts.length; q++) if (sp.start >= cuts[q].start && sp.end <= cuts[q].end) inCut = true;
+    if (inCut) continue;
+    var ns = _copySpan(sp);
+    ns.start = mapPos(sp.start); ns.end = mapPos(sp.end);
+    if (ns.end > ns.start) nf.push(ns);
+  }
+  for (i = 0; i < refs.length; i++) { var r0 = _copySpan(refs[i]); r0.pos = mapPos(refs[i].pos); nr.push(r0); }
+  for (i = 0; i < cuts.length; i++) nr.push({ pos: mapPos(cuts[i].start), kind: "manual", n: cuts[i].n, sup: true });
+  return { text: out, fmt: nf, refs: nr };
 }
 
 // 段落列 → 1つの文字列と、段落・文字スタイルの位置
@@ -3805,6 +3930,22 @@ function styleMapDialog(styleMap, styleNames, cnt) {
     for (k = 0; k < styleNames.length; k++) if (styleNames[k] === styleMap[r]) { dd.selection = k + 1; break; }
     dds.push({ role: r, dd: dd });
   }
+  // 表の中の文字 (見出し行・本文の行) の段落スタイル
+  var tdds = [];
+  if (cnt.table) {
+    var tp = w.add("panel", undefined, "表の中の文字 (前回号の表で多く使われているものを選んであります)");
+    tp.alignChildren = "left";
+    var tlist = ["(前回号の表のまま)"].concat(styleNames), TR = [["tableHead", "表の見出し行"], ["tableBody", "表の中の文字"]], ti;
+    for (ti = 0; ti < TR.length; ti++) {
+      row = tp.add("group");
+      row.add("statictext", undefined, TR[ti][1]).preferredSize = [150, 20];
+      dd = row.add("dropdownlist", undefined, tlist);
+      dd.preferredSize = [320, 22];
+      dd.selection = 0;
+      for (k = 0; k < styleNames.length; k++) if (styleNames[k] === styleMap[TR[ti][0]]) { dd.selection = k + 1; break; }
+      tdds.push({ key: TR[ti][0], dd: dd });
+    }
+  }
   var btns = w.add("group");
   btns.alignment = "right";
   btns.add("button", undefined, "OK", { name: "ok" });
@@ -3813,6 +3954,10 @@ function styleMapDialog(styleMap, styleNames, cnt) {
   for (i = 0; i < dds.length; i++) {
     var sel = dds[i].dd.selection ? dds[i].dd.selection.index : 0;
     styleMap[dds[i].role] = sel === 0 ? styleMap.body : styleNames[sel - 1];
+  }
+  for (i = 0; i < tdds.length; i++) {
+    var tsel = tdds[i].dd.selection ? tdds[i].dd.selection.index : 0;
+    styleMap[tdds[i].key] = tsel === 0 ? null : styleNames[tsel - 1];
   }
   return true;
 }
@@ -4147,12 +4292,14 @@ function resizeKeepingEnds(tbl, bodyRows, cols) {
   if (tbl.columnCount !== cols) tbl.columnCount = cols;
 }
 
-function fillTable(tbl, rows, widths, targetWidth) {
-  var R = rows.length, C = 0, r, c, flat = [];
+function fillTable(tbl, rows, widths, targetWidth, merges) {
+  var R = rows.length, C = 0, r, c, flat = [], k;
   for (r = 0; r < R; r++) if (rows[r].length > C) C = rows[r].length;
   if (R === 0 || C === 0) return;
   var h = tbl.headerRowCount > 0 ? 1 : 0;
-  if (R - h < 1) h = 0;
+  // 1行目から縦に結合したセルがあれば、その行まで見出し行にする (見出し行と本文の行にまたがる結合はできないため)
+  if (h > 0 && merges) for (k = 0; k < merges.length; k++) if (merges[k].r === 0 && merges[k].rs > h) h = merges[k].rs;
+  if (R - h < 1) h = R > 1 ? 1 : 0;
   tbl.headerRowCount = h;
   resizeKeepingEnds(tbl, R - h, C);
   for (r = 0; r < R; r++) for (c = 0; c < C; c++) flat.push(rows[r][c] !== undefined ? rows[r][c] : "");
@@ -4167,6 +4314,62 @@ function fillTable(tbl, rows, widths, targetWidth) {
     if (targetWidth) total = targetWidth;
     if (sum > 0) for (c = 0; c < C; c++) { try { tbl.columns[c].width = total * widths[c] / sum; } catch (e3) {} }
   }
+}
+
+// Word の原稿どおりにセルを結合する (後ろの結合から行う)
+function mergeTableCells(tbl, merges) {
+  var res = { ok: 0, failed: 0 }, i, m, a, b;
+  for (i = merges.length - 1; i >= 0; i--) {
+    m = merges[i];
+    try {
+      a = tbl.cells.itemByName(m.c + ":" + m.r);
+      b = tbl.cells.itemByName((m.c + m.cs - 1) + ":" + (m.r + m.rs - 1));
+      a.merge(b);
+      res.ok++;
+    } catch (e) { res.failed++; }
+  }
+  return res;
+}
+
+// 表の見出し行・本文の行のセルに段落スタイルを当てる
+function applyTableParaStyles(tbl, ctx) {
+  var r, c, h = 0, row, st;
+  try { h = tbl.headerRowCount; } catch (e0) {}
+  for (r = 0; r < tbl.rows.length; r++) {
+    st = r < h ? (ctx.tableHeadPS || ctx.tableBodyPS) : ctx.tableBodyPS;
+    if (!st) continue;
+    row = tbl.rows[r];
+    for (c = 0; c < row.cells.length; c++) {
+      try { row.cells[c].texts[0].applyParagraphStyle(st, true); } catch (e1) {}
+    }
+  }
+}
+
+// 前回号の表のセルでいちばん多く使われている段落スタイルの名前 (見出し行・本文の行) → { head, body }
+function learnTableParaStyles(story) {
+  var head = {}, body = {}, t, r, c, h, rows, cells, k, nm, out = { head: null, body: null };
+  try {
+    for (t = 0; t < story.tables.length && t < 12; t++) {
+      var tb = story.tables[t];
+      h = tb.headerRowCount;
+      rows = tb.rows;
+      for (r = 0; r < rows.length && r < 40; r++) {
+        cells = rows[r].cells;
+        for (c = 0; c < cells.length; c++) {
+          var ps = cells[c].paragraphs;
+          for (k = 0; k < ps.length && k < 3; k++) {
+            try { nm = ps[k].appliedParagraphStyle.name; } catch (e1) { continue; }
+            if (!nm || nm.charAt(0) === "[") continue;
+            var bag = (r < h || (h === 0 && r === 0 && rows.length > 1)) ? head : body;
+            bag[nm] = (bag[nm] || 0) + 1;
+          }
+        }
+      }
+    }
+  } catch (e) {}
+  function top(bag) { var best = null, n = 0, q; for (q in bag) if (bag.hasOwnProperty(q) && bag[q] > n) { n = bag[q]; best = q; } return best; }
+  out.head = top(head); out.body = top(body);
+  return out;
 }
 
 // ---- ページの追加・削除 ----
@@ -4509,7 +4712,7 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
   //    (■式■ は Word で PDF にした数式)
   setStep("図と表の位置の確認");
   var nFig = 0, nTbl = 0, nPdf = 0, it, para, ftIdx = [], marks = [], pcont;
-  var tblNotes = { fn: 0, moved: 0, failed: 0 };
+  var tblNotes = { fn: 0, moved: 0, failed: 0 }, tblMerge = { ok: 0, failed: 0 };
   for (i = 0; i < n; i++) {
     it = built.items[i];
     if (it.role === "figure" || it.role === "table" || (it.role === "math" && it.mathPdfFiles)) ftIdx.push(i);
@@ -4566,12 +4769,20 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
           } else {
             tbl = para.insertionPoints[0].tables.add({ headerRowCount: 1, bodyRowCount: 1, columnCount: 2 });
           }
-          fillTable(tbl, it.table.rows, it.table.widths, ctx.tableTemplate ? ctx.tableTemplate.width : 0);
-          if (!ctx.tableTemplate) styleNewTable(tbl, ctx);
+          fillTable(tbl, it.table.rows, it.table.widths, ctx.tableTemplate ? ctx.tableTemplate.width : 0, it.table.merges);
+          // 表の見出し行・表の中の文字の段落スタイル (選んであれば。前回号の表の文字の書体などの上書きも消える)
+          if (ctx.tableHeadPS || ctx.tableBodyPS) applyTableParaStyles(tbl, ctx);
+          else if (!ctx.tableTemplate) styleNewTable(tbl, ctx);
           if (it.cellFmt) { setStep("表の中の文字の飾り (後ろから " + (ftIdx.length - j) + " 個目の表)"); applyCellFmt(tbl, it.table.rows, it.cellFmt, ctx); }
           if (it.cellRefs) {
             setStep("表の中の注番号 (後ろから " + (ftIdx.length - j) + " 個目の表)");
             applyCellRefs(story, tbl, it, built.footnotes, ctx, tblNotes);
+          }
+          // セルの結合は、文字と飾りを入れたあとで行う (結合すると行の中のセルの数え方が変わるため)
+          if (it.table.merges && it.table.merges.length > 0) {
+            setStep("表のセルの結合 (後ろから " + (ftIdx.length - j) + " 個目の表)");
+            var mres = mergeTableCells(tbl, it.table.merges);
+            tblMerge.ok += mres.ok; tblMerge.failed += mres.failed;
           }
           nTbl++;
         } catch (e5) {
@@ -4584,6 +4795,8 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
     }
   }
   if (nTbl > 0) report.push("表 " + nTbl + " 個を作成しました" + (ctx.tableTemplate ? " (前回号の表の体裁を使用)。" : "。"));
+  if (tblMerge.ok > 0) report.push("表のセルの結合 " + tblMerge.ok + " か所を Word の原稿どおりに行いました。");
+  if (tblMerge.failed > 0) report.push("[注意] 表のセルの結合 " + tblMerge.failed + " か所ができませんでした (見出し行と本文の行にまたがる結合など)。表を確認してください。");
   if (tblNotes.fn > 0) report.push("表の中の脚注 " + tblNotes.fn + " 件を、表のセルの中に InDesign の脚注として入れました。");
   if (tblNotes.moved > 0) report.push("[注意] 表の中の脚注 " + tblNotes.moved + " 件はセルの中に入れられなかったため、表の直後に入れました。表の中の注番号を確認してください。");
   if (tblNotes.failed > 0) report.push("[注意] 表の中の脚注 " + tblNotes.failed + " 件を入れられませんでした。");
@@ -4927,6 +5140,13 @@ function main() {
 
   var sty = findStylesByName(doc);
   var styleMap = initialStyleMap(profile, sty.names);
+  // 表の見出し行・表の中の文字の段落スタイル: 前回号の表で多く使われているもの。なければ名前から
+  var tps = learnTableParaStyles(story), tn0;
+  styleMap.tableHead = tps.head; styleMap.tableBody = tps.body;
+  for (tn0 = 0; tn0 < sty.names.length; tn0++) {
+    if (!styleMap.tableHead && /表.*(ゴチ|見出し|ヘッダ)/.test(sty.names[tn0])) styleMap.tableHead = sty.names[tn0];
+    if (!styleMap.tableBody && /表.*(明朝|本文)/.test(sty.names[tn0])) styleMap.tableBody = sty.names[tn0];
+  }
   var notes = [];
   if (profile.learnedFrom === 0) notes.push("※ 前回号の体裁を学習できなかったため、スタイル名から推測しています。");
   if (front) notes.push("※ 題目〜キーワードは、別のテキストボックス(前回号で題目があった所)に入れます。");
@@ -4962,6 +5182,12 @@ function main() {
   if (ms.eqStat && (ms.eqStat.ruby > 0 || ms.eqStat.tcy > 0)) {
     notes.push("※ 一太郎などから変換した原稿の書き方 (Word の EQ フィールド) で書かれたルビ " + ms.eqStat.ruby + " か所・縦中横 " +
                ms.eqStat.tcy + " か所を読み取りました" + (ms.eqStat.other > 0 ? " (読み方の分からない命令 " + ms.eqStat.other + " か所は文字だけ入れます)" : "") + "。");
+  }
+  var nTables = 0, tq;
+  for (tq = 0; tq < built.items.length; tq++) if (built.items[tq].role === "table") nTables++;
+  if (nTables > 0) {
+    notes.push("※ 表の中の文字には段落スタイル「" + (styleMap.tableBody || "前回号の表のまま") + "」(見出し行は「" +
+               (styleMap.tableHead || styleMap.tableBody || "前回号の表のまま") + "」) を当てます。違うときは「種類ごとの段落スタイル」で変えてください。");
   }
   if (ms.pBoxCount > 0) notes.push("※ 罫線で囲んだ段落 " + ms.pBoxCount + " か所を「文字ボックス」の種類で入れます。");
   var fmtInfo = { counts: fcounts, map: guessComboStyleNames(fkeys, cdescs), names: charNames };
@@ -5035,6 +5261,8 @@ function main() {
     },
     fmtStyles: {}, fmtStat: {},
     tableTemplate: null, tableHeadStyle: null, tableBodyStyle: null,
+    tableHeadPS: styleMap.tableHead ? sty.map[styleMap.tableHead] || null : null,
+    tableBodyPS: styleMap.tableBody ? sty.map[styleMap.tableBody] || null : null,
     front: front ? { story: front.story, built: frontBuilt, styleNames: resolveStyleNames(frontBuilt.items, profile, styleMap) } : null
   };
   var fk;

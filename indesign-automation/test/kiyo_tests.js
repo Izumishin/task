@@ -963,6 +963,42 @@ check('原稿全体がゴシック体なら、ゴシックはふつうの本文�
 const gG = guessComboStyleNames(['gothic', 'bold', 'gothic+bold'], [{ name: '太字', fontStyle: 'Regular', font: 'A-OTF 中ゴシックBBB Pr6N' }, { name: 'ゴチ', fontStyle: '', font: '小塚ゴシック Pr6N' }]);
 check('ゴシック体の文字スタイルを、フォント・名前から選ぶ (ゴシックで作った「太字」も太字に選ばれる)', gG.gothic === 'ゴチ' && gG.bold === '太字', JSON.stringify(gG));
 
+// ---- 結合したセルのある表・セルの頭の空の段落 ----
+console.log('merged cells:');
+const MTC = (t, pr) => `<w:tc>${pr ? `<w:tcPr>${pr}</w:tcPr>` : ''}<w:p></w:p>${t.split('|').map(x => `<w:p><w:r><w:t>${x}</w:t></w:r></w:p>`).join('')}</w:tc>`;
+const mgDoc = `<?xml version="1.0"?><w:document ${W}><w:body>${P('題目')}${P('１．はじめに', 'Heading1')}
+<w:tbl><w:tblGrid><w:gridCol w:w="1000"/><w:gridCol w:w="1000"/><w:gridCol w:w="2000"/></w:tblGrid>
+<w:tr>${MTC('経済活動', '<w:gridSpan w:val="2"/>')}${MTC('具体例')}</w:tr>
+<w:tr>${MTC('Ⅰ', '<w:vMerge w:val="restart"/>')}${MTC('新田')}${MTC('商人の力')}</w:tr>
+<w:tr>${MTC('', '<w:vMerge/>')}${MTC('株仲間')}${MTC('営業税|運上')}</w:tr>
+<w:tr><w:trPr><w:gridBefore w:val="1"/></w:trPr>${MTC('右の二つ', '<w:gridSpan w:val="2"/>')}</w:tr>
+</w:tbl><w:sectPr/></w:body></w:document>`;
+const mgT = buildItems(readDocxManuscript(makeZip([['word/document.xml', mgDoc]]).toString('latin1')), prof).items.find(x => x.role === 'table');
+check('結合したセルのある表も、列のそろった格子にする', mgT && mgT.table.rows.every(r => r.length === 3) &&
+      JSON.stringify(mgT.table.rows) === JSON.stringify([['経済活動', '', '具体例'], ['Ⅰ', '新田', '商人の力'], ['', '株仲間', '営業税\r運上'], ['', '右の二つ', '']]),
+      JSON.stringify(mgT && mgT.table.rows));
+check('結合の一覧 (横・縦・行の前の空き)', mgT && JSON.stringify(mgT.table.merges) === JSON.stringify([{ r: 0, c: 0, rs: 1, cs: 2 }, { r: 1, c: 0, rs: 2, cs: 1 }, { r: 3, c: 1, rs: 1, cs: 2 }]),
+      JSON.stringify(mgT && mgT.table.merges));
+check('セルの頭の空の段落は除く', mgT && mgT.table.rows[0][0] === '経済活動');
+
+// ---- 手で打った注 (本文の上付きの「1)」と「註」の欄) ----
+console.log('manual notes:');
+const mnDoc = `<?xml version="1.0"?><w:document ${W}><w:body>${P('題目')}${P('１．はじめに', 'Heading1')}
+<w:p><w:r><w:t>教科指導法</w:t></w:r><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:t>1)</w:t></w:r><w:r><w:t>では，面積は10m</w:t></w:r><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:t>2</w:t></w:r><w:r><w:t>である</w:t></w:r><w:r><w:rPr><w:i/></w:rPr><w:t>と</w:t></w:r><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:t>2)</w:t></w:r><w:r><w:t>。</w:t></w:r></w:p>
+${P('1)意次の登用')}${P('註')}${P('1)社会科・公民科指導法')}${P('2)『べらぼう』NHK出版，2025年。')}<w:sectPr/></w:body></w:document>`;
+const mnB = buildItems(readDocxManuscript(makeZip([['word/document.xml', mnDoc]]).toString('latin1')), prof);
+const mnP = mnB.items.find(x => /教科指導法/.test(x.text));
+const r1 = _noteRef(1, prof), r2 = _noteRef(2, prof);
+check('本文の上付きの「1)」は、前回号の注番号の書き方 (両パーレンなど) にして上付き', mnP && mnP.text.indexOf('教科指導法' + r1 + 'では') >= 0 && mnP.text.indexOf('と' + r2 + '。') >= 0 &&
+      mnP.fmt.some(f => f.sup && mnP.text.substring(f.start, f.end) === r1), JSON.stringify(mnP && [mnP.text, mnP.fmt]));
+check('括弧のない上付きの数字 (m² など) はそのまま', mnP.text.indexOf('10m2') >= 0 && mnP.fmt.some(f => f.sup && mnP.text.substring(f.start, f.end) === '2'));
+check('注番号の前後の飾りの位置もずれない', mnP.fmt.some(f => f.italic && mnP.text.substring(f.start, f.end) === 'と'), JSON.stringify(mnP.fmt));
+check('本文の注番号として数える', mnP.refs.length === 2);
+const mnNotes = mnB.items.filter(x => x.role === 'note').map(x => x.text);
+check('「註」の欄の「1)」も、前回号の注の番号の書き方にする', mnNotes[0] === _noteNum(1, prof) + prof.noteNumSep + '社会科・公民科指導法' &&
+      mnNotes[1].indexOf(_noteNum(2, prof) + prof.noteNumSep + '『べらぼう』') === 0, JSON.stringify(mnNotes));
+check('上付きでない「1)意次の登用」(小見出しの番号) は変えない', mnB.items.some(x => x.text.indexOf('1)意次の登用') >= 0));
+
 // ---- 一太郎などから変換した原稿の EQ フィールド (ルビ・縦中横) ----
 console.log('EQ fields (ruby / tate-chu-yoko):');
 const eq1 = parseEqField(' eq \\o\\al(\\s\\up 9(せつしよう),殺生)');
