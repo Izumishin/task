@@ -999,6 +999,43 @@ check('「註」の欄の「1)」も、前回号の注の番号の書き方に�
       mnNotes[1].indexOf(_noteNum(2, prof) + prof.noteNumSep + '『べらぼう』') === 0, JSON.stringify(mnNotes));
 check('上付きでない「1)意次の登用」(小見出しの番号) は変えない', mnB.items.some(x => x.text.indexOf('1)意次の登用') >= 0));
 
+// ---- 座談会などの話し手の名前 ----
+console.log('speakers:');
+const spOld = [
+  { text: '座談会　ベネズエラと日本', style: '題目' }, { text: '◆はじめに', style: '中見出し' },
+  { text: '石井　こんばんは、皆様。今日はお集まりいただいて、ありがとうございます。', style: '本文', runs: [{ start: 0, end: 2, name: '話者' }] },
+  { text: '　新開編集委員会の委員長を引き継がせていただきました石井と申します。', style: '本文' },
+  { text: '宇野　中野区医師会会長をしています宇野です。', style: '本文', runs: [{ start: 0, end: 2, name: '話者' }] },
+  { text: '　また、本日の座談会の手配をしてくださった板谷先生にも感謝申し上げます。', style: '本文' },
+  { text: '板谷　よろしくお願いいたします。', style: '本文', runs: [{ start: 0, end: 2, name: '話者' }] },
+  { text: '　ここからは板谷先生に司会をお願いしたいと思いますので、お願いします。', style: '本文' }
+].map(x => Object.assign({ level: 0, runs: null }, x));
+const spProf = learnProfile(spOld);
+check('前回号の話し手の名前の文字スタイル・区切りを覚える (3か所以上)', spProf.charStyles.speaker === '話者' && spProf.speakerSep === '　' && spProf.speakerIndent === false,
+      JSON.stringify([spProf.charStyles.speaker, spProf.speakerSep, spProf.speakerIndent]));
+check('話し手の名前の段落を除いて本文の字下げを覚える', spProf.bodyIndent === true);
+const spOldFont = spOld.map(x => x.runs ? Object.assign({}, x, { runs: null, leadFont: { font: 'A-OTF 中ゴシックBBB Pr6N\tMedium', rest: 'A-OTF リュウミン Pr6N\tR-KL', len: 2 } }) : x);
+const spProf2 = learnProfile(spOldFont);
+check('文字スタイルでなく書体を変えていた場合は、その書体を覚える', spProf2.charStyles.speaker === null && spProf2.speakerFont === 'A-OTF 中ゴシックBBB Pr6N\tMedium', JSON.stringify([spProf2.charStyles.speaker, spProf2.speakerFont]));
+const spDoc = `<?xml version="1.0"?><w:document ${W}><w:body>${P('ベネズエラ大使を迎えて')}${P('◆はじめに')}
+${P('石井：こんばんは、皆様。今日はお集まりいただいて、ありがとうございます。')}${P('新開編集委員会の委員長を引き継がせていただきました石井と申します。')}
+${P('宇野　中野区医師会会長をしています宇野です。本日はイシカワ大使に中野区医師会館までお越しいただき誠に光栄に存じます。')}
+${P('石井　大使をお招きしてくださる手はずを整えてくれたのは板谷先生です。')}${P('宇野　よろしくお願いします。')}
+${P('本研究は、日本の医療について述べる。')}<w:sectPr/></w:body></w:document>`;
+const spItems = buildItems(readDocxManuscript(makeZip([['word/document.xml', spDoc]]).toString('latin1')), spProf).items;
+const spOf = s => spItems.find(x => x.text.indexOf(s) >= 0);
+const spA = spOf('こんばんは'), spB = spOf('中野区医師会会長'), spC = spOf('引き継がせて');
+check('話し手の名前に印を付け、区切りを前回号と同じ (「：」→全角の空白) にする', spA && spA.text.indexOf('石井　こんばんは') === 0 && JSON.stringify(spA.speaker) === JSON.stringify({ start: 0, len: 2 }) &&
+      spB && spB.text.indexOf('宇野　') === 0 && spB.speaker, JSON.stringify([spA && spA.text.slice(0, 8), spA && spA.speaker, spB && spB.speaker]));
+check('名前の段落は字下げせず、続きの段落は字下げする', spC && spC.text.charAt(0) === '　' && !spC.speaker && spA.text.charAt(0) !== '　', JSON.stringify(spC && spC.text.slice(0, 6)));
+check('名前ではない段落・見出しには印を付けない', !spOf('本研究は').speaker && !spOf('はじめに').speaker);
+const spSb = buildStoryText(spItems);
+check('流し込むときに話し手の名前の文字スタイルを当てる', spSb.chars.filter(c => c.kind === 'speaker').map(c => spSb.text.substr(c.start, c.len)).join(',') === '石井,宇野,石井,宇野',
+      spSb.chars.filter(c => c.kind === 'speaker').map(c => spSb.text.substr(c.start, c.len)).join(','));
+const noSpItems = buildItems(readDocxManuscript(makeZip([['word/document.xml', spDoc]]).toString('latin1')), prof).items;
+check('前回号が座談会の形でなければ、名前の印は付けない', !noSpItems.some(x => x.speaker));
+check('記号だけ・数字だけは名前にしない', matchSpeaker('◆　はじめに') === null && matchSpeaker('①　最初に') === null && matchSpeaker('石井') === null && matchSpeaker('石井　話す').name === '石井');
+
 // ---- 一太郎などから変換した原稿の EQ フィールド (ルビ・縦中横) ----
 console.log('EQ fields (ruby / tate-chu-yoko):');
 const eq1 = parseEqField(' eq \\o\\al(\\s\\up 9(せつしよう),殺生)');

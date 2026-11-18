@@ -2526,7 +2526,9 @@ function defaultProfile() {
     noteNumPad: " ", noteNumSep: "\t", noteCont: "\t",
     refUrlTab: true,
     labels: { abstractTitle: null, noteTitle: "《注》", refTitle: null, keywords: null },
-    charStyles: { noteRef: null, dash: null, keywordsLabel: null, figSourceLabel: null },
+    charStyles: { noteRef: null, dash: null, keywordsLabel: null, figSourceLabel: null, speaker: null },
+    // 座談会などの話し手の名前 (段落の頭の「石井　」): 文字スタイルがなければ書体、名前の後ろの区切り、字下げ
+    speakerFont: null, speakerSep: null, speakerIndent: false,
     blankBefore: {}, blankStyle: {},
     learnedFrom: 0
   };
@@ -2554,6 +2556,16 @@ function _runAt(runs, start, end) {
   return null;
 }
 
+// [start, end) をちょうど覆う文字スタイル (後ろの区切りまでは含んでよい) の名前 / null
+function _runCovering(runs, start, end, slack) {
+  var i;
+  if (!runs) return null;
+  for (i = 0; i < runs.length; i++) {
+    if (runs[i].start <= start && runs[i].end >= end && runs[i].end <= end + slack) return runs[i].name;
+  }
+  return null;
+}
+
 // oldParas: [{ text, style, level, isTable, isImage, runs:[{start,end,name}] }]
 function learnProfile(oldParas) {
   var p = defaultProfile();
@@ -2561,6 +2573,7 @@ function learnProfile(oldParas) {
   var styleCount = {}, ctxCount = {}, bodyN = 0, bodyIndented = 0;
   var noteRefCs = {}, dashCs = {}, kwCs = {}, srcCs = {}, contPrefix = {}, urlTab = 0, urlN = 0;
   var roleN = {}, blankN = {}, blankSt = {}, numPad = {}, refPad = {}, absN = 0, absIndented = 0;
+  var spkCs = {}, spkFont = {}, spkSep = {}, spkN = 0, spkInd = 0;
   var m, re;
   for (i = 0; i < oldParas.length; i++) {
     r = roles[i];
@@ -2590,7 +2603,17 @@ function learnProfile(oldParas) {
       if (!ctxCount[r + "<" + prev]) ctxCount[r + "<" + prev] = {};
       _inc(ctxCount[r + "<" + prev], style);
     }
-    if (r === "body") { bodyN++; if (raw.charAt(0) === "　") bodyIndented++; }
+    // 座談会などの話し手の名前: 段落の頭の短い名前に文字スタイル (か、ほかと違う書体) が当たっているか
+    var spk = r !== "h1" && r !== "h2" && r !== "h3" && r !== "title" ? matchSpeaker(raw) : null, spkHit = false;
+    if (spk && !RE_NOT_SPEAKER.test(spk.name)) {
+      var scs0 = _runCovering(oldParas[i].runs, spk.indent.length, spk.indent.length + spk.name.length, spk.sep.length);
+      if (scs0) { _inc(spkCs, scs0); spkHit = true; }
+      else if (oldParas[i].leadFont && oldParas[i].leadFont.font && oldParas[i].leadFont.font !== oldParas[i].leadFont.rest &&
+               oldParas[i].leadFont.len === spk.indent.length + spk.name.length) { _inc(spkFont, oldParas[i].leadFont.font); spkHit = true; }
+      if (spkHit) { spkN++; if (spk.indent !== "") spkInd++; _inc(spkSep, spk.sep); }
+    }
+    // 本文の字下げは、話し手の名前で始まる段落を除いて数える (名前の段落は字下げしないことが多い)
+    if (r === "body" && !spkHit) { bodyN++; if (raw.charAt(0) === "　") bodyIndented++; }
     if (r === "abstract") { absN++; if (raw.charAt(0) === "　") absIndented++; }
     if (r === "h1") {
       var hn1 = readHeadingNumber(t);
@@ -2674,6 +2697,13 @@ function learnProfile(oldParas) {
   p.charStyles.dash = _mostCommon(dashCs).key;
   p.charStyles.keywordsLabel = _mostCommon(kwCs).key;
   p.charStyles.figSourceLabel = _mostCommon(srcCs).key;
+  // 話し手の名前は、3か所以上あれば座談会などの形式とみなす
+  if (spkN >= 3) {
+    p.charStyles.speaker = _mostCommon(spkCs).key;
+    if (!p.charStyles.speaker) p.speakerFont = _mostCommon(spkFont).key;
+    p.speakerSep = _mostCommon(spkSep).key;
+    p.speakerIndent = spkInd / spkN >= 0.5;
+  }
   for (k in roleN) {
     if (!roleN.hasOwnProperty(k)) continue;
     if (blankN[k] && blankN[k] / roleN[k] >= 0.5) {
@@ -2809,6 +2839,18 @@ function buildItems(ms, p) {
   var roles = classifySequence(seq);
   for (i = 0; i < seq.length; i++) if (seq[i].forceRole && roles[i] !== "empty") roles[i] = seq[i].forceRole;
 
+  // 座談会などの話し手の名前 (前回号で名前に文字スタイルか書体が当たっていたときだけ)
+  var speakers = (p.charStyles.speaker || p.speakerFont) ? findSpeakers(seq, roles) : null;
+  if (speakers) {
+    // 話し手の名前で始まる最初の段落から後ろは本文 (短い段落が著者名・所属と判定されないように)
+    var firstSpk = -1, si;
+    for (si = 0; si < seq.length; si++) if (_speakerAt(seq[si].text || "", speakers)) { firstSpk = si; break; }
+    if (firstSpk >= 0) {
+      for (si = firstSpk; si < seq.length; si++) {
+        if (roles[si] === "author" || roles[si] === "affiliation" || roles[si] === "subtitle" || roles[si] === "abstract") roles[si] = "body";
+      }
+    }
+  }
   // 手で打った注 (「註」の見出しの後ろに「1)…」と並べ、本文に上付きの「1)」を打ったもの) があるか
   var manualNotes = false, mi;
   for (mi = 0; mi < roles.length; mi++) {
@@ -2898,7 +2940,7 @@ function buildItems(ms, p) {
     var tr = /[\s　\u200B-\u200D\uFEFF]+$/.exec(out); if (tr) out = out.substring(0, out.length - tr[0].length);
     for (k = 0; k < refs.length; k++) if (refs[k].start > out.length) refs[k].start = out.length;
     fm = fitSpans(fm, out.length);
-    var shift = 0;
+    var shift = 0, speakerSpan = null;
     if (role === "h1" || role === "h2" || role === "h3") {
       var before = out;
       out = _normHeading(trimWS(out), role, p);
@@ -2907,6 +2949,13 @@ function buildItems(ms, p) {
         for (k = 0; k < refs.length; k++) refs[k].start += out.length - before.length;
         moveSpans(fm, out.length - before.length);
       }
+    } else if (role === "body" && speakers && _speakerAt(out, speakers)) {
+      // 話し手の名前で始まる段落: 前回号と同じ字下げ・区切りにして、名前に印を付ける
+      var sm = _speakerAt(out, speakers), sOld = sm.all.length, sNew = (p.speakerIndent ? "\u3000" : "") + sm.name + (p.speakerSep || sm.sep);
+      out = sNew + out.substring(sOld);
+      for (k = 0; k < refs.length; k++) refs[k].start += sNew.length - sOld;
+      moveSpans(fm, sNew.length - sOld);
+      speakerSpan = { start: p.speakerIndent ? 1 : 0, len: sm.name.length };
     } else if (role === "body") {
       if (p.bodyIndent && out.charAt(0) !== "　") { out = "　" + out; shift = 1; }
     } else if (role === "abstract") {
@@ -2945,6 +2994,7 @@ function buildItems(ms, p) {
     if (HEADINGISH[role] || role === "keywords") fm = dropWholeParaEmphasis(fm, out);
     fm = splitJaItalic(fm, out);
     var item = { role: role, text: out, refs: refs, fmt: fm };
+    if (speakerSpan) item.speaker = speakerSpan;
     if (b.math) item.math = b.math;
     // 縦の分数などがある別行の式で、式だけの段落なら、Word で PDF にして配置できる
     if (role === "math" && b.mathComplex && b.mathIdx && !b.hasText && refs.length === 0) item.mathPdfIdx = b.mathIdx;
@@ -3066,6 +3116,47 @@ function dropNoteRefSup(spans, chars) {
   return out;
 }
 
+// 座談会などの話し手の名前 (段落の頭) → { all: 字下げ＋名前＋区切り, indent, name (8字まで), sep (全角の空白・タブ・「：」) } / null
+// (古い InDesign の正規表現の不具合を避けるため、括弧で取り出さずに1文字ずつ読む)
+var RE_SPEAKER_CH = /[^\s\u3000、。，．,.「」『』（）()：:・…―\-0-9０-９]/;
+function matchSpeaker(text) {
+  var t = String(text || ""), i = 0, indent = "", name = "", sep = "", c;
+  if (t.charAt(0) === "\u3000") { indent = "\u3000"; i = 1; }
+  while (i < t.length && name.length <= 8 && RE_SPEAKER_CH.test(t.charAt(i))) { name += t.charAt(i); i++; }
+  if (name.length === 0 || name.length > 8) return null;
+  // 記号だけのもの (◆・①など) は名前ではない
+  if (!/[A-Za-z\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF21-\uFF3A\uFF41-\uFF5A]/.test(name)) return null;
+  c = t.charAt(i);
+  if (c === "\u3000") { while (t.charAt(i) === "\u3000") { sep += "\u3000"; i++; } }
+  else if (c === "\t") { sep = "\t"; i++; }
+  else if (c === "\uFF1A" || c === ":") { sep = c; i++; if (t.charAt(i) === "\u3000") { sep += "\u3000"; i++; } }
+  else if (c === " ") { while (t.charAt(i) === " ") { sep += " "; i++; } }
+  else return null;
+  // 区切りの後ろに本文が続かないもの (名前だけの行) は話し手ではない
+  if (i >= t.length) return null;
+  return { all: indent + name + sep, indent: indent, name: name, sep: sep };
+}
+// 名前ではないもの (見出しの言葉・ラベルなど)
+var RE_NOT_SPEAKER = /^(第|注|註|表|図|出典|資料|備考|写真|キーワード|はじめに|おわりに|まとめ|参考|文献|要旨|概要|Abstract|Keywords?)$/i;
+
+// 原稿の中の話し手の名前: 段落の頭に「名前＋空白」が2回以上出てくるもの → { 名前: 回数 }
+function findSpeakers(seq, roles) {
+  var cnt = {}, out = {}, i, m, k, n = 0;
+  for (i = 0; i < seq.length; i++) {
+    if (roles[i] === "h1" || roles[i] === "h2" || roles[i] === "h3" || roles[i] === "title" || roles[i] === "table" || roles[i] === "figure") continue;
+    m = matchSpeaker(seq[i].text);
+    if (m && !RE_NOT_SPEAKER.test(m.name)) cnt[m.name] = (cnt[m.name] || 0) + 1;
+  }
+  for (k in cnt) if (cnt.hasOwnProperty(k) && cnt[k] >= 2) { out[k] = cnt[k]; n++; }
+  return n > 0 ? out : null;
+}
+
+// 段落の頭が話し手の名前なら、その一致 (matchSpeaker の結果)。違えば null
+function _speakerAt(text, speakers) {
+  var m = matchSpeaker(text);
+  return (m && speakers.hasOwnProperty(m.name)) ? m : null;
+}
+
 // 手で打った注の番号 (段落の頭): 「1)」「1）」「(1)」「（１）」など
 var RE_MANUAL_NOTE_NUM = /^[\s　]*[（(]?[\s　]*[0-9０-９]{1,3}[\s　]*[）)][\s　\t]*/;
 // 本文の中の、手で打った上付きの注番号 (括弧が付いているもの。指数などの上付きの数字は除く)
@@ -3114,6 +3205,7 @@ function buildStoryText(items) {
     }
     if (it.dash) for (k = 0; k < it.dash.length; k++) chars.push({ kind: "dash", start: pos + it.dash[k].start, len: it.dash[k].len });
     if (it.label) chars.push({ kind: it.role === "keywords" ? "keywordsLabel" : "figSourceLabel", start: pos + it.label.start, len: it.label.len });
+    if (it.speaker) chars.push({ kind: "speaker", start: pos + it.speaker.start, len: it.speaker.len });
     if (it.fmt) for (k = 0; k < it.fmt.length; k++) {
       chars.push({ kind: "fmt", start: pos + it.fmt[k].start, len: it.fmt[k].end - it.fmt[k].start, span: it.fmt[k] });
     }
@@ -3451,7 +3543,18 @@ function readStoryParas(story, withRuns) {
     var re = /[（(][\s　\u2002-\u200A]*[0-9０-９]{1,3}|[―—─]|^(キーワード|出典)/;
     var paras = story.paragraphs.everyItem().getElements();
     for (i = 0; i < out.length; i++) {
-      if (!re.test(out[i].text)) continue;
+      // 座談会などの話し手の名前で始まる段落: 名前の部分の書体と、続きの書体を覚える (文字スタイルでなく書体を変えている場合のため)
+      var spk = matchSpeaker(out[i].text);
+      if (spk) {
+        try {
+          var sp0 = paras[i], nlen = spk.indent.length + spk.name.length;
+          var f1 = sp0.characters.item(nlen - 1).appliedFont, f2 = sp0.characters.item(spk.all.length).appliedFont;
+          var fs1 = String(sp0.characters.item(nlen - 1).fontStyle), fs2 = String(sp0.characters.item(spk.all.length).fontStyle);
+          out[i].leadFont = { font: (f1 && f1.fontFamily ? f1.fontFamily : String(f1)) + "\t" + fs1,
+                              rest: (f2 && f2.fontFamily ? f2.fontFamily : String(f2)) + "\t" + fs2, len: nlen };
+        } catch (eF) {}
+      }
+      if (!re.test(out[i].text) && !spk) continue;
       try {
         var p = paras[i], base = p.insertionPoints[0].index, rs = p.textStyleRanges.everyItem().getElements(), k, runs = [];
         for (k = 0; k < rs.length; k++) {
@@ -4687,6 +4790,15 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
     c = sb.chars[i];
     if (c.kind === "footnote" || c.kind === "fmt") continue;
     cs = ctx.charStyles[c.kind];
+    if (!cs && c.kind === "speaker" && ctx.speakerFont) {
+      // 前回号で話し手の名前の書体を直接変えていた場合は、同じ書体にする
+      try {
+        var fparts = String(ctx.speakerFont).split("\t"), srng = story.characters.itemByRange(mapIdx(c.start), mapIdx(c.start + c.len) - 1).texts[0];
+        srng.appliedFont = fparts[0];
+        if (fparts[1]) srng.fontStyle = fparts[1];
+      } catch (eSF) {}
+      continue;
+    }
     if (!cs) { miss[c.kind] = true; continue; }
     var s0 = mapIdx(c.start), s1 = mapIdx(c.start + c.len) - 1;
     try { story.characters.itemByRange(s0, s1).texts[0].appliedCharacterStyle = cs; } catch (e3) {}
@@ -4828,7 +4940,7 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
   if (nFig > 0) report.push("図 " + nFig + " 個を配置しました (画像は Links フォルダに保存)。");
   var k2;
   for (k2 in miss) if (miss.hasOwnProperty(k2)) {
-    report.push("[注意] " + { noteRef: "本文中の注番号", dash: "副題のダーシ", keywordsLabel: "「キーワード：」", figSourceLabel: "「出典：」" }[k2] +
+    report.push("[注意] " + { noteRef: "本文中の注番号", dash: "副題のダーシ", keywordsLabel: "「キーワード：」", figSourceLabel: "「出典：」", speaker: "話し手の名前" }[k2] +
                 "の文字スタイルが前回号から見つからなかったため、段落スタイルのままです。");
   }
 }
@@ -5183,6 +5295,12 @@ function main() {
     notes.push("※ 一太郎などから変換した原稿の書き方 (Word の EQ フィールド) で書かれたルビ " + ms.eqStat.ruby + " か所・縦中横 " +
                ms.eqStat.tcy + " か所を読み取りました" + (ms.eqStat.other > 0 ? " (読み方の分からない命令 " + ms.eqStat.other + " か所は文字だけ入れます)" : "") + "。");
   }
+  var nSpk = 0, sq;
+  for (sq = 0; sq < built.items.length; sq++) if (built.items[sq].speaker) nSpk++;
+  if (nSpk > 0) {
+    notes.push("※ 座談会などの話し手の名前 " + nSpk + " か所に、前回号と同じ" +
+               (profile.charStyles.speaker ? "文字スタイル「" + profile.charStyles.speaker + "」" : "書体") + "を当てます。");
+  }
   var nTables = 0, tq;
   for (tq = 0; tq < built.items.length; tq++) if (built.items[tq].role === "table") nTables++;
   if (nTables > 0) {
@@ -5257,8 +5375,10 @@ function main() {
       noteRef: findCharStyle(doc, profile.charStyles.noteRef),
       dash: findCharStyle(doc, profile.charStyles.dash),
       keywordsLabel: findCharStyle(doc, profile.charStyles.keywordsLabel),
-      figSourceLabel: findCharStyle(doc, profile.charStyles.figSourceLabel)
+      figSourceLabel: findCharStyle(doc, profile.charStyles.figSourceLabel),
+      speaker: findCharStyle(doc, profile.charStyles.speaker)
     },
+    speakerFont: profile.speakerFont || null,
     fmtStyles: {}, fmtStat: {},
     tableTemplate: null, tableHeadStyle: null, tableBodyStyle: null,
     tableHeadPS: styleMap.tableHead ? sty.map[styleMap.tableHead] || null : null,
