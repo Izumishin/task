@@ -1137,6 +1137,75 @@ const zwItems = buildItems(readDocxManuscript(makeZip([['word/document.xml', zwD
 check('原稿の「Abstract」+ゼロ幅スペースも要旨の見出しと判定し、要旨・キーワードも正しく判定',
       zwItems.map(i => i.role).slice(0, 6).join(',') === 'title,author,abstractTitle,abstract,keywords,h1', zwItems.map(i => i.role).join(','));
 
+// ---- 縦2段組: 足したページの枠 (マスターの1段の枠) を前回号の本文の枠にそろえる ----
+console.log('columns:');
+{
+  const grab = name => src.match(new RegExp('(?:var [A-Z_]+ = [^;]*;\\n)*function ' + name + '\\([\\s\\S]*?\\n}\\n'))[0];
+  const fnSrc = ['pickLayoutPage', 'copyFrameTo', 'frameCols', '_prefKey', 'matchFramePrefs', 'conformAutoFrame', 'fixSpanColumns', 'fitInlineGraphic'].map(grab).join('\n')
+    + '\nvar FRAME_PREF_KEYS = ' + src.match(/var FRAME_PREF_KEYS = (\[[\s\S]*?\]);/)[1] + ';'
+    + '\nvar GRID_SKIP = ' + src.match(/var GRID_SKIP = (\{[^}]*\});/)[1] + ';'
+    + '\nvar NO_SPAN_ROLES = ' + src.match(/var NO_SPAN_ROLES = (\{[^}]*\});/)[1] + ';'
+    + '\nvar _frameConformed = 0;';
+  const CF = new Function('SpanColumnTypeOptions', 'StoryHorizontalOrVertical', 'FitOptions', fnSrc +
+    '\nreturn { pickLayoutPage: pickLayoutPage, conformAutoFrame: conformAutoFrame, fixSpanColumns: fixSpanColumns, matchFramePrefs: matchFramePrefs, fitInlineGraphic: fitInlineGraphic };')(
+    { SINGLE_COLUMN: 'single', SPAN_COLUMNS: 'span' }, { VERTICAL: 'v', HORIZONTAL: 'h' }, { CONTENT_TO_FRAME: 'c2f' });
+  const story = { id: 1, containers: [] };
+  Object.defineProperty(story, 'textContainers', { get: () => story.containers });
+  let fid = 100;
+  const mkPage = (id, off, side) => ({ id, documentOffset: off, side, isValid: true, parent: { constructor: { name: 'Spread' } }, bounds: [0, 0, 297, 210], frames: [],
+    get textFrames() { return this.frames; } });
+  const mkFrame = (page, gb, cols, st, grid) => {
+    const f = { id: fid++, constructor: { name: 'TextFrame' }, parentPage: page, geometricBounds: gb, isValid: true, characters: { length: 0 },
+      textFramePreferences: { textColumnCount: cols, textColumnGutter: 8, insetSpacing: [0, 0, 0, 0], verticalJustification: 'top' },
+      gridData: Object.assign({ pointSize: 9, characterAki: 0 }, grid || {}),
+      parentStory: st, nextTextFrame: null };
+    Object.defineProperty(f.gridData, 'properties', { get() { const o = {}; for (const k in this) if (k !== 'properties') o[k] = this[k]; return o; }, enumerable: false });
+    f.duplicate = (np) => { const g = mkFrame(np, f.geometricBounds.slice(), f.textFramePreferences.textColumnCount, { id: fid++, contents: 'x' }, f.gridData); np.frames.push(g); return g; };
+    f.remove = () => {};
+    page.frames.push(f);
+    return f;
+  };
+  // 前回号: 1つの枠が2段 (縦組のフレームグリッド 2C)
+  const p1 = mkPage(1, 0, 'right'), p2 = mkPage(2, 1, 'left'), p3 = mkPage(3, 2, 'right');
+  const f1 = mkFrame(p1, [20, 15, 280, 195], 2, story, { pointSize: 9.5 }), f2 = mkFrame(p2, [20, 15, 280, 195], 2, story, { pointSize: 9.5 });
+  story.containers.push(f1, f2);
+  // 足したページ: マスターの主テキストフレームは1段 (グリッドも違う)
+  const auto = mkFrame(p3, [25, 20, 270, 190], 1, story, { pointSize: 9 });
+  story.containers.push(auto);
+  const r1 = CF.conformAutoFrame(auto, story, p3);
+  check('マスターの1段の枠を、前回号の本文の2段の枠にそろえる', r1 !== null && r1.length === 0 && auto.textFramePreferences.textColumnCount === 2 &&
+        auto.gridData.pointSize === 9.5 && auto.geometricBounds.join(',') === '20,15,280,195', JSON.stringify([r1, auto.textFramePreferences, auto.gridData.pointSize, auto.geometricBounds]));
+  check('段組が同じならマスターの枠のまま', CF.conformAutoFrame(auto, story, p3) === null);
+  // 前回号では段ごとに枠が分かれている (上段・下段) → マスターの1つの枠を上段にして、下段を写してつなぐ
+  const st2 = { id: 2, containers: [] };
+  Object.defineProperty(st2, 'textContainers', { get: () => st2.containers });
+  const q1 = mkPage(11, 0, 'right'), q2 = mkPage(12, 1, 'left');
+  const up = mkFrame(q1, [20, 15, 145, 195], 1, st2), lo = mkFrame(q1, [155, 15, 280, 195], 1, st2);
+  st2.containers.push(up, lo);
+  const a2 = mkFrame(q2, [20, 15, 280, 195], 1, st2);
+  st2.containers.push(a2);
+  const r2 = CF.conformAutoFrame(a2, st2, q2);
+  check('前回号が段ごとの枠なら、マスターの枠を上段にし、下段の枠を写してつなぐ', r2 && r2.length === 1 && a2.geometricBounds.join(',') === '20,15,145,195' &&
+        a2.nextTextFrame === r2[0] && r2[0].geometricBounds.join(',') === '155,15,280,195', JSON.stringify([a2.geometricBounds, r2 && r2.map(f => f.geometricBounds)]));
+  // 段抜きの本文スタイル
+  const paras = [{}, {}, {}, {}];
+  const sStory = { textContainers: [f1], paragraphs: paras };
+  const rep = [];
+  const nFix = CF.fixSpanColumns(sStory, [{ role: 'title' }, { role: 'body' }, { role: 'body' }, { role: 'note' }], ['題目', '本文', '本文', '注'],
+    { '題目': { spanColumnType: 'span' }, '本文': { spanColumnType: 'span' }, '注': { spanColumnType: 'single' } }, { defaultStyle: null }, rep);
+  check('段組の枠で本文のスタイルが段抜きなら、本文の段落だけ段抜きをやめる (題目はそのまま)', nFix === 2 && paras[0].spanColumnType === undefined &&
+        paras[1].spanColumnType === 'single' && paras[3].spanColumnType === undefined && rep.length === 1 && /本文/.test(rep[0]), JSON.stringify([nFix, paras, rep]));
+  const n1 = CF.fixSpanColumns({ textContainers: [{ textFramePreferences: { textColumnCount: 1 } }], paragraphs: [{}] }, [{ role: 'body' }], ['本文'], { '本文': { spanColumnType: 'span' } }, {}, []);
+  check('1段の枠では何もしない', n1 === 0);
+  // 縦組の図は1段の高さに収める
+  let fitted = null;
+  const vtf = { geometricBounds: [0, 0, 260, 180], textFramePreferences: { textColumnCount: 2, textColumnGutter: 10, insetSpacing: [0, 0, 0, 0] },
+    parentStory: { storyPreferences: { storyOrientation: 'v' } } };
+  const rect = { geometricBounds: [0, 0, 200, 100], fit: () => { fitted = rect.geometricBounds; } };
+  CF.fitInlineGraphic(rect, { parentTextFrames: [vtf] });
+  check('縦組2段の図は、1段の高さ (行の長さ) に収める', fitted && Math.abs((fitted[2] - fitted[0]) - 125) < 0.01, JSON.stringify(fitted));
+}
+
 // ---- InDesign の古い JavaScript で使えない予約語 ----
 console.log('ExtendScript:');
 const reservedHits = require('./es3_reserved')(src);

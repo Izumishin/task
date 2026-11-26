@@ -4334,10 +4334,19 @@ function fitInlineGraphic(rect, ip) {
     var tf = ip.parentTextFrames[0];
     var fb = tf.geometricBounds, pr = tf.textFramePreferences;
     var cols = pr.textColumnCount || 1, gut = pr.textColumnGutter || 0;
-    var ins = pr.insetSpacing, il = 0, ir = 0;
-    if (ins instanceof Array) { il = ins[1]; ir = ins[3]; }
-    var maxW = ((fb[3] - fb[1]) - il - ir - gut * (cols - 1)) / cols;
-    var maxH = (fb[2] - fb[0]) * 0.6;
+    var ins = pr.insetSpacing, il = 0, ir = 0, it = 0, ib = 0;
+    if (ins instanceof Array) { it = ins[0]; il = ins[1]; ib = ins[2]; ir = ins[3]; }
+    var vert = false;
+    try { vert = tf.parentStory.storyPreferences.storyOrientation === StoryHorizontalOrVertical.VERTICAL; } catch (eV) {}
+    var maxW, maxH;
+    if (vert) {
+      // 縦組: 段は上下に並ぶ。図の高さは1段の高さ (行の長さ) に、幅は枠の幅の6割に収める
+      maxH = ((fb[2] - fb[0]) - it - ib - gut * (cols - 1)) / cols;
+      maxW = (fb[3] - fb[1]) * 0.6;
+    } else {
+      maxW = ((fb[3] - fb[1]) - il - ir - gut * (cols - 1)) / cols;
+      maxH = (fb[2] - fb[0]) * 0.6;
+    }
     var gb = rect.geometricBounds, w = gb[3] - gb[1], h = gb[2] - gb[0];
     var s = Math.min(1, maxW / w, maxH / h);
     if (s < 1) {
@@ -4516,7 +4525,14 @@ function addPageForOverflow(doc, story) {
   try { story.recompose(); } catch (eR) {}
   var auto = storyFrameOnPage(np, story);
   if (auto !== null) {
-    try { if (auto.characters.length === 0 && lastContainer(story).overflows) { np.remove(); return "stuck"; } } catch (eA) {}
+    // マスターの枠が前回号の本文の枠と違う (1段のマスターに2段組の本文、など) ときは、前回号の枠にそろえる
+    var extra = conformAutoFrame(auto, story, np);
+    if (extra !== null) { _frameConformed++; try { story.recompose(); } catch (eR2) {} }
+    try {
+      var autoEmpty = auto.characters.length === 0, x;
+      if (extra) for (x = 0; x < extra.length; x++) if (extra[x].characters.length > 0) autoEmpty = false;
+      if (autoEmpty && lastContainer(story).overflows) { np.remove(); return "stuck"; }
+    } catch (eA) {}
     return true;
   }
   // 前回号の本文がいっぱいに入っていたページ (同じ側) の枠を、つながりの順にすべて写す。
@@ -4640,12 +4656,103 @@ function copyFrameTo(ref, np, rpb, npb, story) {
   try {
     nf = np.textFrames.add({ geometricBounds: nb });
     try { nf.appliedObjectStyle = ref.appliedObjectStyle; } catch (e3) {}
-    try { nf.textFramePreferences.textColumnCount = ref.textFramePreferences.textColumnCount; } catch (e4) {}
-    try { nf.textFramePreferences.textColumnGutter = ref.textFramePreferences.textColumnGutter; } catch (e5) {}
+    matchFramePrefs(nf, ref);
     return nf;
   } catch (e6) {
     return null;
   }
+}
+
+// 枠の段数 (取れなければ 1)
+function frameCols(f) {
+  try { return Math.max(1, f.textFramePreferences.textColumnCount || 1); } catch (e) { return 1; }
+}
+
+// 値を比べるための文字列 (フォントなどのオブジェクトは名前で)
+function _prefKey(v) {
+  try { if (v !== null && typeof v === "object" && !(v instanceof Array) && v.name !== undefined) return "N:" + v.name; } catch (e) {}
+  return String(v);
+}
+
+// 段組・余白・グリッド (字数・行数・文字の大きさなど) を見本の枠と同じにする。戻り値: 変えた項目の数
+var FRAME_PREF_KEYS = ["textColumnCount", "useFixedColumnWidth", "textColumnGutter", "textColumnFixedWidth", "insetSpacing",
+  "verticalJustification", "firstBaselineOffset", "minimumFirstBaselineOffset", "ignoreWrap"];
+var GRID_SKIP = { parent: 1, isValid: 1, index: 1, id: 1, properties: 1, reflect: 1, eventListeners: 1, events: 1 };
+function matchFramePrefs(nf, ref) {
+  var n = 0, k, key, rp, tp;
+  try { rp = ref.textFramePreferences; tp = nf.textFramePreferences; } catch (e0) { return 0; }
+  for (k = 0; k < FRAME_PREF_KEYS.length; k++) {
+    key = FRAME_PREF_KEYS[k];
+    try { if (_prefKey(tp[key]) !== _prefKey(rp[key])) { tp[key] = rp[key]; n++; } } catch (e1) {}
+  }
+  // フレームグリッドの設定
+  try {
+    var rg = ref.gridData, ng = nf.gridData, props = rg.properties, p;
+    for (p in props) {
+      if (GRID_SKIP[p]) continue;
+      try { if (_prefKey(ng[p]) !== _prefKey(props[p])) { ng[p] = props[p]; n++; } } catch (e2) {}
+    }
+  } catch (e3) {}
+  return n;
+}
+
+// 新しいページで InDesign が自動でつないだ枠 (マスターの主テキストフレーム) が、前回号の本文の枠と
+// 段組・枠の数が違うとき (1段のマスターに2段組の本文、など)、前回号の本文の枠にそろえる。
+// 戻り値: そろえなかったら null / そろえたら、写して足した枠の配列 (足さなければ空の配列)
+var _frameConformed = 0;
+function conformAutoFrame(auto, story, np) {
+  var layout = pickLayoutPage(story, np);
+  if (!layout || layout.frames.length === 0) return null;
+  var refs = layout.frames, k, refCols = 0, autos = [], tfs, autoCols = 0;
+  for (k = 0; k < refs.length; k++) refCols += frameCols(refs[k]);
+  // そのページにある、この本文の枠 (マスターから来た枠が2つのこともある)
+  try { tfs = np.textFrames; } catch (e0) { tfs = []; }
+  for (k = 0; k < tfs.length; k++) {
+    try { if (tfs[k].parentStory.id === story.id) { autos.push(tfs[k]); autoCols += frameCols(tfs[k]); } } catch (e1) {}
+  }
+  if (autos.length === 0) { autos = [auto]; autoCols = frameCols(auto); }
+  // 段の数の合計が同じなら、マスターの作りのままにする
+  if (autoCols === refCols) return null;
+  if (autos.length !== 1) return null;
+  var rpb = layout.page.bounds, npb = np.bounds, rb = refs[0].geometricBounds;
+  try { auto.geometricBounds = [npb[0] + (rb[0] - rpb[0]), npb[1] + (rb[1] - rpb[1]), npb[0] + (rb[2] - rpb[0]), npb[1] + (rb[3] - rpb[1])]; } catch (e2) {}
+  matchFramePrefs(auto, refs[0]);
+  // 前回号では段ごとに枠が分かれていた → 残りの枠を写して、つなぐ
+  var made = [], prev = auto, nf;
+  for (k = 1; k < refs.length; k++) {
+    nf = copyFrameTo(refs[k], np, rpb, npb, story);
+    if (nf === null) continue;
+    try { prev.nextTextFrame = nf; made.push(nf); prev = nf; }
+    catch (e3) { try { nf.remove(); } catch (e4) {} }
+  }
+  return made;
+}
+
+// 段組の枠に流し込むとき、本文や注の段落スタイルが「段抜き」の設定になっていると、
+// 紙面が1段に見えてしまう。本文などの段落は段抜きにしない。戻り値: 直した段落の数
+var NO_SPAN_ROLES = { body: 1, list: 1, math: 1, h2: 1, h3: 1, note: 1, ref: 1, refSub: 1 };
+function fixSpanColumns(story, items, styleNames, styleObjs, ctx, report) {
+  var multi = false, conts, k, i, n = 0, bad = {}, badNames = [];
+  try { conts = story.textContainers; } catch (e0) { return 0; }
+  for (k = 0; k < conts.length; k++) if (frameCols(conts[k]) >= 2) { multi = true; break; }
+  if (!multi) return 0;
+  var single, span;
+  try { single = SpanColumnTypeOptions.SINGLE_COLUMN; span = SpanColumnTypeOptions.SPAN_COLUMNS; } catch (e1) { return 0; }
+  for (i = 0; i < items.length; i++) {
+    if (!NO_SPAN_ROLES[items[i].role]) continue;
+    var nm = styleNames[i] || "", st = styleObjs[nm] || ctx.defaultStyle;
+    if (!st) continue;
+    var key = "s" + nm;
+    if (bad[key] === undefined) {
+      bad[key] = false;
+      try { bad[key] = st.spanColumnType === span; } catch (e2) {}
+      if (bad[key]) badNames.push(nm || "(本文)");
+    }
+    if (!bad[key]) continue;
+    try { story.paragraphs[i].spanColumnType = single; n++; } catch (e3) {}
+  }
+  if (n > 0) report.push("[修正] 段落スタイル「" + badNames.join("」「") + "」が段抜きの設定になっていたため、本文などの段落 " + n + " 個を段抜きなしにしました (段組の紙面が1段に見えないように)。段落スタイルの「段抜き」の設定も確認してください。");
+  return n;
 }
 
 // 本文のつながりがページの順になっているか確かめ、なっていなければページの順につなぎ直す。
@@ -4680,6 +4787,7 @@ function fixThreadOrder(story) {
 
 function flowOverflow(doc, story, report) {
   var added = 0, guard = 0, r = true;
+  _frameConformed = 0;
   // InDesign の「スマートテキストのリフロー処理」が自動でページを足すと、つながりの順が乱れるので止めておく
   var oldReflow = null;
   try { oldReflow = doc.textPreferences.smartTextReflow; doc.textPreferences.smartTextReflow = false; } catch (eS) {}
@@ -4702,6 +4810,7 @@ function flowOverflow(doc, story, report) {
     if (oldReflow !== null) { try { doc.textPreferences.smartTextReflow = oldReflow; } catch (eS2) {} }
   }
   if (added > 0) report.push("文字があふれたため " + added + " ページ追加しました。");
+  if (_frameConformed > 0) report.push("[調整] 足したページのうち " + _frameConformed + " ページは、マスターの枠の段組が前回号の本文と違ったため、前回号の本文の枠 (段組・グリッド) にそろえました。");
   if (r === "stuck") report.push("[注意] 枠に入りきらない大きな表か図があるため、ページの追加を途中で止めました。表・図の大きさを直してからページを追加してください。");
   else if (lastContainer(story).overflows) report.push("[注意] まだ文字があふれています。ページを追加してください。");
 }
@@ -4758,6 +4867,10 @@ function applyToStory(doc, story, tailStart, built, styleNames, styleObjs, ctx, 
     }
     a = b + 1;
   }
+
+  // 2-1) 段組の枠なのに本文などの段落スタイルが段抜きだと1段に見えるので、段抜きをやめる
+  setStep("段抜きの確認");
+  try { fixSpanColumns(story, built.items, styleNames, styleObjs, ctx, report); } catch (eSp) {}
 
   // 2') 別の行の数式: 数式用の段落スタイルを使っていなければ、中央揃えにする
   setStep("数式の段落の体裁");
