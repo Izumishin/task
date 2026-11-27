@@ -100,7 +100,11 @@ def build_reading_dict(ws, name_col=4, reading_col=9, max_row=None):
     max_row = max_row or ws.max_row
     for r in range(2, max_row + 1):
         name = ws.cell(row=r, column=name_col).value
-        reading = ws.cell(row=r, column=reading_col).value
+        cell = ws.cell(row=r, column=reading_col)
+        reading = cell.value
+        # 黄色（要確認＝推測）の読みは辞書に入れない
+        if str(cell.fill.start_color.rgb).endswith("FFFF00"):
+            continue
         if name and reading and isinstance(name, str) and isinstance(reading, str):
             counts[_norm_name(name)][reading.strip()] += 1
     return {k: v.most_common(1)[0][0] for k, v in counts.items()}
